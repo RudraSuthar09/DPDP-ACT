@@ -1,0 +1,71 @@
+# Stage 1 infrastructure — single Postgres + Redis. That is the whole stack.
+# NO Kafka, NO ClickHouse, NO Temporal, NO Kubernetes (those are later stages).
+#
+# The app and worker run locally via `pnpm dev` during development. To run them
+# as the two Stage 1 containers, uncomment the `app` and `worker` services below
+# (they build from backend/Dockerfile).
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: dpdp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dpdp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dpdp_local_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-dpdp}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - dpdp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-dpdp} -d ${POSTGRES_DB:-dpdp}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: dpdp-redis
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - dpdp_redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # --- The two Stage 1 application containers (uncomment to run in Docker) ----
+  # app:
+  #   build:
+  #     context: .
+  #     dockerfile: backend/Dockerfile
+  #   command: ['node', 'dist/main.js']
+  #   depends_on:
+  #     postgres: { condition: service_healthy }
+  #     redis: { condition: service_healthy }
+  #   environment:
+  #     DATABASE_URL: postgresql://${POSTGRES_USER:-dpdp}:${POSTGRES_PASSWORD:-dpdp_local_dev_only}@postgres:5432/${POSTGRES_DB:-dpdp}
+  #     REDIS_URL: redis://redis:6379
+  #     API_PORT: 3001
+  #   ports:
+  #     - '3001:3001'
+  #
+  # worker:
+  #   build:
+  #     context: .
+  #     dockerfile: backend/Dockerfile
+  #   command: ['node', 'dist/worker.js']
+  #   depends_on:
+  #     postgres: { condition: service_healthy }
+  #     redis: { condition: service_healthy }
+  #   environment:
+  #     DATABASE_URL: postgresql://${POSTGRES_USER:-dpdp}:${POSTGRES_PASSWORD:-dpdp_local_dev_only}@postgres:5432/${POSTGRES_DB:-dpdp}
+  #     REDIS_URL: redis://redis:6379
+
+volumes:
+  dpdp_pgdata:
+  dpdp_redisdata:

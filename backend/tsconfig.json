@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "baseUrl": ".",
+    "declaration": false,
+    "declarationMap": false,
+    // Clear the base `paths` so @dpdp/shared resolves to its built dist via the
+    // workspace symlink (kept outside this project's rootDir). Build shared first
+    // (turbo handles this via ^build).
+    "paths": {}
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test"]
+}

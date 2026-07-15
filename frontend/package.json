@@ -1,0 +1,27 @@
+{
+  "name": "@dpdp/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DPDP Platform frontend — Next.js (dashboard, public portal, admin).",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dpdp/shared": "workspace:*",
+    "next": "^15.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.11",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "eslint": "^9.13.0",
+    "eslint-config-next": "^15.0.2",
+    "typescript": "^5.6.3"
+  }
+}
