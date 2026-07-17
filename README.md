@@ -376,3 +376,17 @@ containers. Migrations run as the owner role; the isolation suite connects as
 | Migrations       | node-pg-migrate (raw SQL)                                       |
 | Monorepo         | pnpm workspaces + Turborepo                                     |
 | Tooling          | ESLint (flat config) + Prettier + TypeScript project references |
+
+
+
+
+Every time you sit down to work on this app, you only need to run one command in your VS Code terminal (making sure you are inside the DPDP-ACT folder):
+
+bash
+pnpm dev
+That single command does all the heavy lifting for you:
+
+It starts the Next.js Frontend at http://localhost:3000
+It starts the NestJS Backend API at http://localhost:3001
+It watches for any code changes you make and automatically reloads both servers.
+When you're done working for the day, just click inside the terminal and press Ctrl + C to stop it. Then run pnpm dev again the next time you want to open it!
