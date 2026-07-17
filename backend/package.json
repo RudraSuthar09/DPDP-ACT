@@ -13,6 +13,7 @@
     "lint": "eslint src",
     "test": "jest --passWithNoTests",
     "test:isolation": "jest --config jest.isolation.config.js",
+    "test:isolation:local": "dotenv -e ../.env -- jest --config jest.isolation.config.js",
     "migrate": "dotenv -e ../.env -- node-pg-migrate",
     "migrate:up": "dotenv -e ../.env -- node-pg-migrate up",
     "migrate:down": "dotenv -e ../.env -- node-pg-migrate down",
