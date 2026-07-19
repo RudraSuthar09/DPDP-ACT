@@ -1,14 +1,18 @@
 import { Module } from '@nestjs/common';
+import { DPRequestController } from './dprequest.controller';
+import { DPRequestService } from './dprequest.service';
 
 /**
- * Data Principal Request Tracker. Handles RIGHTS REQUESTS (DPDP §§11–14): access,
- * correction, erasure, nomination, portability, withdraw-consent. Sits on the
- * shared substrate owned by Grievance. Centrepiece: the two-tier Personal Data
- * Summary — Tier 1 assembled from platform-held metadata; Tier 2 relayed from the
- * client and never persisted (I1). Subject-ref resolution stays within I2.
+ * Data Principal Request Tracker. Handles RIGHTS REQUESTS (DPDP §§11–14). Sits on
+ * the shared substrate owned by Grievance; the statutory SLA deadline (FR-DPR-03)
+ * runs on the WorkflowRunner (S3) — the same mechanism as Breach and Grievance.
  *
  * Requirements: FR-DPR-01..06, 08, 09.  Seams: S3.  Invariants: I1, I2, I4.
- * Skeleton only — no providers or controllers yet.
+ * Stage 1: the SLA-deadline path through S3. The two-tier Personal Data Summary
+ * and fulfilment webhooks land later.
  */
-@Module({})
+@Module({
+  controllers: [DPRequestController],
+  providers: [DPRequestService],
+})
 export class DPRequestModule {}

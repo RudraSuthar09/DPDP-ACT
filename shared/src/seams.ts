@@ -5,38 +5,102 @@
  * logic. Define them now; build the systems later.
  */
 import type { ConsentEventEnvelope } from './consent';
-import type { WorkflowStatus } from './domain';
+
+// ===========================================================================
+// S2 — EventSink
+// ===========================================================================
 
 /**
- * S2 — EventSink. All consent events are written through this (never an ad-hoc
- * INSERT, R3). Stage 1: append-only partitioned Postgres table.
- * Later: Kafka → Postgres + ClickHouse.
+ * What the sink hands back once an event has been durably appended — or found to
+ * already exist. Idempotency is a property of the SEAM, not of every caller
+ * remembering to check first: replay the same event and you get the same receipt
+ * with `deduplicated: true` and nothing new written.
  */
-export interface EventSink {
-  append(event: ConsentEventEnvelope): Promise<void>;
+export interface ConsentReceipt {
+  /** The platform's id for the stored event (the existing one, on a duplicate). */
+  eventId: string;
+  /** Transaction-time the event was FIRST recorded — the second bitemporal clock. */
+  recordedAt: string;
+  /** True when this idempotency key was already present: no new row was written. */
+  deduplicated: boolean;
 }
 
-/** A durable job scheduled through the WorkflowRunner. */
+/**
+ * S2 — EventSink. THE one write path for consent events; never an ad-hoc INSERT
+ * scattered through service code (R3). Stage 1: an append-only, partitioned
+ * Postgres table written only via `app.consent_append`. Later: publishes to
+ * Kafka, consumers fan out to Postgres + ClickHouse — and nothing above this
+ * interface changes. Swapping the implementation is a config change, not a
+ * rewrite; that is the whole point of the seam.
+ */
+export interface EventSink {
+  append(event: ConsentEventEnvelope): Promise<ConsentReceipt>;
+}
+
+// ===========================================================================
+// S3 — WorkflowRunner
+// ===========================================================================
+
+/**
+ * The three workflows that share the deadline substrate. They have the SAME
+ * physics — a deadline-bound, must-not-be-lost state machine — which is exactly
+ * why one runner (and, later, one Temporal deployment) serves all three.
+ */
+export const WORKFLOW_KINDS = ['breach', 'grievance', 'dprequest'] as const;
+export type WorkflowKind = (typeof WORKFLOW_KINDS)[number];
+
+/**
+ * The lifecycle of a scheduled deadline JOB — distinct from the ticket's own
+ * `WorkflowStatus` (open/verifying/…): a job is scheduled, then it either fires,
+ * is cancelled before it fires, or fails. Mirrored by the CHECK on workflow_jobs.
+ */
+export const WORKFLOW_JOB_STATUSES = ['scheduled', 'fired', 'cancelled', 'failed'] as const;
+export type WorkflowJobStatus = (typeof WORKFLOW_JOB_STATUSES)[number];
+
+/** A durable, tenant-scoped job scheduled through the WorkflowRunner. */
 export interface WorkflowJob {
+  /** Caller-owned id — usually the incident/ticket/request id. Cancel by this. */
   workflowId: string;
-  /** e.g. 'breach', 'grievance', 'dprequest'. */
-  kind: string;
+  kind: WorkflowKind;
+  /** When the deadline fires (ISO-8601). A value the caller computed — never an
+   *  `if (daysSince > 3)` that has leaked into a controller. */
   runAt: string;
-  status: WorkflowStatus;
+  status: WorkflowJobStatus;
+  /** Opaque to the runner; handed back to the handler when the job fires. Carries
+   *  ids and metadata only — NEVER a customer record (I1). */
   payload: Record<string, unknown>;
 }
 
 /**
- * S3 — WorkflowRunner. Deadlines/SLAs for Breach, Grievance, and DPRequest run
- * through this. Stage 1: jobs table + BullMQ worker + deadline ticker.
- * Later: Temporal. Workflow logic must never metastasise into controllers.
+ * S3 — WorkflowRunner. Breach, Grievance, and DPRequest deadlines/SLAs all run
+ * through this ONE interface. Stage 1: a jobs table + a pg-boss worker (Postgres-
+ * native, no Redis) + a deadline ticker. Later: Temporal, behind this same
+ * interface — Breach and Grievance never learn it changed.
+ *
+ * The rule this exists to keep: deadline logic lives here and in the worker,
+ * never as `if (status === 'X' && daysSince > 3)` in a controller (R2/R3). A
+ * controller's only move is `runner.schedule(...)`.
  */
 export interface WorkflowRunner {
+  /** Durably schedule a deadline. Idempotent on (workflowId, kind). */
   schedule(job: Omit<WorkflowJob, 'status'>): Promise<void>;
+  /** Cancel a scheduled deadline — e.g. the incident closed before it fired. */
   cancel(workflowId: string): Promise<void>;
 }
 
-/** A discovered column definition — SAMPLE-FREE. Names and types only. */
+// ===========================================================================
+// S4 — SchemaSource
+// ===========================================================================
+
+/**
+ * How a SchemaSource was obtained. Stage 1 has exactly two; DB introspection
+ * drivers, SaaS adapters and the on-prem agent are later kinds behind this SAME
+ * interface — each still unable to read a row, because the method does not exist.
+ */
+export const SCHEMA_SOURCE_KINDS = ['manual', 'file_import'] as const;
+export type SchemaSourceKind = (typeof SCHEMA_SOURCE_KINDS)[number];
+
+/** A discovered column — SAMPLE-FREE. Names, types, nullability, comments only. */
 export interface SchemaColumn {
   name: string;
   type: string;
@@ -44,18 +108,36 @@ export interface SchemaColumn {
   comment?: string;
 }
 
+/** A discovered constraint — metadata about structure, never a value from a row. */
+export interface SchemaConstraint {
+  name: string;
+  kind: 'primary_key' | 'unique' | 'foreign_key' | 'check' | 'not_null';
+  columns: string[];
+}
+
 /**
- * S4 — SchemaSource. The connector contract that makes I1 enforceable by the
- * type system: there is NO `readRows()`, so no connector can ever read a
- * customer row. Stage 1 implementations: ManualEntry, FileImport only.
- * Later: DB drivers, SaaS adapters, on-prem agent.
+ * S4 — SchemaSource. The connector contract that makes invariant I1 enforceable
+ * by the TYPE SYSTEM: there is no `readRows()` — and there never will be — so no
+ * connector, present or future, can read a customer row. Every method returns
+ * schema metadata (names, types, structure); none returns data.
+ *
+ * Stage 1 implementations: ManualEntry and FileImport ONLY.
+ * Later: DB introspection drivers, SaaS adapters, the on-prem agent.
+ *
+ *   ✗ readRows()  —  DOES NOT EXIST IN THIS INTERFACE, BY DESIGN (I1).
+ *
+ * Its absence is checked, not merely intended: schema-source.spec.ts fails the
+ * build if any implementation grows a `readRows` (or any row-reading method).
  */
 export interface SchemaSource {
+  /** The kind of source — stamped as provenance on everything it discovers. */
+  readonly kind: SchemaSourceKind;
   testConnection(): Promise<boolean>;
   listSchemas(): Promise<string[]>;
   listTables(schema: string): Promise<string[]>;
   listColumns(table: string): Promise<SchemaColumn[]>;
-  // ✗ readRows() — DOES NOT EXIST IN THIS INTERFACE, BY DESIGN (I1).
+  listConstraints(table: string): Promise<SchemaConstraint[]>;
+  // ✗ readRows() — intentionally absent. I1 is a fact about this type.
 }
 
 /** Whether the audited action was carried out, refused, or blew up. A refusal is

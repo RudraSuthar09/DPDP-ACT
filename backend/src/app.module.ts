@@ -14,6 +14,7 @@ import { ConsentModule } from './modules/consent/consent.module';
 import { BreachModule } from './modules/breach/breach.module';
 import { GrievanceModule } from './modules/grievance/grievance.module';
 import { DPRequestModule } from './modules/dprequest/dprequest.module';
+import { WorkflowModule } from './modules/workflow/workflow.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { NotifyModule } from './modules/notify/notify.module';
 
@@ -34,6 +35,7 @@ import { NotifyModule } from './modules/notify/notify.module';
     GrievanceModule,
     DPRequestModule,
     // Cross-cutting modules
+    WorkflowModule, // S3 — the deadline substrate Breach/Grievance/DPRequest share
     AuditModule,
     NotifyModule,
   ],

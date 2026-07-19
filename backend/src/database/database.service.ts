@@ -197,6 +197,27 @@ export class TenantDatabaseService implements OnModuleDestroy {
     return rows[0] ?? null;
   }
 
+  /**
+   * Run `fn` on a pooled connection with NO tenant bound.
+   *
+   * This does NOT bypass RLS: the connection is still dpdp_app, so any query
+   * against a tenant table returns zero rows (app.current_tenant() is NULL and
+   * `tenant_id = NULL` is never true — fail closed, exactly like a forgotten
+   * WHERE). Its ONLY legitimate use is calling a SECURITY DEFINER scheduler
+   * peephole that deliberately returns cross-tenant ids — the sibling of
+   * resolveLogin for the login path (Seam S3's reconciliation ticker). Anything
+   * tenant-scoped must go through withTenant/withTenantId instead; there is no
+   * generic untenanted query primitive, and this is deliberately not one.
+   */
+  async runUntenanted<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      return await fn(client);
+    } finally {
+      client.release();
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.pool.end();
   }
