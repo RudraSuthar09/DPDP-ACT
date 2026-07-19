@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { MODULE_AREAS, type ModuleArea, type Role, type UserStatus } from '@dpdp/shared';
+import type { Designation } from './dto';
 
 /**
  * Every SQL statement the identity module issues, in one file (R2: no other
@@ -293,4 +294,131 @@ export class UsersRepository {
     );
     return (rowCount ?? 0) > 0;
   }
+
+  // --- Invitations (FR-IDN-05) — joining an EXISTING tenant -----------------
+
+  async insertInvitation(
+    client: PoolClient,
+    input: {
+      tenantId: string;
+      email: string;
+      fullName: string;
+      role: Role;
+      invitedBy: string;
+      reason: string;
+      expiresAt: Date;
+    },
+  ): Promise<InvitationRow> {
+    const { rows } = await client.query<InvitationRow>(
+      `INSERT INTO invitations (tenant_id, email, full_name, role, invited_by, reason, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING ${INVITATION_COLUMNS}`,
+      [
+        input.tenantId,
+        input.email.trim().toLowerCase(),
+        input.fullName.trim(),
+        input.role,
+        input.invitedBy,
+        input.reason,
+        input.expiresAt,
+      ],
+    );
+    return rows[0]!;
+  }
+
+  async findInvitationById(client: PoolClient, id: string): Promise<InvitationRow | null> {
+    // No tenant_id predicate: RLS supplies it, same reasoning as findById(users).
+    const { rows } = await client.query<InvitationRow>(
+      `SELECT ${INVITATION_COLUMNS} FROM invitations WHERE id = $1`,
+      [id],
+    );
+    return rows[0] ?? null;
+  }
+
+  async listInvitations(client: PoolClient): Promise<InvitationRow[]> {
+    const { rows } = await client.query<InvitationRow>(
+      `SELECT ${INVITATION_COLUMNS} FROM invitations ORDER BY created_at DESC`,
+    );
+    return rows;
+  }
+
+  async markInvitationAccepted(
+    client: PoolClient,
+    invitationId: string,
+    acceptedUserId: string,
+  ): Promise<void> {
+    await client.query(
+      `UPDATE invitations
+          SET status = 'accepted', accepted_user_id = $2, accepted_at = now()
+        WHERE id = $1`,
+      [invitationId, acceptedUserId],
+    );
+  }
+
+  async revokeInvitation(client: PoolClient, invitationId: string, revokedBy: string): Promise<InvitationRow | null> {
+    const { rows } = await client.query<InvitationRow>(
+      `UPDATE invitations
+          SET status = 'revoked', revoked_by = $2, revoked_at = now()
+        WHERE id = $1 AND status = 'pending'
+        RETURNING ${INVITATION_COLUMNS}`,
+      [invitationId, revokedBy],
+    );
+    return rows[0] ?? null;
+  }
+
+  // --- Designations (FR-IDN-04) — the published DPO / Grievance Officer -----
+
+  async upsertDesignation(
+    client: PoolClient,
+    input: { designation: Designation; userId: string; reason: string; setBy: string },
+  ): Promise<DesignationRow> {
+    const { rows } = await client.query<DesignationRow>(
+      `INSERT INTO org_designations (designation, user_id, reason, set_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, designation) DO UPDATE
+         SET user_id = EXCLUDED.user_id, reason = EXCLUDED.reason,
+             set_by = EXCLUDED.set_by, set_at = now()
+       RETURNING tenant_id, designation, user_id, reason, set_by, set_at`,
+      [input.designation, input.userId, input.reason, input.setBy],
+    );
+    return rows[0]!;
+  }
+
+  async listDesignations(client: PoolClient): Promise<DesignationRow[]> {
+    const { rows } = await client.query<DesignationRow>(
+      'SELECT tenant_id, designation, user_id, reason, set_by, set_at FROM org_designations',
+    );
+    return rows;
+  }
+}
+
+export interface InvitationRow {
+  id: string;
+  tenant_id: string;
+  email: string;
+  full_name: string;
+  role: Role;
+  status: 'pending' | 'accepted' | 'revoked' | 'expired';
+  invited_by: string;
+  reason: string;
+  accepted_user_id: string | null;
+  accepted_at: Date | null;
+  revoked_by: string | null;
+  revoked_at: Date | null;
+  created_at: Date;
+  expires_at: Date;
+}
+
+const INVITATION_COLUMNS = `
+  id, tenant_id, email, full_name, role, status, invited_by, reason,
+  accepted_user_id, accepted_at, revoked_by, revoked_at, created_at, expires_at
+`;
+
+export interface DesignationRow {
+  tenant_id: string;
+  designation: Designation;
+  user_id: string;
+  reason: string;
+  set_by: string;
+  set_at: Date;
 }

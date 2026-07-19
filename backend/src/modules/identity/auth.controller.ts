@@ -18,7 +18,13 @@ import {
   type ChallengeSubject,
   type IdentityProvider,
 } from './provider/identity-provider';
-import { parseChallenge, parseLogin, parseMfa, parseRegisterOrganisation } from './dto';
+import {
+  parseAcceptInvitation,
+  parseChallenge,
+  parseLogin,
+  parseMfa,
+  parseRegisterOrganisation,
+} from './dto';
 
 /**
  * The authentication surface (FR-IDN-01/02).
@@ -133,6 +139,28 @@ export class AuthController {
     const { challengeToken, code } = parseMfa(body);
     const subject = this.subjectFromChallenge(challengeToken);
     return this.identity.completeMfa({ ...subject, code });
+  }
+
+  /**
+   * FR-IDN-05 — the invited person completing sign-up. Public, like register:
+   * you cannot present a token to get your first token. Ends in the SAME
+   * MFA-enrolment token shape registration does, so the client drives it
+   * through the identical enroll → confirm screens.
+   */
+  @Post('invitations/accept')
+  @Audited('identity.invitation.accepted')
+  @HttpCode(HttpStatus.OK)
+  async acceptInvitation(@Body() body: unknown) {
+    const input = parseAcceptInvitation(body);
+    const result = await this.identity.acceptInvitation(input);
+    return {
+      tenantId: result.tenantId,
+      organisationName: result.organisationName,
+      userId: result.userId,
+      role: result.role,
+      mfaEnrolmentToken: result.mfaEnrolmentToken,
+      nextStep: 'Enrol MFA with POST /auth/mfa/enroll before you can sign in.',
+    };
   }
 
   /** The authenticated caller. The first thing a UI asks after login. */

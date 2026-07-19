@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -8,7 +9,14 @@ import type { ModuleArea, Role, UserStatus } from '@dpdp/shared';
 import { TenantDatabaseService } from '../../database/database.service';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
-import { UsersRepository, type UserRow } from './users.repository';
+import { TokenService } from './token.service';
+import type { Designation } from './dto';
+import {
+  UsersRepository,
+  type DesignationRow,
+  type InvitationRow,
+  type UserRow,
+} from './users.repository';
 import type { AuthenticatedUser } from './provider/identity-provider';
 
 /**
@@ -32,12 +40,33 @@ export interface TeamMember {
   mfaEnrolled: boolean;
 }
 
+export interface Invitation {
+  id: string;
+  email: string;
+  fullName: string;
+  role: Role;
+  status: InvitationRow['status'];
+  invitedBy: string;
+  createdAt: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+}
+
+export interface TeamDesignation {
+  designation: Designation;
+  userId: string;
+  setAt: string;
+}
+
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class IdentityService {
   constructor(
     private readonly db: TenantDatabaseService,
     private readonly users: UsersRepository,
     private readonly tenantContext: TenantContextService,
+    private readonly tokens: TokenService,
     // Contributes the domain facts (what changed, to whom, why) that the audit
     // interceptor cannot know. It cannot write an entry — see AuditModule.
     private readonly audit: AuditContextService,
@@ -246,6 +275,181 @@ export class IdentityService {
       return toTeamMember(updated!);
     });
   }
+
+  // --- Invitations (FR-IDN-05) — joining an EXISTING tenant ----------------
+
+  /**
+   * Invite a teammate into the CALLER'S tenant. Returns the invite token
+   * un-hashed and un-stored — there is nothing to look it up by later, only the
+   * invitations row (which the token names by id) and the accept endpoint's
+   * re-check of that row's status. Stage 1 has no outbound email (NotifyModule
+   * is a skeleton), so the caller is handed the token/link directly, exactly as
+   * registration hands back `mfaEnrolmentToken` instead of emailing it.
+   */
+  async inviteTeamMember(input: {
+    email: string;
+    fullName: string;
+    role: Role;
+    reason: string;
+  }): Promise<{ invitation: Invitation; inviteToken: string }> {
+    const ctx = this.tenantContext.getOrThrow();
+
+    // The login peephole answers exactly this question — "does this email
+    // belong to anyone, in any tenant?" — which is otherwise unaskable under
+    // RLS. Checking now, not only at accept time, surfaces a taken email
+    // immediately instead of days later when the invitee tries to sign up.
+    const existing = await this.db.resolveLogin(input.email);
+    if (existing) {
+      throw new ConflictException('An account already exists for that email address.');
+    }
+
+    try {
+      const invitation = await this.db.withTenant((client) =>
+        this.users.insertInvitation(client, {
+          tenantId: ctx.tenantId,
+          email: input.email,
+          fullName: input.fullName,
+          role: input.role,
+          invitedBy: ctx.userId,
+          reason: input.reason,
+          expiresAt: this.tokens.inviteExpiry(),
+        }),
+      );
+
+      this.audit.annotate({
+        targetType: 'invitation',
+        targetId: invitation.id,
+        reason: input.reason,
+        afterState: { email: invitation.email, role: invitation.role, status: invitation.status },
+      });
+
+      const inviteToken = this.tokens.mintInviteToken({
+        invitationId: invitation.id,
+        tenantId: ctx.tenantId,
+        email: invitation.email,
+        role: invitation.role,
+      });
+
+      return { invitation: toInvitation(invitation), inviteToken };
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new ConflictException('An invitation is already pending for that email address.');
+      }
+      throw err;
+    }
+  }
+
+  /** Every invitation this tenant has issued — pending, accepted, and revoked,
+   *  for the same "the record survives" reasoning as never-hard-delete on users. */
+  async listInvitations(): Promise<Invitation[]> {
+    return this.db.withTenant(async (client) => {
+      const rows = await this.users.listInvitations(client);
+      return rows.map(toInvitation);
+    });
+  }
+
+  /** Revoke a still-pending invite. A signed token in someone's inbox stops
+   *  working the moment this runs — accept-invite re-checks the row, not just
+   *  the token's signature. */
+  async revokeInvitation(invitationId: string, reason: string): Promise<Invitation> {
+    const ctx = this.tenantContext.getOrThrow();
+    return this.db.withTenant(async (client) => {
+      const invitation = await this.users.findInvitationById(client, invitationId);
+      if (!invitation) {
+        throw new NotFoundException('Invitation not found.');
+      }
+      if (invitation.status !== 'pending') {
+        throw new BadRequestException(`This invitation is already ${invitation.status}.`);
+      }
+
+      const revoked = await this.users.revokeInvitation(client, invitationId, ctx.userId);
+
+      this.audit.annotate({
+        targetType: 'invitation',
+        targetId: invitationId,
+        reason,
+        beforeState: { status: 'pending' },
+        afterState: { status: 'revoked' },
+      });
+
+      return toInvitation(revoked!);
+    });
+  }
+
+  // --- Designations (FR-IDN-04) — the published DPO / Grievance Officer ----
+
+  /**
+   * Mark which team member holds a designation — the fact the (future) public
+   * portal reads. Distinct from `role`: this does not change what the person
+   * can DO, only who is named as the tenant's DPO / Grievance Officer contact.
+   */
+  async setDesignation(
+    designation: Designation,
+    targetUserId: string,
+    reason: string,
+  ): Promise<TeamDesignation> {
+    const ctx = this.tenantContext.getOrThrow();
+    return this.db.withTenant(async (client) => {
+      const target = await this.users.findById(client, targetUserId);
+      if (!target) {
+        throw new NotFoundException('User not found.');
+      }
+      if (target.status !== 'active') {
+        throw new BadRequestException('Only an active team member can be designated.');
+      }
+
+      const before = (await this.users.listDesignations(client)).find(
+        (d) => d.designation === designation,
+      );
+
+      const row = await this.users.upsertDesignation(client, {
+        designation,
+        userId: targetUserId,
+        reason,
+        setBy: ctx.userId,
+      });
+
+      this.audit.annotate({
+        targetType: 'org_designation',
+        targetId: `${designation}`,
+        reason,
+        beforeState: before ? { userId: before.user_id } : null,
+        afterState: { userId: row.user_id },
+      });
+
+      return { designation: row.designation, userId: row.user_id, setAt: row.set_at.toISOString() };
+    });
+  }
+
+  /** The tenant's current designations — at most one row per kind (DPO, Grievance Officer). */
+  async listDesignations(): Promise<TeamDesignation[]> {
+    return this.db.withTenant(async (client) => {
+      const rows = await this.users.listDesignations(client);
+      return rows.map((r) => ({
+        designation: r.designation,
+        userId: r.user_id,
+        setAt: r.set_at.toISOString(),
+      }));
+    });
+  }
+}
+
+function toInvitation(row: InvitationRow): Invitation {
+  return {
+    id: row.id,
+    email: row.email,
+    fullName: row.full_name,
+    role: row.role,
+    status: row.status,
+    invitedBy: row.invited_by,
+    createdAt: row.created_at.toISOString(),
+    expiresAt: row.expires_at.toISOString(),
+    acceptedAt: row.accepted_at ? row.accepted_at.toISOString() : null,
+  };
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
 }
 
 /**

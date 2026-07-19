@@ -124,6 +124,68 @@ export function parseSetRole(body: unknown): SetRoleBody {
   return { role, reason: parseReason(body) };
 }
 
+export interface InviteTeamMemberBody {
+  email: string;
+  fullName: string;
+  role: Role;
+  reason: string;
+}
+
+/** FR-IDN-05 — invite a teammate into the CALLER'S tenant (never a new one). */
+export function parseInviteTeamMember(body: unknown): InviteTeamMemberBody {
+  const input = asObject(body);
+  const role = requireString(input, 'role', { min: 1, max: 32 });
+  if (!isRole(role)) {
+    throw new BadRequestException(`role must be one of: ${ROLES.join(', ')}`);
+  }
+  return {
+    email: requireEmail(input, 'email'),
+    fullName: requireString(input, 'fullName', { min: 1, max: 200 }),
+    role,
+    reason: parseReason(body),
+  };
+}
+
+export interface AcceptInvitationBody {
+  inviteToken: string;
+  fullName: string;
+  password: string;
+}
+
+/** FR-IDN-05 — the invited person completing sign-up. Mirrors registration's
+ *  shape exactly, minus an organisation name: the tenant is fixed by the token. */
+export function parseAcceptInvitation(body: unknown): AcceptInvitationBody {
+  const input = asObject(body);
+  return {
+    inviteToken: requireString(input, 'inviteToken', { min: 1, max: 4096 }),
+    fullName: requireString(input, 'fullName', { min: 1, max: 200 }),
+    password: requirePassword(input, 'password'),
+  };
+}
+
+const DESIGNATIONS = ['dpo', 'grievance_officer'] as const;
+export type Designation = (typeof DESIGNATIONS)[number];
+
+export interface SetDesignationBody {
+  designation: Designation;
+  userId: string;
+  reason: string;
+}
+
+/** FR-IDN-04 — who is THE published DPO / Grievance Officer for this tenant. */
+export function parseSetDesignation(body: unknown): SetDesignationBody {
+  const input = asObject(body);
+  const designation = requireString(input, 'designation', { min: 1, max: 32 });
+  if (!(DESIGNATIONS as readonly string[]).includes(designation)) {
+    throw new BadRequestException(`designation must be one of: ${DESIGNATIONS.join(', ')}`);
+  }
+  return {
+    designation: designation as Designation,
+    userId: requireUuid(input, 'userId'),
+    reason: parseReason(body),
+  };
+}
+
 // --- primitives -------------------------------------------------------------
 
 function asObject(body: unknown): Record<string, unknown> {
@@ -157,6 +219,16 @@ function requireEmail(input: Record<string, unknown>, field: string): string {
     throw new BadRequestException(`${field} must be a valid email address.`);
   }
   return value;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function requireUuid(input: Record<string, unknown>, field: string): string {
+  const value = requireString(input, field, { min: 36, max: 36 });
+  if (!UUID_PATTERN.test(value)) {
+    throw new BadRequestException(`${field} must be a UUID.`);
+  }
+  return value.toLowerCase();
 }
 
 function requirePassword(input: Record<string, unknown>, field: string): string {

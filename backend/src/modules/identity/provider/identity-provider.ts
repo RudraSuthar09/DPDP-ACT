@@ -50,6 +50,15 @@ export interface IdentityProvider {
    * from it. Returns the session AND the one-time recovery codes.
    */
   confirmMfaEnrolment(input: CompleteMfaInput): Promise<MfaEnrolmentConfirmed>;
+
+  /**
+   * FR-IDN-05 — the invited person completing sign-up. Structurally identical
+   * to `registerOrganisation` (hash the password, create the user, provision
+   * nothing else, mint an MFA enrolment token) EXCEPT it never mints a tenant:
+   * the tenant is fixed by the invite token, and the new user joins THAT
+   * workspace with the role the invite offered.
+   */
+  acceptInvitation(input: AcceptInvitationInput): Promise<AcceptedInvitation>;
 }
 
 export const IDENTITY_PROVIDER = Symbol('IDENTITY_PROVIDER');
@@ -118,6 +127,21 @@ export interface MfaEnrolmentConfirmed {
    * email, which is the whole control defeated at its weakest moment.
    */
   recoveryCodes: string[];
+}
+
+export interface AcceptInvitationInput {
+  inviteToken: string;
+  fullName: string;
+  password: string;
+}
+
+export interface AcceptedInvitation {
+  tenantId: string;
+  organisationName: string;
+  userId: string;
+  role: Role;
+  /** Not a session, same as registration: MFA enrolment is not yet proven. */
+  mfaEnrolmentToken: string;
 }
 
 /** The authenticated user behind a request (GET /auth/me). */

@@ -1,10 +1,17 @@
+/*
+ * Minimal, unopinionated styling. Structure over polish — the visual design pass
+ * comes later. A neutral light theme, system fonts, plain borders. Just enough to
+ * make the shell legible and the audit table readable.
+ */
 :root {
-  --bg: #0b1020;
-  --card: #141a2e;
-  --border: #26304d;
-  --text: #e8ecf6;
-  --muted: #97a0bd;
-  --accent: #5b8def;
+  --bg: #f7f7f8;
+  --panel: #ffffff;
+  --border: #e2e2e6;
+  --text: #1a1a1e;
+  --muted: #6b6b76;
+  --accent: #2b5cc8;
+  --danger: #b42318;
+  --ok: #067647;
 }
 
 * {
@@ -17,40 +24,254 @@ body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
 }
 
-main {
-  max-width: 960px;
-  margin: 0 auto;
-  padding: 48px 24px;
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
 }
 
-.counters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
+h1 {
+  font-size: 1.5rem;
+  margin: 0 0 4px;
 }
-
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 20px;
-}
-
-.card .value {
-  font-size: 2rem;
-  font-weight: 700;
-}
-
-.card .label {
-  color: var(--muted);
-  font-size: 0.85rem;
-  margin-top: 4px;
+h2 {
+  font-size: 1.1rem;
+  margin: 0 0 8px;
 }
 
 .muted {
   color: var(--muted);
+}
+
+/* --- forms --- */
+label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 12px 0 4px;
+}
+input,
+select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+button {
+  font: inherit;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.9rem;
+  margin-top: 10px;
+}
+.notice {
+  background: #fff8e6;
+  border: 1px solid #f0d98c;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 0.9rem;
+  margin-top: 12px;
+}
+.mono {
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  word-break: break-all;
+}
+
+/* --- centered auth card --- */
+.auth-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px;
+}
+
+/* --- app shell --- */
+.shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+.sidebar {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sidebar .brand {
+  font-weight: 700;
+  padding: 4px 8px 14px;
+}
+.nav-section {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 14px 8px 4px;
+}
+.nav-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--text);
+}
+.nav-item:hover {
+  text-decoration: none;
+  background: var(--bg);
+}
+.nav-item.current {
+  background: #eaf0fb;
+  color: var(--accent);
+  font-weight: 600;
+}
+.nav-item.disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.nav-item .tag {
+  font-size: 0.65rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.topbar .who {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.content {
+  padding: 24px;
+}
+
+/* --- table --- */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 16px;
+}
+.toolbar .field {
+  display: flex;
+  flex-direction: column;
+}
+.toolbar label {
+  margin: 0 0 4px;
+}
+.toolbar input,
+.toolbar select {
+  width: auto;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.88rem;
+}
+th,
+td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th {
+  background: var(--bg);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  position: sticky;
+  top: 0;
+}
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.badge.success {
+  background: #e7f5ee;
+  color: var(--ok);
+}
+.badge.denied {
+  background: #fdecea;
+  color: var(--danger);
+}
+.badge.error {
+  background: #fdecea;
+  color: var(--danger);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
 }

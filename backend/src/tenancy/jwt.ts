@@ -15,13 +15,20 @@ export const JWT_AUDIENCE = 'dpdp-api';
  *   mfa_challenge — password passed, MFA has NOT. It exists only to carry the
  *                   half-finished login between POST /auth/login and
  *                   POST /auth/mfa/verify.
+ *   invite        — an offer to join an EXISTING tenant with a specific role
+ *                   (FR-IDN-05), carried between POST /users/invite and
+ *                   POST /auth/invitations/accept. Not a session and not a
+ *                   challenge: it names no user (none exists yet), only an
+ *                   invitation row, a tenant, and an email.
  *
  * An `mfa_challenge` that could be presented as a bearer token would reduce MFA
  * to a suggestion: the attacker with the password would simply skip the second
  * step. `verifyTenantJwt` therefore demands an exact type match and defaults to
- * `access`, so the dangerous case has to be asked for explicitly, by name.
+ * `access`, so the dangerous case has to be asked for explicitly, by name. The
+ * same reasoning is why `invite` cannot verify as anything else: it grants no
+ * access on its own, and must never be accepted where a session is expected.
  */
-export type TokenType = 'access' | 'mfa_challenge';
+export type TokenType = 'access' | 'mfa_challenge' | 'invite';
 
 /**
  * The claims Seam S1 requires from an authenticated token. `tenant_id` is the
@@ -74,4 +81,50 @@ export function verifyTenantJwt(
     role: typeof decoded.role === 'string' ? decoded.role : undefined,
     typ: expectedType,
   };
+}
+
+/**
+ * An `invite` token's claims. Shaped differently from `TenantJwtClaims`
+ * on purpose: `sub` here is the invitation row's id (there is no user yet), and
+ * `email`/`role` are the OFFER the invite carries, not a granted identity — the
+ * accept endpoint still re-checks the invitation row itself before trusting it.
+ */
+export interface InviteJwtClaims {
+  invitationId: string;
+  tenantId: string;
+  email: string;
+  role: string;
+}
+
+/** Verify an invite token. Throws if invalid/expired/wrong type — the same
+ *  fail-closed shape as `verifyTenantJwt`. */
+export function verifyInviteJwt(token: string, secret: string): InviteJwtClaims {
+  if (!secret) {
+    throw new Error('JWT secret is not configured');
+  }
+  const decoded = jwt.verify(token, secret, {
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+    algorithms: ['HS256'],
+  }) as JwtPayload;
+
+  if (decoded.typ !== 'invite') {
+    throw new Error(`Expected an invite token, got ${String(decoded.typ)}`);
+  }
+  const tenantId = decoded.tenant_id;
+  const email = decoded.email;
+  const role = decoded.role;
+  if (
+    typeof decoded.sub !== 'string' ||
+    !decoded.sub ||
+    typeof tenantId !== 'string' ||
+    !tenantId ||
+    typeof email !== 'string' ||
+    !email ||
+    typeof role !== 'string' ||
+    !role
+  ) {
+    throw new Error('Invite token is missing required claims');
+  }
+  return { invitationId: decoded.sub, tenantId, email, role };
 }

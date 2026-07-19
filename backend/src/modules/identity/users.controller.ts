@@ -13,7 +13,13 @@ import { TenantGuard } from '../../tenancy/tenant.guard';
 import { Audited } from '../audit/audited.decorator';
 import { IdentityService } from './identity.service';
 import { Roles } from './rbac/roles.decorator';
-import { parseReason, parseSetRole, parseSetStatus } from './dto';
+import {
+  parseInviteTeamMember,
+  parseReason,
+  parseSetDesignation,
+  parseSetRole,
+  parseSetStatus,
+} from './dto';
 
 /**
  * Team and user lifecycle (FR-IDN-03, FR-IDN-05).
@@ -83,5 +89,63 @@ export class UsersController {
   @HttpCode(HttpStatus.OK)
   async reactivate(@Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
     return this.identity.reactivate(id, parseReason(body));
+  }
+
+  // --- Invitations (FR-IDN-05) ----------------------------------------------
+
+  /**
+   * Invite a teammate into THIS tenant (never a new one — see POST
+   * /auth/register for that). Owner and DPO only, same gate as suspend/remove:
+   * both are ways of shaping who has access. Stage 1 has no outbound email
+   * (NotifyModule is a skeleton), so the response hands back the invite link
+   * directly for the admin to send — the same pattern registration already
+   * uses for `mfaEnrolmentToken`.
+   */
+  @Post('invite')
+  @Roles('owner', 'dpo')
+  @Audited('identity.user.invited')
+  @HttpCode(HttpStatus.CREATED)
+  async invite(@Body() body: unknown) {
+    const input = parseInviteTeamMember(body);
+    const { invitation, inviteToken } = await this.identity.inviteTeamMember(input);
+    return { invitation, inviteToken };
+  }
+
+  /** Every invitation this tenant has issued — pending, accepted, revoked. */
+  @Get('invitations')
+  @Roles('owner', 'dpo')
+  async listInvitations() {
+    return { invitations: await this.identity.listInvitations() };
+  }
+
+  /** Revoke a still-pending invite; a signed token already in someone's inbox
+   *  stops working immediately (accept-invite re-checks the row, not the JWT). */
+  @Post('invitations/:id/revoke')
+  @Roles('owner', 'dpo')
+  @Audited('identity.invitation.revoked')
+  @HttpCode(HttpStatus.OK)
+  async revokeInvitation(@Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
+    return this.identity.revokeInvitation(id, parseReason(body));
+  }
+
+  // --- Designations (FR-IDN-04) ---------------------------------------------
+
+  /** Which team member is the published DPO / Grievance Officer for this
+   *  tenant — readable by anyone authenticated (a GET; the read-only floor
+   *  does not apply). The future public portal reads a public projection of this. */
+  @Get('designations')
+  async listDesignations() {
+    return { designations: await this.identity.listDesignations() };
+  }
+
+  /** Owner-only: naming who represents the tenant is the same class of decision
+   *  as granting a role, so it does not delegate to DPO either. */
+  @Post('designations')
+  @Roles('owner')
+  @Audited('identity.designation.set')
+  @HttpCode(HttpStatus.OK)
+  async setDesignation(@Body() body: unknown) {
+    const { designation, userId, reason } = parseSetDesignation(body);
+    return this.identity.setDesignation(designation, userId, reason);
   }
 }

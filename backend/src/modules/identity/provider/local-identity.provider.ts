@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -18,6 +19,8 @@ import { generateTotpSecret, totpAuthUri, verifyTotp } from '../crypto/totp';
 import { TokenService } from '../token.service';
 import { UsersRepository, type UserRow } from '../users.repository';
 import type {
+  AcceptedInvitation,
+  AcceptInvitationInput,
   AuthenticateInput,
   AuthenticationResult,
   ChallengeSubject,
@@ -133,6 +136,85 @@ export class LocalIdentityProvider implements IdentityProvider {
     } catch (err) {
       // The whole transaction — organisation, Owner, all five module areas —
       // rolls back together, so a taken email cannot leave a half-built tenant.
+      if (isUniqueViolation(err)) {
+        throw new ConflictException('An account already exists for that email address.');
+      }
+      throw err;
+    }
+  }
+
+  // --- FR-IDN-05 — accepting an invitation into an EXISTING tenant ---------
+
+  async acceptInvitation(input: AcceptInvitationInput): Promise<AcceptedInvitation> {
+    let claims;
+    try {
+      claims = this.tokens.verifyInviteToken(input.inviteToken);
+    } catch {
+      throw new UnauthorizedException('This invitation link is invalid or has expired.');
+    }
+
+    const passwordHash = await this.hasher.hash(input.password);
+
+    try {
+      const result = await this.db.withTenantId(claims.tenantId, async (client) => {
+        const invitation = await this.users.findInvitationById(client, claims.invitationId);
+
+        // Re-check the ROW, not just the token: this is what makes a revoked
+        // invite actually stop working even though the bearer JWT itself
+        // remains cryptographically valid until it expires (same reasoning as
+        // "removed" users — the credential is not the source of truth).
+        if (
+          !invitation ||
+          invitation.status !== 'pending' ||
+          invitation.email !== claims.email ||
+          invitation.expires_at.getTime() <= Date.now()
+        ) {
+          throw new BadRequestException(
+            'This invitation is no longer valid. Ask an admin to send a new one.',
+          );
+        }
+
+        const user = await this.users.insertUser(client, {
+          tenantId: claims.tenantId,
+          email: invitation.email,
+          fullName: input.fullName,
+          passwordHash,
+          role: invitation.role,
+        });
+        await this.users.markInvitationAccepted(client, invitation.id, user.id);
+
+        const profile = await this.users.findProfile(client, user.id);
+
+        this.audit.annotate({
+          // The invitee performed this action — there is no session to attribute
+          // it to otherwise, exactly as with organisation self-registration.
+          actorId: user.id,
+          actorLabel: user.email,
+          targetType: 'invitation',
+          targetId: invitation.id,
+          reason: `Invitation accepted (invited by user ${invitation.invited_by})`,
+          beforeState: { status: 'pending', email: invitation.email, role: invitation.role },
+          afterState: { status: 'accepted', userId: user.id },
+        });
+
+        return { user, organisationName: profile?.organisation_name ?? '' };
+      });
+
+      this.logger.log(`Invitation ${claims.invitationId} accepted by new user ${result.user.id}`);
+
+      return {
+        tenantId: claims.tenantId,
+        organisationName: result.organisationName,
+        userId: result.user.id,
+        role: result.user.role,
+        // NOT a session — MFA is still unenrolled, same as registerOrganisation.
+        mfaEnrolmentToken: this.tokens.mintMfaChallengeToken({
+          userId: result.user.id,
+          tenantId: claims.tenantId,
+          role: result.user.role,
+        }),
+      };
+    } catch (err) {
       if (isUniqueViolation(err)) {
         throw new ConflictException('An account already exists for that email address.');
       }
