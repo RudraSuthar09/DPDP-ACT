@@ -22,6 +22,7 @@
     "dev:api": "pnpm --filter @dpdp/api dev",
     "dev:web": "pnpm --filter @dpdp/web dev",
     "smoke": "node scripts/smoke.mjs",
+    "request:demo": "node scripts/request-substrate-demo.mjs",
     "migrate": "pnpm --filter @dpdp/api migrate",
     "migrate:up": "pnpm --filter @dpdp/api migrate:up",
     "migrate:down": "pnpm --filter @dpdp/api migrate:down"

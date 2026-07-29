@@ -4,6 +4,7 @@ import type { NextFunction, Request, Response } from 'express';
 import type { TenantContext } from '@dpdp/shared';
 import { TenantContextService } from './tenant-context.service';
 import { TenantDatabaseService } from '../database/database.service';
+import { FixedWindowRateLimiter, type RateLimitRule } from './fixed-window-rate-limiter';
 
 /** Attached to the request once a key resolves, so the consent-public
  * controller can label the audit entry without re-deriving anything. */
@@ -11,8 +12,7 @@ export interface RequestWithConsentApiKey extends Request {
   consentApiKeyId?: string;
 }
 
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 120;
+const API_KEY_RATE_LIMIT: RateLimitRule = { limit: 120, windowMs: 60_000 };
 const PUBLIC_PATH_PREFIX = '/consent/public/';
 
 /**
@@ -35,18 +35,17 @@ const PUBLIC_PATH_PREFIX = '/consent/public/';
  * "what establishes tenant context, and in what order" reviewable in one spot
  * without coupling the generic middleware to one module's path prefix.
  *
- * Rate limiting: a fixed-window, in-memory counter per key id. This is a
- * Stage-1 stand-in, not a real limiter — it resets on restart and is scoped to
- * ONE process. The moment there is more than one app instance, each holds its
- * own counter and the effective limit multiplies silently. There is no Redis
- * anywhere in this backend (the real job queue is pg-boss, not BullMQ/Redis,
- * despite the master doc) so adding one for this alone would be disproportionate
- * for Stage 1. Documented here so it isn't silently forgotten, the same way the
- * audit chain documents itself as tamper-evident-not-tamper-proof-yet.
+ * Rate limiting: a fixed-window, in-memory counter per key id, via the shared
+ * FixedWindowRateLimiter — the same limiter the public request portal
+ * (PortalTenantMiddleware, FR-GRV-01) uses, so the platform's two
+ * unauthenticated surfaces cannot drift apart. Its doc comment carries the full
+ * account of what this Stage-1 stand-in does and does not guarantee (in short:
+ * one process's memory, so it resets on restart and multiplies across
+ * instances).
  */
 @Injectable()
 export class PublicApiKeyMiddleware implements NestMiddleware {
-  private readonly hits = new Map<string, { count: number; resetAt: number }>();
+  private readonly rateLimiter = new FixedWindowRateLimiter();
 
   constructor(
     private readonly tenantContext: TenantContextService,
@@ -88,7 +87,7 @@ export class PublicApiKeyMiddleware implements NestMiddleware {
       return;
     }
 
-    if (this.isRateLimited(resolved.keyId)) {
+    if (!this.rateLimiter.hit('consent_api_key', resolved.keyId, API_KEY_RATE_LIMIT).allowed) {
       next(new HttpException('Too many requests', HttpStatus.TOO_MANY_REQUESTS));
       return;
     }
@@ -111,16 +110,5 @@ export class PublicApiKeyMiddleware implements NestMiddleware {
     };
 
     this.tenantContext.run(context, () => next());
-  }
-
-  private isRateLimited(keyId: string): boolean {
-    const now = Date.now();
-    const entry = this.hits.get(keyId);
-    if (!entry || entry.resetAt <= now) {
-      this.hits.set(keyId, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-      return false;
-    }
-    entry.count += 1;
-    return entry.count > RATE_LIMIT_MAX_REQUESTS;
   }
 }

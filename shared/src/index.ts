@@ -10,3 +10,4 @@ export * from './seams';
 export * from './consent';
 export * from './consent-notices';
 export * from './dashboard';
+export * from './request';

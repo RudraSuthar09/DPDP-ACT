@@ -4,6 +4,7 @@ import type { Role } from '@dpdp/shared';
 export const ROLES_KEY = 'dpdp:roles';
 export const ALLOW_READ_ONLY_KEY = 'dpdp:allow-read-only';
 export const ALLOW_PUBLIC_KEY_KEY = 'dpdp:allow-public-key';
+export const PUBLIC_PORTAL_KEY = 'dpdp:public-portal';
 
 /**
  * Restrict a route to specific roles (FR-IDN-03).
@@ -50,3 +51,22 @@ export const AllowReadOnly = () => SetMetadata(ALLOW_READ_ONLY_KEY, true);
  * shared/src/domain.ts, not stretching this further.
  */
 export const AllowPublicKey = () => SetMetadata(ALLOW_PUBLIC_KEY_KEY, true);
+
+/**
+ * Mark a route as part of the PUBLIC REQUEST PORTAL (FR-GRV-01) — reachable by a
+ * member of the public with no login, no API key, and no identity of any kind.
+ *
+ * Like @AllowPublicKey this escapes the read-only floor, and for a related but
+ * NOT identical reason. @AllowPublicKey covers a caller who authenticated with a
+ * credential that simply has no human role attached. This covers a caller who
+ * did not authenticate at all, and is not going to: filing a grievance cannot
+ * require an account, because the person filing it is complaining about the
+ * organisation that would issue them one.
+ *
+ * They are separate decorators so the two situations stay separately greppable.
+ * "Which routes can an unauthenticated stranger reach?" is a question a security
+ * reviewer will ask, and it must have an exact answer — this decorator IS that
+ * answer, and PortalGuard refuses any route carrying it that was not resolved by
+ * PortalTenantMiddleware, so the marking cannot drift away from the reality.
+ */
+export const PublicPortal = () => SetMetadata(PUBLIC_PORTAL_KEY, true);

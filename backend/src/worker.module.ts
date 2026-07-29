@@ -6,6 +6,9 @@ import { WorkflowModule } from './modules/workflow/workflow.module';
 import { WorkflowWorker } from './modules/workflow/workflow.worker';
 import { NotifyModule } from './modules/notify/notify.module';
 import { WebhookDeliveryWorker } from './modules/notify/webhook-delivery.worker';
+import { DEADLINE_HANDLERS } from './modules/workflow/deadline-handler';
+import { RequestStoreModule } from './modules/request/request-store.module';
+import { RequestDeadlineHandler } from './modules/request/request-deadline.handler';
 
 /**
  * Root module for the worker process — the second Stage 1 container.
@@ -25,6 +28,18 @@ import { WebhookDeliveryWorker } from './modules/notify/webhook-delivery.worker'
  * loads the handler that actually signs the payload and calls a
  * client-controlled URL. NotifyModule is imported here for its repositories
  * (config/secrets/deliveries), not registered as a provider a second time.
+ *
+ * RequestDeadlineHandler is the third instance of the pattern, and the first to
+ * be registered through a token rather than called directly. WorkflowWorker no
+ * longer has an empty `onDeadline`: it dispatches to whichever DeadlineHandlers
+ * are bound to DEADLINE_HANDLERS, so the request substrate's SLA escalation
+ * ladder (FR-GRV-05) runs without the deadline substrate ever importing the
+ * domain that uses it (R2). Adding Breach's escalating alerts later is one more
+ * entry in the multi-provider array below and no change to WorkflowWorker at all.
+ *
+ * It imports RequestStoreModule — the worker-safe half — and NOT RequestModule,
+ * which pulls in IdentityModule and would boot-crash this process. That file
+ * explains why in full.
  */
 @Module({
   imports: [
@@ -33,7 +48,22 @@ import { WebhookDeliveryWorker } from './modules/notify/webhook-delivery.worker'
     DatabaseModule,
     WorkflowModule,
     NotifyModule,
+    RequestStoreModule,
   ],
-  providers: [WorkflowWorker, WebhookDeliveryWorker],
+  providers: [
+    WorkflowWorker,
+    WebhookDeliveryWorker,
+    RequestDeadlineHandler,
+    {
+      // One token, many handlers. Nest has no Angular-style `multi: true`, so
+      // the array is assembled here explicitly — which is arguably better: the
+      // complete list of things a fired deadline can trigger is one readable
+      // literal in the process that fires them. Breach's escalating alerts
+      // (FR-BRC-04) join by being injected and added to this array.
+      provide: DEADLINE_HANDLERS,
+      useFactory: (requests: RequestDeadlineHandler) => [requests],
+      inject: [RequestDeadlineHandler],
+    },
+  ],
 })
 export class WorkerModule {}

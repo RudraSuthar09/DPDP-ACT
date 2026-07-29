@@ -14,6 +14,7 @@ import { ConsentModule } from './modules/consent/consent.module';
 import { BreachModule } from './modules/breach/breach.module';
 import { GrievanceModule } from './modules/grievance/grievance.module';
 import { DPRequestModule } from './modules/dprequest/dprequest.module';
+import { RequestModule } from './modules/request/request.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { NotifyModule } from './modules/notify/notify.module';
@@ -35,6 +36,9 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     BreachModule,
     GrievanceModule,
     DPRequestModule,
+    // The substrate the two above share: public portal, OTP, the identity
+    // handoff, ticketing, SLA timers and escalation (FR-GRV-01/03/04/05).
+    RequestModule,
     // Cross-cutting modules
     WorkflowModule, // S3 — the deadline substrate Breach/Grievance/DPRequest share
     AuditModule,

@@ -89,6 +89,7 @@ export class IdentityService {
         fullName: row.full_name,
         role: row.role,
         organisationName: row.organisation_name,
+        portalSlug: row.portal_slug,
         mfaEnrolled: row.mfa_enrolled_at !== null,
       };
     });
@@ -421,7 +422,8 @@ export class IdentityService {
     });
   }
 
-  /** The tenant's current designations — at most one row per kind (DPO, Grievance Officer). */
+  /** The tenant's current designations — at most one row per kind (DPO, Grievance
+   *  Officer, escalation contact). */
   async listDesignations(): Promise<TeamDesignation[]> {
     return this.db.withTenant(async (client) => {
       const rows = await this.users.listDesignations(client);
@@ -430,6 +432,47 @@ export class IdentityService {
         userId: r.user_id,
         setAt: r.set_at.toISOString(),
       }));
+    });
+  }
+
+  /**
+   * Resolve an escalation ladder to the people who currently hold each rung
+   * (FR-GRV-05), with the contact address each one would be alerted at.
+   *
+   * This exists so the request substrate never reads `org_designations` or
+   * `users` itself (R2). It asks identity a question in identity's own terms —
+   * "who is your DPO, and how do I reach them?" — and gets back a contract, not
+   * table rows.
+   *
+   * An unheld or non-active rung resolves to `null` rather than throwing. A
+   * tenant that has not named a DPO yet must still be able to take grievances,
+   * and the honest outcome is an escalation recorded as undeliverable — which
+   * someone can see and fix — not a request that could not be filed, or a rung
+   * silently skipped as though it had been handled.
+   */
+  async resolveEscalationLadder(
+    rungs: readonly Designation[],
+  ): Promise<Map<Designation, { userId: string; email: string; fullName: string } | null>> {
+    return this.db.withTenant(async (client) => {
+      const designations = await this.users.listDesignations(client);
+      const users = await this.users.listUsers(client);
+      const byId = new Map(users.map((u) => [u.id, u]));
+
+      const resolved = new Map<
+        Designation,
+        { userId: string; email: string; fullName: string } | null
+      >();
+      for (const rung of rungs) {
+        const holder = designations.find((d) => d.designation === rung);
+        const user = holder ? byId.get(holder.user_id) : undefined;
+        resolved.set(
+          rung,
+          user && user.status === 'active'
+            ? { userId: user.id, email: user.email, fullName: user.full_name }
+            : null,
+        );
+      }
+      return resolved;
     });
   }
 }

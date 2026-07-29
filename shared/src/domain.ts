@@ -80,4 +80,29 @@ export interface TenantContext {
   userId: string;
   role: Role;
   correlationId: string;
+  /**
+   * True when the request reached a tenant WITHOUT any actor behind it — the
+   * public request portal, where a member of the public files a grievance with
+   * no login (FR-GRV-01). The tenant is real and fully RLS-bound; the person is
+   * unknown and must stay that way.
+   *
+   * It exists because `userId` is a `string` that ~35 call sites pass straight
+   * into a `created_by`/`set_by` column, and widening it to `string | null`
+   * everywhere would trade one honest flag for thirty nullable columns. Instead
+   * anonymous contexts carry the nil UUID (see ANONYMOUS_TENANT_USER_ID) — a
+   * value that satisfies the type and violates the FK, so anything that DID try
+   * to write it as an actor fails loudly rather than attributing a public
+   * submission to a person who does not exist.
+   *
+   * The one place that must honour it is the audit interceptor, which writes
+   * `actor_id = NULL` + an anonymous actor label instead of `ctx.userId`.
+   */
+  anonymous?: boolean;
 }
+
+/**
+ * The `userId` an anonymous (public portal) tenant context carries. The nil
+ * UUID: never a real user, and guaranteed to fail `REFERENCES users (id)` if it
+ * ever reaches a column that expects an actor. See `TenantContext.anonymous`.
+ */
+export const ANONYMOUS_TENANT_USER_ID = '00000000-0000-0000-0000-000000000000';

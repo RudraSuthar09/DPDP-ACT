@@ -163,7 +163,15 @@ export class AuditInterceptor implements NestInterceptor {
       correlationId: ctx?.correlationId ?? this.correlationIdFrom(request),
       // The service may name the actor when the request could not (registration
       // creates the very user who is acting).
-      actorId: annotation.actorId ?? ctx?.userId ?? null,
+      //
+      // An ANONYMOUS context (the public request portal — a member of the public
+      // filing a grievance with no login) has no actor at all, and its
+      // `ctx.userId` is a placeholder that exists only to satisfy the type. It
+      // must never be written here: it would attribute a public submission to a
+      // user that does not exist, and the FK on actor_id would reject the whole
+      // transaction — taking the submission down with it. actor_id NULL +
+      // actorLabel is the same shape a failed login already uses.
+      actorId: annotation.actorId ?? (ctx?.anonymous ? null : ctx?.userId) ?? null,
       actorLabel: annotation.actorLabel ?? null,
       targetType: annotation.targetType ?? null,
       targetId: annotation.targetId ?? null,

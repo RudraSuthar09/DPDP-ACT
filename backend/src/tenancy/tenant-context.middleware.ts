@@ -5,6 +5,7 @@ import type { NextFunction, Request, Response } from 'express';
 import type { Role, TenantContext } from '@dpdp/shared';
 import { TenantContextService } from './tenant-context.service';
 import { verifyTenantJwt } from './jwt';
+import { PORTAL_PATH_PREFIX, portalRequestPath } from './portal-tenant.middleware';
 
 /**
  * The edge of Seam S1. For every request it:
@@ -26,6 +27,25 @@ export class TenantContextMiddleware implements NestMiddleware {
   ) {}
 
   use(req: Request, _res: Response, next: NextFunction): void {
+    // The public request portal (FR-GRV-01) is the one place a Bearer token must
+    // NOT be read as a session, for two independent reasons:
+    //
+    //   1. The bearer token there is a PORTAL token (typ='portal'), minted after
+    //      an OTP round-trip and scoped to one ticket. verifyTenantJwt demands
+    //      typ='access', so without this skip every authenticated portal read
+    //      would 401 — the token would be rejected by the middleware before the
+    //      controller that knows how to check it ever ran.
+    //   2. More importantly, a STAFF access token must not establish tenant
+    //      context on a portal route either. PortalGuard already refuses a
+    //      request the portal edge did not resolve; skipping here means such a
+    //      request cannot even acquire a context to be refused with, so "portal
+    //      routes are reachable by exactly one kind of caller" is true of the
+    //      middleware chain and not only of the guard.
+    if (portalRequestPath(req).startsWith(PORTAL_PATH_PREFIX)) {
+      next();
+      return;
+    }
+
     const correlationId = req.header('x-correlation-id') ?? randomUUID();
     const authorization = req.header('authorization');
 

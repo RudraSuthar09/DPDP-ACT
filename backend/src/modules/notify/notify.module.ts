@@ -5,6 +5,7 @@ import { WebhookConfigRepository } from './webhook-config.repository';
 import { WebhookSecretsRepository } from './webhook-secrets.repository';
 import { WebhookDeliveriesRepository } from './webhook-deliveries.repository';
 import { WebhookDeliveryService } from './webhook-delivery.service';
+import { NotificationDispatcher } from './notification-dispatcher';
 
 /**
  * Notifications. Transactional email (deadline alerts, acknowledgements, breach
@@ -47,11 +48,22 @@ import { WebhookDeliveryService } from './webhook-delivery.service';
     WebhookSecretsRepository,
     WebhookDeliveriesRepository,
     WebhookDeliveryService,
+    // Transactional email/SMS (FR-GRV-01/05, FR-DSH-02/03). Unlike the webhook
+    // pipeline this has no worker half: an OTP is worthless a minute late, so it
+    // is sent inline and best-effort rather than queued. Registered in BOTH
+    // processes — the API sends OTPs, the worker sends escalation alerts.
+    NotificationDispatcher,
   ],
   // Repositories are exported too (not just the service) so WorkerModule's
   // WebhookDeliveryWorker — a provider of a DIFFERENT module — can use them
   // without this module reaching into the worker's process, mirroring exactly
   // how WorkflowModule exports WorkflowJobsRepository for WorkflowWorker.
-  exports: [WebhookDeliveryService, WebhookConfigRepository, WebhookSecretsRepository, WebhookDeliveriesRepository],
+  exports: [
+    WebhookDeliveryService,
+    WebhookConfigRepository,
+    WebhookSecretsRepository,
+    WebhookDeliveriesRepository,
+    NotificationDispatcher,
+  ],
 })
 export class NotifyModule {}

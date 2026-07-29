@@ -163,7 +163,14 @@ export function parseAcceptInvitation(body: unknown): AcceptInvitationBody {
   };
 }
 
-const DESIGNATIONS = ['dpo', 'grievance_officer'] as const;
+/**
+ * `escalation_contact` joined these when the shared request substrate needed a
+ * third rung above the DPO for its escalation ladder (FR-GRV-05). It is the same
+ * kind of fact as the other two — one named person per tenant — so it lives in
+ * the same place rather than in a request-module table that would duplicate and
+ * eventually contradict it. Mirrored by the CHECK on org_designations.
+ */
+const DESIGNATIONS = ['dpo', 'grievance_officer', 'escalation_contact'] as const;
 export type Designation = (typeof DESIGNATIONS)[number];
 
 export interface SetDesignationBody {

@@ -21,6 +21,13 @@ export interface ConsentApiKeyResolution {
   revokedAt: string | null;
 }
 
+/** What the public-portal peephole returns: the tenant, and the name a public
+ *  page prints. Nothing else about the organisation leaves the database. */
+export interface PortalTenantResolution {
+  tenantId: string;
+  name: string;
+}
+
 /**
  * The tenant-scoped database gateway. Every module that touches the database
  * does so through this service — there is deliberately NO generic `query()` that
@@ -222,6 +229,31 @@ export class TenantDatabaseService implements OnModuleDestroy {
       'SELECT tenant_id AS "tenantId", key_id AS "keyId", created_by AS "createdBy", ' +
         'revoked_at AS "revokedAt" FROM app.resolve_public_api_key($1)',
       [keyHash],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The third pre-tenant peephole: "which tenant does this public portal URL
+   * belong to?" (FR-GRV-01). Same chicken-and-egg as resolveLogin and
+   * resolveConsentApiKey — the answer IS the tenant.
+   *
+   * It is NOT the same kind of question as the other two, and that difference is
+   * worth naming here rather than only in the middleware. resolveLogin and
+   * resolveConsentApiKey take CREDENTIALS: an email about to be checked against
+   * a password, a hash that authorises writes. This takes a slug out of a URL
+   * that anyone may know and that authorises nothing at all. It returns a tenant
+   * id and a display name because a public page has to say whose portal it is —
+   * and returns nothing else for the same reason the other two return only ids.
+   *
+   * Backed by app.org_directory, an un-RLS'd shadow of `organisations` that
+   * dpdp_app holds no privileges on; the exact slug is the only thing that gets
+   * a row back.
+   */
+  async resolvePortalSlug(slug: string): Promise<PortalTenantResolution | null> {
+    const { rows } = await this.pool.query<PortalTenantResolution>(
+      'SELECT tenant_id AS "tenantId", name FROM app.resolve_portal_slug($1)',
+      [slug.trim().toLowerCase()],
     );
     return rows[0] ?? null;
   }

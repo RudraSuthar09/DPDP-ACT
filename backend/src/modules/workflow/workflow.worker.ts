@@ -1,8 +1,10 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationBootstrap,
   OnModuleDestroy,
+  Optional,
 } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import type { WorkflowKind } from '@dpdp/shared';
@@ -10,6 +12,7 @@ import { TenantDatabaseService } from '../../database/database.service';
 import { PgBossService } from './pgboss.service';
 import { WorkflowJobsRepository } from './workflow-jobs.repository';
 import { TICKER_INTERVAL_MS, WORKFLOW_QUEUE } from './workflow.constants';
+import { DEADLINE_HANDLERS, type DeadlineHandler } from './deadline-handler';
 
 interface DeadlinePayload {
   tenantId: string;
@@ -45,6 +48,13 @@ export class WorkflowWorker implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly pgboss: PgBossService,
     private readonly repo: WorkflowJobsRepository,
     private readonly db: TenantDatabaseService,
+    // @Optional: a worker with no handlers registered is a legitimate
+    // configuration (it was the only one until FR-GRV-05), and it still fires
+    // deadlines and keeps the register honest. Nest injects nothing rather than
+    // failing to boot.
+    @Optional()
+    @Inject(DEADLINE_HANDLERS)
+    private readonly handlers: DeadlineHandler[] = [],
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -120,18 +130,29 @@ export class WorkflowWorker implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   /**
-   * What a fired deadline DOES. Stage 1: nothing beyond the state transition and a
-   * log line — enough to prove the seam. This is the single place Breach's
-   * escalating alerts (FR-BRC-04), Grievance's SLA breach, and DPRequest's
-   * overdue escalation hook in, each dispatched by `kind`, all reusing the notify
-   * module (R2). Deliberately empty for now: the seam is the point, not the payload.
+   * What a fired deadline DOES — dispatched to whichever DeadlineHandlers claim
+   * this kind. Breach's escalating alerts (FR-BRC-04), the request substrate's
+   * SLA escalation ladder (FR-GRV-05), and DPRequest's overdue escalation all
+   * arrive here, and this method knows the name of none of them: they register
+   * themselves in WorkerModule against the DEADLINE_HANDLERS token, so the
+   * deadline substrate never depends on the domains that depend on it (R2).
+   *
+   * A handler throwing is NOT swallowed. It propagates, `fire` rolls the whole
+   * transaction back — including markFired — and the deadline goes back to
+   * `scheduled` for the reconciliation ticker to retry. A silently absorbed
+   * failure here would be a deadline that reports itself fired and did nothing,
+   * which is the one outcome a deadline register exists to make impossible.
    */
   private async onDeadline(
-    _client: PoolClient,
-    _tenantId: string,
-    _workflowId: string,
-    _kind: WorkflowKind,
+    client: PoolClient,
+    tenantId: string,
+    workflowId: string,
+    kind: WorkflowKind,
   ): Promise<void> {
-    // no-op in Stage 1
+    for (const handler of this.handlers) {
+      if (handler.handles(kind)) {
+        await handler.onDeadline(client, { tenantId, workflowId, kind });
+      }
+    }
   }
 }

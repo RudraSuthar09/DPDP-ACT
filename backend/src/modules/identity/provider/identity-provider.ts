@@ -152,5 +152,15 @@ export interface AuthenticatedUser {
   fullName: string;
   role: Role;
   organisationName: string;
+  /**
+   * The tenant's public request-portal identifier (FR-GRV-01). Staff need it to
+   * know — and to publish — the address their data principals file grievances
+   * at, which is otherwise a fact stored about them that they cannot see.
+   *
+   * Safe to return here and NOT a credential: it authorises nothing (see
+   * portal-tenant.middleware.ts). It is on the profile rather than on a portal
+   * endpoint because it is a fact about the caller's own organisation.
+   */
+  portalSlug: string;
   mfaEnrolled: boolean;
 }
