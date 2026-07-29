@@ -41,7 +41,7 @@ export class PostgresEventSink implements EventSink {
         deduplicated: boolean;
       }>(
         `SELECT event_id, event_recorded_at, deduplicated
-           FROM app.consent_append($1, $2, $3, $4, $5, $6, $7, $8)`,
+           FROM app.consent_append($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           event.subjectRef,
           event.purposeId,
@@ -50,6 +50,7 @@ export class PostgresEventSink implements EventSink {
           event.occurredAt,
           event.source,
           event.evidenceHash,
+          event.evidenceHashOrigin,
           event.idempotencyKey,
         ],
       );

@@ -44,6 +44,9 @@ import { AUDIT_SINK, PostgresAuditSink } from './postgres-audit.sink';
     // out loudly (@NoAudit) to escape.
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
   ],
-  exports: [AuditContextService],
+  // AuditContextService (annotate-only, no DB access) and AuditVerifierService
+  // (READ-only: list + verifyChain) are both safe to export — neither can write
+  // a row. AUDIT_SINK is the one thing that must never appear here.
+  exports: [AuditContextService, AuditVerifierService],
 })
 export class AuditModule {}

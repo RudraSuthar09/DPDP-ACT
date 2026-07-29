@@ -23,6 +23,11 @@ coverage/
 npm-debug.log*
 pnpm-debug.log*
 
+# runtime-generated evidence (local WORM-artifact store for CSV/Excel import — see
+# backend/src/modules/inventory/import-evidence.store.ts). Per-environment output,
+# not source.
+backend/var/
+
 # editor / OS
 .vscode/*
 !.vscode/extensions.json

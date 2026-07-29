@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { useAuth } from '../../lib/auth';
-import { MODULE_NAV, PLATFORM_NAV, type NavItem } from '../../lib/nav';
+import { MODULE_NAV, OVERVIEW_NAV, PLATFORM_NAV, type NavItem } from '../../lib/nav';
 
 /**
  * The authenticated, tenant-aware shell. Every page under (app) renders inside
@@ -33,6 +33,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">DPDP Platform</div>
+
+        {OVERVIEW_NAV.map((item) => (
+          <NavLink key={item.href} item={item} pathname={pathname} />
+        ))}
 
         <div className="nav-section">Modules</div>
         {MODULE_NAV.map((item) => (

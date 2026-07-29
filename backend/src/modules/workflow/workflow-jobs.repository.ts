@@ -117,6 +117,27 @@ export class WorkflowJobsRepository {
   }
 
   /**
+   * How many of this tenant's deadlines are still ticking, by kind — the "open
+   * incidents/tickets/requests" counters on the compliance dashboard
+   * (FR-DSH-01). Breach/Grievance/DPRequest have no ticket table of their own
+   * yet (Stage 1 demonstrates only the shared deadline substrate, S3); this
+   * job's `status = 'scheduled'` is the only durable signal Stage 1 has for
+   * "still open" — a deadline that fired, was cancelled, or failed is no
+   * longer counted, whether or not a closing action ever ran. That is an
+   * honest proxy, not the real ticket lifecycle (`WorkflowStatus`), which
+   * arrives when each module gets its own entity.
+   */
+  countOpenByKind(kind: WorkflowKind): Promise<number> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM workflow_jobs WHERE kind = $1 AND status = 'scheduled'`,
+        [kind],
+      );
+      return Number(rows[0]?.count ?? 0);
+    });
+  }
+
+  /**
    * The cross-tenant sweep for the reconciliation ticker — due deadlines across
    * ALL tenants, ids and kind only (no business data, I1). Runs untenanted
    * because the question ("which tenants have a deadline due?") cannot be asked

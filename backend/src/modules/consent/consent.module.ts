@@ -1,9 +1,17 @@
 import { Module } from '@nestjs/common';
+import { IdentityModule } from '../identity/identity.module';
+import { NotifyModule } from '../notify/notify.module';
+import { TenantConsentSecretsRepository } from './tenant-consent-secrets.repository';
 import { ConsentController } from './consent.controller';
 import { ConsentService } from './consent.service';
 import { ConsentRepository } from './consent.repository';
 import { SubjectRefHasher } from './subject-ref';
 import { EVENT_SINK, PostgresEventSink } from './postgres-event-sink';
+import { ConsentNoticesController } from './consent-notices.controller';
+import { ConsentNoticesService } from './consent-notices.service';
+import { ConsentNoticesRepository } from './consent-notices.repository';
+import { ConsentProofController } from './consent-proof.controller';
+import { ConsentProofService } from './consent-proof.service';
 
 /**
  * Consent Register — Seam S2. Ingests consent events, pseudonymises the subject
@@ -28,12 +36,29 @@ import { EVENT_SINK, PostgresEventSink } from './postgres-event-sink';
  * ---------------------------------------------------------------------------
  */
 @Module({
-  controllers: [ConsentController],
+  // IdentityModule for SECRET_CIPHER — per-tenant subject-ref secrets are
+  // encrypted at rest with the same cipher that protects TOTP secrets, rather
+  // than this module growing a second one (NFR-SEC-03). NotifyModule for
+  // WebhookDeliveryService — every consent change schedules a signed webhook
+  // (FR-CON-07) through ConsentService, never by this module reaching into
+  // notify's tables directly (R2).
+  imports: [IdentityModule, NotifyModule],
+  controllers: [ConsentController, ConsentNoticesController, ConsentProofController],
   providers: [
     ConsentService,
     ConsentRepository,
     SubjectRefHasher,
+    TenantConsentSecretsRepository,
     { provide: EVENT_SINK, useClass: PostgresEventSink },
+    ConsentNoticesService,
+    ConsentNoticesRepository,
+    ConsentProofService,
   ],
+  // ConsentService only — never ConsentRepository, ConsentNoticesRepository, or
+  // EVENT_SINK. It exposes the active-consents counter (FR-DSH-01) to the
+  // Dashboard module without letting anyone reach the event table or the write
+  // path directly (R2/R3). Notices have no cross-module consumer yet, so
+  // nothing of theirs is exported either — add it the day something needs it.
+  exports: [ConsentService],
 })
 export class ConsentModule {}

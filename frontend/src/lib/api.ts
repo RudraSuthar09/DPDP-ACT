@@ -35,7 +35,7 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   /** Defaults to true — attach the bearer token if we have one. */
   auth?: boolean;
@@ -78,4 +78,56 @@ function errorMessage(data: unknown): string | null {
     if (typeof m === 'string') return m;
   }
   return null;
+}
+
+/**
+ * Fetch a binary response (a generated file, not JSON) and trigger a real
+ * browser download — same auth/error handling as apiFetch, but for endpoints
+ * like RoPA export that return a file body instead of JSON. The filename is
+ * supplied by the caller rather than read from Content-Disposition: that
+ * response header isn't CORS-exposed cross-origin by default, and the caller
+ * already knows enough (org name, format) to build a good one anyway.
+ */
+export async function downloadFile(
+  path: string,
+  filename: string,
+  options: RequestOptions = {},
+): Promise<void> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options.auth !== false) {
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+  } catch {
+    throw new ApiError(0, `Could not reach the API at ${API_URL}. Is it running?`);
+  }
+
+  if (!res.ok) {
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      // Non-JSON error body — fall through with data left null.
+    }
+    throw new ApiError(res.status, errorMessage(data) ?? res.statusText);
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }

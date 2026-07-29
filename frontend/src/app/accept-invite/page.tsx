@@ -91,7 +91,7 @@ function AcceptInviteForm() {
             <p className="muted">Joining {accepted.organisationName}.</p>
             <MfaEnroll
               challengeToken={accepted.mfaEnrolmentToken}
-              onDone={() => router.replace('/audit')}
+              onDone={() => router.replace('/dashboard')}
             />
           </>
         )}

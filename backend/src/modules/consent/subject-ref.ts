@@ -1,46 +1,46 @@
 import { createHmac } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { TenantConsentSecretsRepository } from './tenant-consent-secrets.repository';
 
 /**
  * Subject-reference pseudonymisation (FR-CON-04, invariant I2).
  *
- * The client's internal customer id must NEVER be stored on the platform. What we
- * store is an HMAC of it — and the direction matters: HMAC is one-way, so from a
- * stored `subject_ref` the platform cannot recover the customer id, while the
- * client, who holds the id, can re-derive the same ref to look up their own
- * events. That asymmetry is the whole of I2.
+ * The client's internal customer id must NEVER be stored on the platform. What
+ * we store is an HMAC of it — and the direction matters: HMAC is one-way, so
+ * from a stored `subject_ref` the platform cannot recover the customer id,
+ * while the client, who holds the id, can re-derive the same ref to look up
+ * their own events. That asymmetry is the whole of I2.
  *
- * Two levels, on purpose:
+ *   subjectRef = HMAC-SHA256(tenantSecret, customerId)
  *
- *   tenantKey  = HMAC(pepper, tenantId)
- *   subjectRef = HMAC(tenantKey, customerId)
+ * ---------------------------------------------------------------------------
+ * WHY THE SECRET IS STORED PER TENANT, not derived from one deployment pepper
  *
- * The per-tenant derived key means a `subject_ref` is meaningless outside its
- * tenant (the same customer id in two tenants hashes to two unrelated refs), and
- * that the refs of one tenant cannot be reproduced without that tenant's derived
- * key. The pepper is a single deployment secret today; per-tenant secrets in KMS
- * are the Stage-2+ story, and this two-level shape is already what makes that a
- * key-storage change rather than a re-hash of every event ever written.
+ * This used to compute `tenantKey = HMAC(SUBJECT_REF_HMAC_PEPPER, tenantId)` —
+ * per-tenant in effect, but with all tenants' keys reproducible from a single
+ * environment variable. Three things were wrong with that, and none of them is
+ * visible until it matters:
+ *
+ *   * One leaked pepper reproduces EVERY tenant's subject refs, not one's.
+ *   * Rotating it invalidates every tenant's references simultaneously — there
+ *     is no way to rotate one compromised tenant.
+ *   * The master doc says "HMAC'd with a per-tenant secret", and Stage 2 wants
+ *     per-tenant keys in KMS/Vault (NFR-SEC-02). Real per-tenant secret
+ *     material now makes that a key-STORAGE change; derived keys would have
+ *     made it a re-hash of every consent event ever written, which is to say
+ *     impossible.
+ *
+ * The secrets themselves live in `tenant_consent_secrets`, encrypted at rest —
+ * see TenantConsentSecretsRepository for the hot-path and transaction reasoning.
+ * ---------------------------------------------------------------------------
  */
 @Injectable()
 export class SubjectRefHasher {
-  private readonly pepper: Buffer;
-
-  constructor(config: ConfigService) {
-    const pepper = config.get<string>('SUBJECT_REF_HMAC_PEPPER');
-    if (!pepper || pepper.length < 16) {
-      throw new Error(
-        'SUBJECT_REF_HMAC_PEPPER is required (>= 16 chars) for subject pseudonymisation ' +
-          '(FR-CON-04 / I2). Without it, a customer id could reach the database in the clear.',
-      );
-    }
-    this.pepper = Buffer.from(pepper, 'utf8');
-  }
+  constructor(private readonly secrets: TenantConsentSecretsRepository) {}
 
   /** The opaque, per-tenant, irreversible reference stored on every consent event. */
-  hash(tenantId: string, customerId: string): string {
-    const tenantKey = createHmac('sha256', this.pepper).update(tenantId).digest();
-    return createHmac('sha256', tenantKey).update(customerId.trim()).digest('hex');
+  async hash(tenantId: string, customerId: string): Promise<string> {
+    const secret = await this.secrets.getOrCreate(tenantId);
+    return createHmac('sha256', secret).update(customerId.trim()).digest('hex');
   }
 }

@@ -51,7 +51,7 @@ export class InventoryService {
             nullable: column.nullable,
             comment: column.comment ?? null,
             // A suggestion the client confirms — the platform advises, never decides.
-            piiCategory: classifyPii(column.name),
+            piiCategory: classifyPii(column.name)?.category ?? null,
           });
         }
       }

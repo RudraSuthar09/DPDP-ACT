@@ -46,6 +46,19 @@ import { AesGcmSecretCipher, SECRET_CIPHER } from './crypto/secret-cipher';
   ],
   // Other modules gate on roles and read the current user through these; they
   // must never touch the identity tables directly (R2).
-  exports: [IdentityService, TokenService],
+  //
+  // SECRET_CIPHER is exported too, and that is a different kind of decision from
+  // the deliberately un-exported append-only write-path tokens in the audit and
+  // consent modules. Those are withheld because holding one confers the ability
+  // to WRITE evidence, which must have exactly one writer (R3). This is a pure
+  // cipher over a key the caller supplies: holding it grants access to no data
+  // and no table, so sharing it is reuse of a crypto primitive (NFR-SEC-03), not
+  // a second write path. The consent module uses it to encrypt per-tenant
+  // subject-ref secrets at rest.
+  //
+  // (Those tokens are not named here on purpose — the R3 build guards are plain
+  // substring scans, and naming one outside its module fails the build even in
+  // a comment. That bluntness is a feature; it is why the rule has no holes.)
+  exports: [IdentityService, TokenService, SECRET_CIPHER],
 })
 export class IdentityModule {}

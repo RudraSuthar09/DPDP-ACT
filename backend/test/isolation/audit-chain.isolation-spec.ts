@@ -161,7 +161,7 @@ describe('Seam S5 — the audit chain', () => {
   // way an attacker with database rights would.
 
   it('detects an altered entry', async () => {
-    const owner = await ownerConnection();
+    const owner = await ownerConnection(tenantA);
     try {
       await owner.query('ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_update');
       await owner.query(
@@ -182,7 +182,7 @@ describe('Seam S5 — the audit chain', () => {
     // ITS hash has not fixed anything — entry 3 still commits to the old hash of
     // entry 2, so the break walks toward the head. To hide the edit they must
     // rewrite every entry after it, all the way to the newest.
-    const owner = await ownerConnection();
+    const owner = await ownerConnection(tenantA);
     try {
       await owner.query('ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_update');
       await owner.query(
@@ -205,7 +205,7 @@ describe('Seam S5 — the audit chain', () => {
   });
 
   it('detects a removed entry as a sequence gap', async () => {
-    const owner = await ownerConnection();
+    const owner = await ownerConnection(tenantA);
     try {
       await owner.query('ALTER TABLE audit_log DISABLE TRIGGER audit_log_no_update');
       await owner.query(`DELETE FROM audit_log WHERE tenant_id = $1 AND seq = 2`, [tenantA]);
@@ -279,11 +279,21 @@ describe('Seam S5 — the audit chain', () => {
   });
 
   it('fails closed with no tenant bound', async () => {
+    // audit_log's tenant_id is `NOT NULL DEFAULT app.current_tenant()`, so the
+    // natural guess is a not-null violation when the GUC is unset. That is not
+    // what Postgres actually raises here: FORCE ROW LEVEL SECURITY means the
+    // tenant_isolation policy's WITH CHECK (`tenant_id = app.current_tenant()`)
+    // is evaluated on the row being inserted, and three-valued SQL logic makes
+    // `NULL = NULL` neither true nor false — so RLS refuses the row (42501)
+    // before the NOT NULL constraint is ever reached. Confirmed empirically
+    // against the live database, not assumed. Either error means the same
+    // thing operationally — no row is written — so both patterns are accepted;
+    // what actually matters is that it throws at all.
     await expect(
       withRawConnection(pool, (c) =>
         c.query(`SELECT * FROM app.audit_append('test.no_tenant','success',$1)`, [randomUUID()]),
       ),
-    ).rejects.toThrow(/null value|not-null/i);
+    ).rejects.toThrow(/row-level security|null value|not-null/i);
   });
 
   async function verify(tenant: string): Promise<{ entry_seq: string; problem: string }[]> {
@@ -300,8 +310,25 @@ describe('Seam S5 — the audit chain', () => {
  * A connection as the migration/owner role. Used ONLY to simulate an attacker
  * who has gone around the application — which is the only way to tamper at all,
  * and therefore the only way to test that tampering is caught.
+ *
+ * `audit_log` has FORCE ROW LEVEL SECURITY — set deliberately so that even the
+ * table owner is bound by the tenant_isolation policy (defense in depth against
+ * ever running app queries as the owner; see the migration header). That means
+ * this connection, with no `app.current_tenant` GUC set, is not "unrestricted
+ * database access" the way an owner connection normally would be: the
+ * tenant_isolation policy's USING clause filters the tamper UPDATE/DELETE below
+ * to zero matching rows, and Postgres reports that as an ordinary zero-row
+ * result — NOT an error — so a test that skipped this step would silently tamper
+ * with nothing and still "pass" the surrounding try/finally.
+ *
+ * A real attacker with database rights, targeting a SPECIFIC known tenant's
+ * chain, would simply set this GUC themselves — it is exactly what the
+ * production `runWithTenant` helper does for a legitimate request, and nothing
+ * stops an owner-level connection from issuing the same `set_config` call. So
+ * we do the same, deliberately, to reach row(s) the way that attacker would —
+ * this is scoping the attack to one tenant, not weakening what RLS enforces.
  */
-async function ownerConnection(): Promise<PoolClient & { end: () => Promise<void> }> {
+async function ownerConnection(tenantId: string): Promise<PoolClient & { end: () => Promise<void> }> {
   const { Client } = await import('pg');
   const url = process.env.DATABASE_URL;
   if (!url) {
@@ -309,5 +336,10 @@ async function ownerConnection(): Promise<PoolClient & { end: () => Promise<void
   }
   const client = new Client({ connectionString: url });
   await client.connect();
+  // Session-scoped (is_local=false, unlike runWithTenant's transaction-scoped
+  // `true`): these tests issue several sequential statements on one connection
+  // with no explicit BEGIN wrapping them, and the whole connection is closed
+  // (client.end()) in the test's `finally`, so there is nothing to leak.
+  await client.query('SELECT set_config($1, $2, false)', ['app.current_tenant', tenantId]);
   return client as unknown as PoolClient & { end: () => Promise<void> };
 }

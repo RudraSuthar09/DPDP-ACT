@@ -10,7 +10,7 @@ import { MfaEnroll } from '../../components/MfaEnroll';
  * The full authentication surface from Prompt 4, driven against the REAL endpoints:
  *
  *   register ─▶ enrol ─┐
- *   login ─▶ verify    ├─▶ session (accessToken) ─▶ /audit
+ *   login ─▶ verify    ├─▶ session (accessToken) ─▶ /dashboard
  *         └▶ enrol ─────┘
  *
  * No route hands back a session for a password alone — MFA is mandatory — so this
@@ -104,7 +104,7 @@ export default function LoginPage() {
         body: { challengeToken, code },
       });
       await signIn(session.accessToken);
-      router.replace('/audit');
+      router.replace('/dashboard');
     } catch (err) {
       fail(err);
     } finally {
@@ -193,7 +193,7 @@ export default function LoginPage() {
         )}
 
         {step === 'enroll' && (
-          <MfaEnroll challengeToken={challengeToken} onDone={() => router.replace('/audit')} />
+          <MfaEnroll challengeToken={challengeToken} onDone={() => router.replace('/dashboard')} />
         )}
 
         {step === 'verify' && (

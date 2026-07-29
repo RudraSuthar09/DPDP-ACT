@@ -268,10 +268,204 @@ tbody tr:last-child td {
   background: #fdecea;
   color: var(--danger);
 }
+.badge.info {
+  background: #eaf0fb;
+  color: var(--accent);
+}
+.badge.neutral {
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
 
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 20px;
+}
+
+/* --- dashboard counters --- */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.stat-tile {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.stat-tile .stat-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.stat-tile .stat-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.stat-tile .stat-sub {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.activity-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+.activity-list li:last-child {
+  border-bottom: none;
+}
+.activity-main {
+  min-width: 0;
+}
+.activity-when {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* --- language tab switcher (notice translations) --- */
+.tab-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  align-items: center;
+}
+.tab {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.tab.current {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.tab-remove {
+  margin-left: 6px;
+  opacity: 0.75;
+}
+.notice-body {
+  white-space: pre-wrap;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--bg);
+  font-size: 0.9rem;
+}
+
+/* --- the two bitemporal clocks (FR-CON-05) ---
+ * Deliberately two separate cards, never one row of two inputs: they are two
+ * different questions, and the layout is the first thing that says so. */
+.clock-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+.clock-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.clock-card label {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 2px 0 6px;
+}
+.clock-card input {
+  width: auto;
+}
+.clock-kicker {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+}
+.clock-help {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 10px 0 0;
+}
+.clock-question {
+  margin-top: 12px;
+  background: #eaf0fb;
+  border: 1px solid #c9d8f4;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 0.9rem;
+}
+
+/* --- consent event timeline --- */
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 18px;
+  border-left: 2px solid var(--border);
+}
+.timeline-item {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.timeline-item::before {
+  content: '';
+  position: absolute;
+  left: -25px;
+  top: 20px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 2px solid var(--muted);
+}
+.timeline-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.timeline-times {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 0.85rem;
+}
+.timeline-notice {
+  margin-top: 8px;
+  font-size: 0.85rem;
+}
+.timeline-evidence {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 0.82rem;
 }

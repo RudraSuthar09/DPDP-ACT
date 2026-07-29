@@ -22,6 +22,7 @@ const { WorkflowWorker } = require('../dist/modules/workflow/workflow.worker');
 const { WORKFLOW_RUNNER } = require('../dist/modules/workflow/pg-boss-workflow-runner');
 const { WorkflowJobsRepository } = require('../dist/modules/workflow/workflow-jobs.repository');
 const { ConsentService } = require('../dist/modules/consent/consent.service');
+const { ConsentNoticesService } = require('../dist/modules/consent/consent-notices.service');
 const { TenantContextService } = require('../dist/tenancy/tenant-context.service');
 const { TenantDatabaseService } = require('../dist/database/database.service');
 const { ManualEntrySchemaSource } = require('../dist/modules/inventory/schema-source/manual-entry.source');
@@ -46,6 +47,7 @@ async function main() {
   const tctx = app.get(TenantContextService, { strict: false });
   const db = app.get(TenantDatabaseService, { strict: false });
   const consent = app.get(ConsentService, { strict: false });
+  const notices = app.get(ConsentNoticesService, { strict: false });
   const runner = app.get(WORKFLOW_RUNNER, { strict: false });
   const jobs = app.get(WorkflowJobsRepository, { strict: false });
 
@@ -58,6 +60,20 @@ async function main() {
   await run(() =>
     db.withTenant((client) =>
       client.query('INSERT INTO organisations (id, name) VALUES ($1, $2)', [tenantId, 'Demo Fiduciary Pvt Ltd']),
+    ),
+  );
+
+  // …and the acting user. Not decoration: versioned tables record created_by /
+  // tombstoned_by as a real FK to users(id), so a context whose userId points at
+  // no row fails the moment anything is authored. The demo drives the REAL
+  // services, so it needs a real actor exactly as an HTTP request has one.
+  await run(() =>
+    db.withTenant((client) =>
+      client.query(
+        `INSERT INTO users (id, tenant_id, email, full_name, password_hash, role)
+         VALUES ($1, $2, $3, 'Demo Operator', 'not-a-real-hash', 'owner')`,
+        [ctx.userId, tenantId, `demo+${ctx.userId}@example.invalid`],
+      ),
     ),
   );
   line(`Demo tenant: ${tenantId}`);
@@ -100,15 +116,26 @@ async function main() {
   // =========================================================================
   h1('S2 EventSink — one append path, an append-only table');
 
-  // A purpose to attach consent to (ordinary tenant metadata, real service).
-  const purpose = await run(() => consent.createPurpose('Marketing notifications'));
+  // A purpose to attach consent to (versioned tenant metadata, real service).
+  const created = await run(() => consent.createPurpose({
+    name: 'Marketing notifications', description: null,
+  }));
+  const purpose = { id: created.purpose.id, name: created.version.purpose_name };
   ok(`Created consent purpose "${purpose.name}" (${purpose.id})`);
+
+  // A real notice version to consent AGAINST (FR-CON-02). Consent divorced from
+  // the notice it was given against is worthless as evidence, so the store now
+  // refuses an event whose notice is not a notice OF this purpose.
+  const notice = await run(() => notices.create(purpose.id, [
+    { language: 'en', body: 'We will send you marketing notifications.' },
+  ]));
+  ok(`Published notice v${notice.version.version_number} (${notice.version.id})`);
 
   // Record a GRANT through the real ConsentService -> EventSink -> app.consent_append.
   // The SDK supplies an idempotency key with the event (FR-CON-03); we do the same.
   const grantEvent = {
     customerId: 'cust-42', purposeId: purpose.id, status: 'GRANTED',
-    noticeVersionId: 'notice-v1', occurredAt: new Date().toISOString(), source: 'web_sdk',
+    noticeVersionId: notice.version.id, occurredAt: new Date().toISOString(), source: 'web_sdk',
     idempotencyKey: 'sdk-key-' + randomUUID(),
   };
   const grant = await run(() => consent.recordConsent(grantEvent));
@@ -123,7 +150,7 @@ async function main() {
   // A withdrawal is a NEW event, never an update (FR-CON-05).
   const withdraw = await run(() => consent.recordConsent({
     customerId: 'cust-42', purposeId: purpose.id, status: 'WITHDRAWN',
-    noticeVersionId: 'notice-v1', occurredAt: new Date().toISOString(), source: 'portal',
+    noticeVersionId: notice.version.id, occurredAt: new Date().toISOString(), source: 'portal',
   }));
   ok(`recordConsent(WITHDRAWN) -> eventId ${withdraw.receipt.eventId} (a new row, not an edit)`);
 
@@ -143,7 +170,8 @@ async function main() {
   try {
     await run(() => db.withTenant((client) => client.query(
       `INSERT INTO consent_events (subject_ref, purpose_id, status, notice_version_id, occurred_at, source, evidence_hash, idempotency_key)
-       VALUES ('x', $1, 'GRANTED', 'n', now(), 'api', 'h', $2)`, [purpose.id, randomUUID()])));
+       VALUES ('x', $1, 'GRANTED', $3, now(), 'api', 'h', $2)`,
+      [purpose.id, randomUUID(), notice.version.id])));
   } catch (e) { denied = true; msg = e.message.split('\n')[0]; }
   ok(`Ad-hoc INSERT into consent_events (bypassing the sink) was refused? ${denied}`);
   if (denied) line(`     Postgres said: ${msg}`);

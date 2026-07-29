@@ -8,7 +8,7 @@ import { getToken } from '../lib/api';
 export default function Home() {
   const router = useRouter();
   useEffect(() => {
-    router.replace(getToken() ? '/audit' : '/login');
+    router.replace(getToken() ? '/dashboard' : '/login');
   }, [router]);
   return (
     <p style={{ padding: 24 }} className="muted">

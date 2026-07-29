@@ -17,6 +17,7 @@ import { DPRequestModule } from './modules/dprequest/dprequest.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { NotifyModule } from './modules/notify/notify.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { NotifyModule } from './modules/notify/notify.module';
     WorkflowModule, // S3 — the deadline substrate Breach/Grievance/DPRequest share
     AuditModule,
     NotifyModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}
