@@ -13,6 +13,14 @@ export interface LoginResolution {
   status: UserStatus;
 }
 
+/** What the Consent SDK API-key peephole returns — ids only, never the hash. */
+export interface ConsentApiKeyResolution {
+  tenantId: string;
+  keyId: string;
+  createdBy: string;
+  revokedAt: string | null;
+}
+
 /**
  * The tenant-scoped database gateway. Every module that touches the database
  * does so through this service — there is deliberately NO generic `query()` that
@@ -193,6 +201,27 @@ export class TenantDatabaseService implements OnModuleDestroy {
     const { rows } = await this.pool.query<LoginResolution>(
       'SELECT user_id AS "userId", tenant_id AS "tenantId", status FROM app.resolve_login($1)',
       [email.trim().toLowerCase()],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The second pre-tenant peephole: "which tenant does this Consent SDK
+   * public API key belong to?" (FR-CON-09). Same reasoning as resolveLogin
+   * above — the answer IS the tenant, so it cannot be asked under one.
+   *
+   * dpdp_app has EXECUTE on app.resolve_public_api_key() and nothing else
+   * that would let it enumerate consent_api_keys across tenants; the exact
+   * key hash is the only thing that gets a row back. Revocation is NOT
+   * filtered in SQL — the caller checks `revokedAt`, so a revoked key
+   * resolves (and can be reported as "revoked") rather than looking
+   * indistinguishable from a key that never existed.
+   */
+  async resolveConsentApiKey(keyHash: string): Promise<ConsentApiKeyResolution | null> {
+    const { rows } = await this.pool.query<ConsentApiKeyResolution>(
+      'SELECT tenant_id AS "tenantId", key_id AS "keyId", created_by AS "createdBy", ' +
+        'revoked_at AS "revokedAt" FROM app.resolve_public_api_key($1)',
+      [keyHash],
     );
     return rows[0] ?? null;
   }

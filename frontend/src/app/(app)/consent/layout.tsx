@@ -7,6 +7,7 @@ const TABS = [
   { href: '/consent', label: 'Purposes & notices' },
   { href: '/consent/subjects', label: 'Subject lookup' },
   { href: '/consent/settings', label: 'Webhook settings' },
+  { href: '/consent/integration', label: 'Integration' },
 ];
 
 /**

@@ -103,6 +103,33 @@ export function parseWithdrawInput(body: unknown): { reason: string | null } {
   return { reason: optionalStringOrNull(obj, 'reason', { max: 1000 }) };
 }
 
+/**
+ * FR-CON-09: the Consent SDK's public withdrawal payload. Unlike the staff
+ * route's `:subjectRef` path param (which requires a pre-derived 64-hex hash),
+ * this takes the client's raw customer id directly — one call for the SDK, the
+ * same shape as the public ingest payload, rather than forcing every embedder
+ * to call /consent/subject-ref first just to withdraw.
+ */
+export interface PublicWithdrawBody {
+  customerId: string;
+  purposeId: string;
+  reason: string | null;
+}
+
+export function parsePublicWithdrawInput(body: unknown): PublicWithdrawBody {
+  const input = asObject(body);
+  return {
+    customerId: requireString(input, 'customerId', { min: 1, max: 256 }),
+    purposeId: requireUuid(input, 'purposeId'),
+    reason: optionalStringOrNull(input, 'reason', { max: 1000 }),
+  };
+}
+
+/** FR-CON-09: naming a new Consent SDK public API key. */
+export function parseApiKeyLabelInput(body: unknown): { label: string } {
+  return { label: requireString(asObject(body), 'label', { min: 1, max: 200 }) };
+}
+
 export interface SubjectHistoryQuery {
   /** Valid-time cutoff: "what was true AT this moment". */
   asOf: string;

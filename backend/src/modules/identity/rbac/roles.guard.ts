@@ -9,7 +9,7 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { isReadOnlyRole, type Role } from '@dpdp/shared';
 import { TenantContextService } from '../../../tenancy/tenant-context.service';
-import { ALLOW_READ_ONLY_KEY, ROLES_KEY } from './roles.decorator';
+import { ALLOW_PUBLIC_KEY_KEY, ALLOW_READ_ONLY_KEY, ROLES_KEY } from './roles.decorator';
 
 /** HTTP methods that, by definition, do not change state. */
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -73,11 +73,19 @@ export class RolesGuard implements CanActivate {
       ALLOW_READ_ONLY_KEY,
       [context.getHandler(), context.getClass()],
     );
+    // Distinct from allowReadOnly: a route that DOES mutate, but is reached
+    // via a public API key rather than a human role (see AllowPublicKey's doc
+    // comment for why 'viewer' shows up here at all).
+    const allowPublicKey = this.reflector.getAllAndOverride<boolean | undefined>(
+      ALLOW_PUBLIC_KEY_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     if (
       isReadOnlyRole(ctx.role) &&
       !SAFE_METHODS.has(request.method.toUpperCase()) &&
-      !allowReadOnly
+      !allowReadOnly &&
+      !allowPublicKey
     ) {
       throw new ForbiddenException(`The ${ctx.role} role is read-only and cannot modify data.`);
     }

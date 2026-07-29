@@ -12,6 +12,10 @@ import { ConsentNoticesService } from './consent-notices.service';
 import { ConsentNoticesRepository } from './consent-notices.repository';
 import { ConsentProofController } from './consent-proof.controller';
 import { ConsentProofService } from './consent-proof.service';
+import { ConsentPublicController } from './consent-public.controller';
+import { ConsentApiKeysController } from './consent-api-keys.controller';
+import { ConsentApiKeysService } from './consent-api-keys.service';
+import { ConsentApiKeysRepository } from './consent-api-keys.repository';
 
 /**
  * Consent Register — Seam S2. Ingests consent events, pseudonymises the subject
@@ -43,7 +47,17 @@ import { ConsentProofService } from './consent-proof.service';
   // (FR-CON-07) through ConsentService, never by this module reaching into
   // notify's tables directly (R2).
   imports: [IdentityModule, NotifyModule],
-  controllers: [ConsentController, ConsentNoticesController, ConsentProofController],
+  controllers: [
+    ConsentController,
+    ConsentNoticesController,
+    ConsentProofController,
+    // FR-CON-09: the SDK's own routes (key-authenticated) and the staff-facing
+    // key management routes (JWT-authenticated) — two different auth stories,
+    // both living here so they get ConsentService/SubjectRefHasher via
+    // ordinary same-module DI rather than widening ConsentModule's exports.
+    ConsentPublicController,
+    ConsentApiKeysController,
+  ],
   providers: [
     ConsentService,
     ConsentRepository,
@@ -53,6 +67,8 @@ import { ConsentProofService } from './consent-proof.service';
     ConsentNoticesService,
     ConsentNoticesRepository,
     ConsentProofService,
+    ConsentApiKeysService,
+    ConsentApiKeysRepository,
   ],
   // ConsentService only — never ConsentRepository, ConsentNoticesRepository, or
   // EVENT_SINK. It exposes the active-consents counter (FR-DSH-01) to the

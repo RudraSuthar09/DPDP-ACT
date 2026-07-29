@@ -1,0 +1,19 @@
+{
+  "name": "@dpdp/consent-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FR-CON-09: vanilla-TS, zero-runtime-dependency, CDN-delivered SDK for posting real consent grant/withdrawal events to the DPDP platform from a tenant's own website.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs && node size-check.mjs",
+    "size-check": "node size-check.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "echo \"(no sdk tests yet)\" && exit 0",
+    "clean": "rimraf dist"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "rimraf": "^6.0.1"
+  }
+}
