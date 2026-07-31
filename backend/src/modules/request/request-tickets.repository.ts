@@ -40,6 +40,16 @@ export interface TicketRow {
   sla_seconds: number | null;
   sla_started_at: Date | null;
   sla_due_at: Date | null;
+  /** Which KEYED deadline policy this ticket resolves against. '' is the base
+   *  policy for its request type — what every grievance uses, and what every
+   *  ticket written before the versioned-policy migration has. A specialising
+   *  module sets it at intake (DPRequest: `dprequest:<rightType>`); the
+   *  substrate never interprets what is in it. */
+  sla_policy_key: string;
+  /** The version of that policy in force when the clock started. Null means the
+   *  clock resolved against the pre-versioning `request_sla_policies` row or the
+   *  platform default. */
+  sla_policy_version: number | null;
   resolution: string | null;
   created_at: Date;
   updated_at: Date;
@@ -68,7 +78,8 @@ export interface StatusEventRow {
 const TICKET_COLUMNS = `
   id, tenant_id, request_type, reference_code, status, subject,
   contact_channel, contact_value, contact_verified_at, escalation_level,
-  assigned_to, sla_seconds, sla_started_at, sla_due_at, resolution,
+  assigned_to, sla_seconds, sla_started_at, sla_due_at,
+  sla_policy_key, sla_policy_version, resolution,
   created_at, updated_at, closed_at
 `;
 
@@ -86,13 +97,17 @@ export class RequestTicketsRepository {
       contactValue: string;
       sourceIp: string | null;
       userAgent: string | null;
+      /** Optional, and defaulted to '' rather than required: a specialising
+       *  module that needs a finer-grained deadline than "all grievances" says
+       *  so here. Omitting it is the pre-existing behaviour, unchanged. */
+      slaPolicyKey?: string;
     },
   ): Promise<TicketRow> {
     const { rows } = await client.query<TicketRow>(
       `INSERT INTO request_tickets
          (request_type, reference_code, subject, contact_channel, contact_value,
-          submitted_ip, submitted_user_agent)
-       VALUES ($1, $2, $3, $4, $5, $6::inet, $7)
+          submitted_ip, submitted_user_agent, sla_policy_key)
+       VALUES ($1, $2, $3, $4, $5, $6::inet, $7, $8)
        RETURNING ${TICKET_COLUMNS}`,
       [
         input.requestType,
@@ -102,6 +117,7 @@ export class RequestTicketsRepository {
         input.contactValue,
         input.sourceIp,
         input.userAgent,
+        input.slaPolicyKey ?? '',
       ],
     );
     return rows[0]!;
@@ -206,13 +222,22 @@ export class RequestTicketsRepository {
   async setSla(
     client: PoolClient,
     ticketId: string,
-    sla: { seconds: number; startedAt: Date; dueAt: Date },
+    sla: { seconds: number; startedAt: Date; dueAt: Date; policyVersion: number | null },
   ): Promise<void> {
     await client.query(
       `UPDATE request_tickets
-          SET sla_seconds = $2, sla_started_at = $3, sla_due_at = $4, updated_at = now()
+          SET sla_seconds = $2, sla_started_at = $3, sla_due_at = $4,
+              sla_policy_version = $5, updated_at = now()
         WHERE id = $1`,
-      [ticketId, sla.seconds, sla.startedAt.toISOString(), sla.dueAt.toISOString()],
+      [
+        ticketId,
+        sla.seconds,
+        sla.startedAt.toISOString(),
+        sla.dueAt.toISOString(),
+        // The CITATION alongside the number. A ticket that says "30 days"
+        // without saying which record said so cannot be defended later.
+        sla.policyVersion,
+      ],
     );
   }
 

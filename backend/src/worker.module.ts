@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TenancyModule } from './tenancy/tenancy.module';
 import { DatabaseModule } from './database/database.module';
+import { AuditModule } from './modules/audit/audit.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { WorkflowWorker } from './modules/workflow/workflow.worker';
 import { NotifyModule } from './modules/notify/notify.module';
@@ -9,6 +10,8 @@ import { WebhookDeliveryWorker } from './modules/notify/webhook-delivery.worker'
 import { DEADLINE_HANDLERS } from './modules/workflow/deadline-handler';
 import { RequestStoreModule } from './modules/request/request-store.module';
 import { RequestDeadlineHandler } from './modules/request/request-deadline.handler';
+import { BreachStoreModule } from './modules/breach/breach-store.module';
+import { BreachDeadlineHandler } from './modules/breach/breach-deadline.handler';
 
 /**
  * Root module for the worker process — the second Stage 1 container.
@@ -40,20 +43,33 @@ import { RequestDeadlineHandler } from './modules/request/request-deadline.handl
  * It imports RequestStoreModule — the worker-safe half — and NOT RequestModule,
  * which pulls in IdentityModule and would boot-crash this process. That file
  * explains why in full.
+ *
+ * AuditModule is imported here too, for ONE thing: `SystemAuditService`, so a
+ * fired escalation (FR-GRV-05, FR-BRC-04) lands in the S5 hash chain instead of
+ * only in its own domain table. Safe to import whole, unlike RequestModule/
+ * BreachModule — nothing AuditModule depends on reaches IdentityModule or
+ * anything else this process cannot load, and it is `@Global()` already, the
+ * same precedent WorkflowModule sets for a module the API and worker both need.
  */
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env', '../.env'] }),
     TenancyModule,
     DatabaseModule,
+    AuditModule,
     WorkflowModule,
     NotifyModule,
     RequestStoreModule,
+    // The Breach Register's worker-safe half — FR-BRC-04's escalating alerts.
+    // Same split, same reason: BreachModule would drag in IdentityModule and
+    // boot-crash this process.
+    BreachStoreModule,
   ],
   providers: [
     WorkflowWorker,
     WebhookDeliveryWorker,
     RequestDeadlineHandler,
+    BreachDeadlineHandler,
     {
       // One token, many handlers. Nest has no Angular-style `multi: true`, so
       // the array is assembled here explicitly — which is arguably better: the
@@ -61,8 +77,11 @@ import { RequestDeadlineHandler } from './modules/request/request-deadline.handl
       // literal in the process that fires them. Breach's escalating alerts
       // (FR-BRC-04) join by being injected and added to this array.
       provide: DEADLINE_HANDLERS,
-      useFactory: (requests: RequestDeadlineHandler) => [requests],
-      inject: [RequestDeadlineHandler],
+      useFactory: (requests: RequestDeadlineHandler, breaches: BreachDeadlineHandler) => [
+        requests,
+        breaches,
+      ],
+      inject: [RequestDeadlineHandler, BreachDeadlineHandler],
     },
   ],
 })

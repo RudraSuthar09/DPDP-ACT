@@ -25,7 +25,14 @@
     "request:demo": "node scripts/request-substrate-demo.mjs",
     "migrate": "pnpm --filter @dpdp/api migrate",
     "migrate:up": "pnpm --filter @dpdp/api migrate:up",
-    "migrate:down": "pnpm --filter @dpdp/api migrate:down"
+    "migrate:down": "pnpm --filter @dpdp/api migrate:down",
+    "dpr:demo": "node scripts/dprequest-demo.mjs",
+    "dpr:e2e": "node scripts/dprequest-e2e.mjs",
+    "dpr:summary": "node scripts/dpr-summary-demo.mjs",
+    "breach:demo": "node scripts/breach-demo.mjs",
+    "breach:ui": "node scripts/breach-ui.spec.mjs",
+    "audit:gap:demo": "node scripts/audit-worker-gap-demo.mjs",
+    "notify:evidence:demo": "node scripts/notify-and-evidence-demo.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",

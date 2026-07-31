@@ -98,6 +98,12 @@ export class RequestSlaRepository {
     return rows[0]!;
   }
 
+  // NOTE: the VERSIONED policy queries that used to live here moved to
+  // DeadlinePolicyRepository when Breach became the third caller. This file
+  // still owns `request_sla_policies` — Prompt 25's single mutable row per
+  // request type, kept as the resolution fallback below the versioned records
+  // so no Prompt 25 tenant's configuration silently changed meaning.
+
   // --- the ticket's scheduled ladder ---------------------------------------
 
   async insertTimer(

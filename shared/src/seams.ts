@@ -197,17 +197,35 @@ export interface AuditReceipt {
 }
 
 /**
- * S5 — Audit sink. Written by ONE interceptor, never by individual services
+ * S5 — Audit sink. Written by ONE interceptor for HTTP mutations, plus exactly
+ * one other sanctioned caller for entries with no HTTP request behind them at
+ * all (a deadline firing in the worker) — never by an ordinary feature service
  * (R3). Stage 1: hash-chained append-only Postgres table.
  * Later: ClickHouse + daily Merkle roots in S3 Object Lock.
  *
  * This interface is intentionally not exported from the audit module's Nest
  * providers: no feature module can inject it, so "services never write audit
- * rows" is enforced by the injector, not by reviewer memory.
+ * rows" is enforced by the injector, not by reviewer memory. The one exception
+ * — a worker-safe wrapper narrow enough to remain a single sanctioned caller,
+ * not a second writer — is exported under its own name; see the audit module.
  */
 export interface AuditSink {
   record(entry: AuditWrite): Promise<AuditReceipt>;
 }
+
+/**
+ * Actor labels for audit entries appended from the WORKER process, where a
+ * fired deadline has no HTTP request and therefore no logged-in actor to point
+ * at. Same shape as `ANONYMOUS_PORTAL_ACTOR_LABEL` and `consent_sdk:<keyId>`: a
+ * label where a user id would be, naming WHAT acted rather than who.
+ *
+ * Split by which deadline substrate fired, not just "system:worker", so a
+ * reviewer scanning the log can tell a request-substrate escalation (Grievance/
+ * DPRequest, FR-GRV-05) from a Breach Register gate alert (FR-BRC-04) without
+ * opening the entry.
+ */
+export const SYSTEM_WORKER_ESCALATION_ACTOR_LABEL = 'system:worker:escalation';
+export const SYSTEM_WORKER_BREACH_DEADLINE_ACTOR_LABEL = 'system:worker:breach_deadline';
 
 /** One problem found while walking a chain. No breaks = the log is intact. */
 export interface AuditChainBreak {

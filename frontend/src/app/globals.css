@@ -59,7 +59,8 @@ label {
   margin: 12px 0 4px;
 }
 input,
-select {
+select,
+textarea {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -67,6 +68,9 @@ select {
   background: var(--panel);
   color: var(--text);
   font: inherit;
+}
+textarea {
+  resize: vertical;
 }
 button {
   font: inherit;
@@ -277,6 +281,10 @@ tbody tr:last-child td {
   color: var(--muted);
   border: 1px solid var(--border);
 }
+.badge.warning {
+  background: #fff4e0;
+  color: #92400e;
+}
 
 .panel {
   background: var(--panel);
@@ -417,6 +425,94 @@ tbody tr:last-child td {
   border: 1px solid #c9d8f4;
   border-radius: 8px;
   padding: 12px 14px;
+  font-size: 0.9rem;
+}
+
+/* --- public request portal (FR-GRV-01/03) ---
+ * Mobile-first: a single narrow column, generous tap targets, stacked
+ * buttons by default. The widescreen rules only relax spacing — nothing
+ * about the layout requires a wide viewport, since a complainant on a
+ * low-end phone is the primary reader, not the exception. */
+.portal-wrap {
+  min-height: 100vh;
+  padding: 20px 14px;
+  display: flex;
+  justify-content: center;
+}
+.portal-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  align-self: flex-start;
+}
+@media (min-width: 480px) {
+  .portal-wrap {
+    padding: 40px 20px;
+  }
+  .portal-card {
+    padding: 28px;
+  }
+}
+.portal-kicker {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.portal-form label:first-of-type {
+  margin-top: 16px;
+}
+.portal-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 18px;
+}
+.portal-actions button {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 1rem;
+}
+@media (min-width: 480px) {
+  .portal-actions {
+    flex-direction: row;
+  }
+  .portal-actions button {
+    width: auto;
+  }
+}
+.portal-confirmation {
+  text-align: center;
+  padding: 8px 0;
+}
+.portal-check {
+  width: 52px;
+  height: 52px;
+  line-height: 52px;
+  border-radius: 50%;
+  background: #e7f5ee;
+  color: var(--ok);
+  font-size: 1.6rem;
+  margin: 0 auto 14px;
+}
+.portal-reference {
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 14px 0;
+  word-break: break-all;
+}
+.portal-status-link {
+  display: inline-block;
+  margin-top: 8px;
   font-size: 0.9rem;
 }
 

@@ -23,6 +23,11 @@ import { RequestEscalationService } from './request-escalation.service';
  * API. If a new provider cannot honour that, it belongs in RequestModule.
  */
 @Module({
+  // NOT DeadlinePolicyModule. Policy resolution happens in RequestSlaService,
+  // which is API-side (RequestModule) — and DeadlinePolicyService depends on the
+  // audit context, which the worker process deliberately does not have. Adding
+  // it here boot-crashes the worker, which is the whole reason this split
+  // module exists.
   imports: [NotifyModule],
   providers: [
     RequestTicketsRepository,

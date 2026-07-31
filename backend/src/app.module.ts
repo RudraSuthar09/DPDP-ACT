@@ -17,6 +17,7 @@ import { DPRequestModule } from './modules/dprequest/dprequest.module';
 import { RequestModule } from './modules/request/request.module';
 import { WorkflowModule } from './modules/workflow/workflow.module';
 import { AuditModule } from './modules/audit/audit.module';
+import { AuditExportModule } from './modules/audit/audit-export.module';
 import { NotifyModule } from './modules/notify/notify.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 
@@ -42,6 +43,9 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     // Cross-cutting modules
     WorkflowModule, // S3 — the deadline substrate Breach/Grievance/DPRequest share
     AuditModule,
+    // API-only (FR-AUD-05): needs IdentityModule for the org name, which
+    // AuditModule itself must never depend on — see AuditExportController.
+    AuditExportModule,
     NotifyModule,
     DashboardModule,
   ],

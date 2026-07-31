@@ -19,6 +19,11 @@ import type { PiiConfidence } from './pii-classifier';
  * FR-INV-09 asks what is CURRENTLY true, not the full history.
  */
 export interface RopaPurpose {
+  /** The `inventory_entry_purposes` row id. Carried so the DPR Personal Data
+   *  Summary can attribute an entry to a data principal by ID through the
+   *  curated purpose links — never by matching purpose NAMES, which is the one
+   *  shortcut that would let a statutory document claim the wrong thing. */
+  purposeId: string;
   purposeName: string;
   description: string | null;
   legalBasis: LegalBasis;
@@ -70,6 +75,7 @@ export class RopaRepository {
          ) ev ON true
          LEFT JOIN LATERAL (
            SELECT jsonb_agg(jsonb_build_object(
+             'purposeId', p.id,
              'purposeName', pv.purpose_name, 'description', pv.description,
              'legalBasis', pv.legal_basis, 'legalBasisNote', pv.legal_basis_note,
              'retentionPeriod', pv.retention_period

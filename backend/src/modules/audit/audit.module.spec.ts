@@ -6,6 +6,7 @@ import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditModule } from './audit.module';
 import { AuditContextService } from './audit-context.service';
 import { AUDIT_SINK } from './postgres-audit.sink';
+import { SystemAuditService } from './system-audit.service';
 
 /**
  * The claim in AuditModule's header is that a feature module CANNOT inject the
@@ -48,6 +49,14 @@ class WellBehavedService {
 @Module({ imports: [AuditModule], providers: [WellBehavedService] })
 class WellBehavedModule {}
 
+@Injectable()
+class WorkerLikeService {
+  constructor(readonly systemAudit: SystemAuditService) {}
+}
+
+@Module({ imports: [AuditModule], providers: [WorkerLikeService] })
+class WorkerLikeModule {}
+
 describe('AuditModule — the export list is a security control (R3)', () => {
   it('REFUSES to boot a module that tries to inject the audit sink', async () => {
     // The enforcement: AUDIT_SINK is provided inside AuditModule but not
@@ -83,6 +92,53 @@ describe('AuditModule — the export list is a security control (R3)', () => {
       'current',
       'run',
     ]);
+  });
+
+  it('allows a module to inject SystemAuditService — the one sanctioned second caller', async () => {
+    // The addition this test exists to pin: a worker-side module CAN now reach
+    // a typed audit-write path, and the sink itself STILL cannot be reached
+    // directly — the two facts have to hold at the same time or the "second
+    // sanctioned caller, not a second writer" claim is just a comment.
+    const moduleRef = await Test.createTestingModule({
+      imports: [FakeGlobals, WorkerLikeModule],
+    }).compile();
+    const service = moduleRef.get(WorkerLikeService);
+    expect(service.systemAudit).toBeInstanceOf(SystemAuditService);
+
+    // What it exposes is exactly one method, taking a client and a tenant the
+    // caller must already hold — no bare `sink`, no way to omit either.
+    expect(Object.getOwnPropertyNames(SystemAuditService.prototype).sort()).toEqual([
+      'constructor',
+      'record',
+    ]);
+  });
+
+  it('SystemAuditService refuses to append when the given client is bound to a different tenant', async () => {
+    // The defence-in-depth check inside PostgresAuditSink.recordOnClient,
+    // exercised directly against a fake PoolClient rather than a real
+    // connection — cheap, and it is exactly the property that matters: a
+    // caller that got its tenantId wrong must fail LOUDLY, before any SQL that
+    // could write to the wrong chain, not silently rebind and proceed.
+    const moduleRef = await Test.createTestingModule({
+      imports: [FakeGlobals, WorkerLikeModule],
+    }).compile();
+    const service = moduleRef.get(WorkerLikeService);
+
+    const query = jest.fn().mockResolvedValue({ rows: [{ tenant: 'tenant-a' }] });
+    const fakeClient = { query } as unknown as Parameters<SystemAuditService['record']>[0];
+
+    await expect(
+      service.systemAudit.record(fakeClient, 'tenant-b', {
+        action: 'test.action',
+        outcome: 'success',
+        correlationId: '00000000-0000-4000-8000-000000000000',
+      }),
+    ).rejects.toThrow(/bound to tenant tenant-a.*not tenant-b/s);
+
+    // The bound-tenant check ran, and NOTHING else did: exactly one query (the
+    // `app.current_tenant()` probe), never a second call that could only be
+    // the append itself.
+    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it('annotating outside a request is a no-op, not a crash', () => {

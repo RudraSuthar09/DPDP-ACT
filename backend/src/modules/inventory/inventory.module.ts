@@ -86,6 +86,9 @@ import { RopaRepository } from './ropa.repository';
   // RegisterService is exported so the Dashboard module can read the register's
   // element/category counters (FR-DSH-01) through a service interface, never by
   // querying inventory_register_entries directly (R2).
-  exports: [RegisterService],
+  // RopaService is exported for the DPR Personal Data Summary (FR-DPR-04):
+  // it reads the register's current state through a service, never through
+  // RopaRepository or the inventory tables directly (R2).
+  exports: [RegisterService, RopaService],
 })
 export class InventoryModule {}

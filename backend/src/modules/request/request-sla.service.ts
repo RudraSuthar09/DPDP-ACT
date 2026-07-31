@@ -5,6 +5,7 @@ import { WORKFLOW_RUNNER } from '../workflow/pg-boss-workflow-runner';
 import { IdentityService } from '../identity/identity.service';
 import type { Designation } from '../identity/dto';
 import { RequestSlaRepository } from './request-sla.repository';
+import { DeadlinePolicyService } from '../deadlines/deadline-policy.service';
 import { RequestTicketsRepository, type TicketRow } from './request-tickets.repository';
 import { deadlineWorkflowId } from './request-identifiers';
 import { defaultPolicyFor, planTimers, slaDueAt, type SlaPolicyValue } from './request-sla-policy';
@@ -29,12 +30,46 @@ export class RequestSlaService {
     private readonly identity: IdentityService,
     private readonly sla: RequestSlaRepository,
     private readonly tickets: RequestTicketsRepository,
+    // The shared versioned-deadline mechanism, used identically by Breach.
+    private readonly policies: DeadlinePolicyService,
   ) {}
 
-  /** The tenant's policy for a request type, or the platform default. */
-  async policyFor(client: PoolClient, requestType: RequestType): Promise<SlaPolicyValue> {
-    const row = await this.sla.findPolicy(client, requestType);
-    return row ? { slaSeconds: row.sla_seconds, ladder: row.ladder } : defaultPolicyFor(requestType);
+  /**
+   * The policy in force for a request type and, optionally, a finer-grained key
+   * within it. Four sources, tried in this order, and the order is the design:
+   *
+   *   1. the versioned record for the EXACT key      — 'dprequest:erasure'
+   *   2. the versioned record for the BASE key ('')  — "all rights requests"
+   *   3. the legacy `request_sla_policies` row       — Prompt 25's mutable value
+   *   4. the platform default in code
+   *
+   * (1) is how a rights request gets its own statutory deadline. (2) is how a
+   * tenant sets one rule for a whole request type without enumerating its
+   * subtypes. (3) is why nothing from Prompt 25 broke: a tenant who set a
+   * grievance policy through `PUT /requests/sla-policies` has no versioned rows
+   * and falls through to exactly the value they set. (4) is the floor.
+   *
+   * `version` is null for (3) and (4). Those are the two pre-versioning
+   * sources, and stamping a ticket with a version number that never existed
+   * would be a citation to a record nobody can read.
+   */
+  async policyFor(
+    client: PoolClient,
+    requestType: RequestType,
+    policyKey = '',
+  ): Promise<ResolvedSlaPolicy> {
+    // The versioned records first (shared with Breach), then Prompt 25's
+    // single mutable row, then the platform default. The order is the design:
+    // (1)/(2) are handled by DeadlinePolicyService — exact key, then the
+    // domain's base key. (3) is why nothing from Prompt 25 broke: a tenant who
+    // set a grievance policy through `PUT /requests/sla-policies` has no
+    // versioned rows and still gets exactly the value they set. (4) is the floor.
+    const legacy = await this.sla.findPolicy(client, requestType);
+    const fallback = legacy
+      ? { slaSeconds: legacy.sla_seconds, ladder: legacy.ladder }
+      : defaultPolicyFor(requestType);
+
+    return this.policies.resolve(client, requestType, policyKey, fallback);
   }
 
   /**
@@ -52,7 +87,10 @@ export class RequestSlaService {
    * self-rescheduling chain would be the fragile choice.
    */
   async startClock(client: PoolClient, ticket: TicketRow): Promise<{ dueAt: Date }> {
-    const policy = await this.policyFor(client, ticket.request_type);
+    // The ticket brought its own policy key from intake. The substrate does not
+    // know or care what is encoded in it — it is a lookup key, and that is the
+    // entire extension point a specialising module gets over deadlines.
+    const policy = await this.policyFor(client, ticket.request_type, ticket.sla_policy_key);
     const startedAt = new Date();
     const dueAt = slaDueAt(policy, startedAt);
 
@@ -60,6 +98,7 @@ export class RequestSlaService {
       seconds: policy.slaSeconds,
       startedAt,
       dueAt,
+      policyVersion: policy.version,
     });
 
     const holders = await this.resolveLadderHolders(policy);
@@ -94,7 +133,9 @@ export class RequestSlaService {
     }
 
     this.logger.log(
-      `SLA started for ${ticket.reference_code}: due ${dueAt.toISOString()}, ${policy.ladder.length} ladder step(s).`,
+      `SLA started for ${ticket.reference_code}: due ${dueAt.toISOString()}, ` +
+        `${policy.ladder.length} ladder step(s), policy ` +
+        `${ticket.sla_policy_key || '(base)'} v${policy.version ?? '-'}.`,
     );
     return { dueAt };
   }
@@ -125,7 +166,7 @@ export class RequestSlaService {
     client: PoolClient,
     ticket: TicketRow,
   ): Promise<{ level: number; rung: EscalationRung; holder: LadderHolder | null } | null> {
-    const policy = await this.policyFor(client, ticket.request_type);
+    const policy = await this.policyFor(client, ticket.request_type, ticket.sla_policy_key);
     const current = await this.sla.currentEscalationLevel(client, ticket.id);
     const next = policy.ladder.find((step) => step.level === current + 1);
     if (!next) {
@@ -155,6 +196,12 @@ export class RequestSlaService {
     const resolved = await this.identity.resolveEscalationLadder(rungs as unknown as Designation[]);
     return resolved as unknown as Map<EscalationRung, LadderHolder | null>;
   }
+}
+
+/** A policy value plus the version of the record it came from — null when it
+ *  came from a source that predates versioning. */
+export interface ResolvedSlaPolicy extends SlaPolicyValue {
+  version: number | null;
 }
 
 export interface LadderHolder {

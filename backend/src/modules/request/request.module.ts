@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { DeadlinePolicyModule } from '../deadlines/deadline-policy.module';
 import { IdentityModule } from '../identity/identity.module';
 import { NotifyModule } from '../notify/notify.module';
 import { RequestStoreModule } from './request-store.module';
@@ -41,6 +42,8 @@ import { RequestSlaService } from './request-sla.service';
  */
 @Module({
   imports: [
+    // FR-BRC-02: the shared versioned-deadline register, also used by Breach.
+    DeadlinePolicyModule,
     RequestStoreModule,
     // For the escalation ladder: who currently holds each rung (FR-IDN-04). The
     // request module never reads org_designations or users itself (R2).
@@ -52,6 +55,10 @@ import { RequestSlaService } from './request-sla.service';
   providers: [RequestService, RequestPortalService, RequestSlaService],
   // Exported for the two modules that specialise this substrate. They get the
   // service, never the repositories — the tables stay this module's business.
-  exports: [RequestService],
+  // RequestPortalService is exported too (added for GrievanceModule) so a
+  // specialising module's OWN public intake route can call the exact same
+  // `submit()` the generic portal route runs, rather than re-implementing
+  // ticket/OTP creation — extending the substrate's reach, not its logic.
+  exports: [RequestService, RequestPortalService],
 })
 export class RequestModule {}

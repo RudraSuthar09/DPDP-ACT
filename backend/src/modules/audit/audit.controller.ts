@@ -6,10 +6,12 @@ import { AuditVerifierService } from './audit-verifier.service';
 /**
  * Reading the evidence (FR-AUD-03).
  *
- * Read-only by construction: there is no POST here, and there could not be a
- * useful one — the only way to add an entry is to do something worth auditing.
- * Every route is a GET, which also means the interceptor does not audit reads of
- * the audit log (see AuditInterceptor.shouldAudit).
+ * Read-only by construction: every route here is a GET, which also means the
+ * interceptor does not audit reads of the audit log (see
+ * AuditInterceptor.shouldAudit). The one WRITE-adjacent action this module
+ * offers — exporting an evidence bundle (FR-AUD-05) — lives in
+ * `AuditExportController` instead, and deliberately not here: see that file's
+ * header for why the split is structural, not stylistic.
  *
  * Owner/DPO/Auditor only. Not because the log is embarrassing, but because it
  * records who did what and from which IP: it is a register of the client's

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
-import { apiFetch, ApiError } from '../../../lib/api';
+import { apiFetch, downloadFile, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
 
 /**
@@ -34,6 +34,9 @@ interface ActivityEntry {
 // this only decides whether the UI bothers to ask, not whether it is allowed to.
 const ACTIVITY_ROLES = new Set(['owner', 'dpo', 'auditor']);
 
+// Matches AuditExportController's @Roles for the same reason.
+const EVIDENCE_BUNDLE_ROLES = new Set(['owner', 'dpo', 'auditor']);
+
 export default function DashboardPage() {
   const { user } = useAuth();
 
@@ -44,6 +47,29 @@ export default function DashboardPage() {
   const [activity, setActivity] = useState<ActivityEntry[] | null>(null);
   const [activityError, setActivityError] = useState<string | null>(null);
   const [loadingActivity, setLoadingActivity] = useState(true);
+
+  const [exportingBundle, setExportingBundle] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
+
+  async function exportEvidenceBundle() {
+    setExportingBundle(true);
+    setBundleError(null);
+    try {
+      // FR-AUD-05: generated fresh from audit_log on every call, never a
+      // stored artefact — same discipline as every other export in the
+      // product (RoPA, proof-of-consent, the DPR register, the Breach
+      // closure packet).
+      await downloadFile(
+        '/audit/evidence-bundle',
+        `dpdp-evidence-bundle-${new Date().toISOString().slice(0, 10)}.pdf`,
+        { method: 'POST' },
+      );
+    } catch (err) {
+      setBundleError(err instanceof ApiError ? err.message : 'Could not export the evidence bundle.');
+    } finally {
+      setExportingBundle(false);
+    }
+  }
 
   const loadSummary = useCallback(async () => {
     setLoadingSummary(true);
@@ -88,8 +114,24 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <h1>Dashboard</h1>
-      <p className="muted">Where things stand across every module, at a glance.</p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+        <div>
+          <h1>Dashboard</h1>
+          <p className="muted">Where things stand across every module, at a glance.</p>
+        </div>
+        {user && EVIDENCE_BUNDLE_ROLES.has(user.role) && (
+          <button
+            type="button"
+            data-testid="export-evidence-bundle-btn"
+            onClick={() => void exportEvidenceBundle()}
+            disabled={exportingBundle}
+            title="A complete, verifiable export of this organisation's audit log (FR-AUD-05) — what you hand a regulator."
+          >
+            {exportingBundle ? 'Exporting…' : 'Export full evidence bundle'}
+          </button>
+        )}
+      </div>
+      {bundleError && <div className="error">{bundleError}</div>}
 
       {summaryError && <div className="error">{summaryError}</div>}
 

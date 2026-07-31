@@ -21,6 +21,17 @@ export const REQUEST_TYPES = ['grievance', 'dprequest'] as const;
 export type RequestType = (typeof REQUEST_TYPES)[number];
 
 /**
+ * Which module a versioned deadline record belongs to (`deadline_policy_versions`).
+ *
+ * A superset of RequestType, and deliberately a SEPARATE type: a breach
+ * incident has deadlines but is not a request, and collapsing the two would put
+ * 'breach' into every signature that means "a portal-filed ticket". The two
+ * overlap today; they are not the same idea.
+ */
+export const POLICY_DOMAINS = ['grievance', 'dprequest', 'breach'] as const;
+export type PolicyDomain = (typeof POLICY_DOMAINS)[number];
+
+/**
  * The ticket lifecycle.
  *
  * `pending_identity_verification` is the load-bearing one and the reason this

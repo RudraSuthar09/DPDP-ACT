@@ -6,6 +6,8 @@ import { WebhookSecretsRepository } from './webhook-secrets.repository';
 import { WebhookDeliveriesRepository } from './webhook-deliveries.repository';
 import { WebhookDeliveryService } from './webhook-delivery.service';
 import { NotificationDispatcher } from './notification-dispatcher';
+import { NotificationDeliveriesRepository } from './notification-deliveries.repository';
+import { NotificationChannelsController } from './notification-channels.controller';
 
 /**
  * Notifications. Transactional email (deadline alerts, acknowledgements, breach
@@ -20,7 +22,16 @@ import { NotificationDispatcher } from './notification-dispatcher';
  * half — WebhookDeliveryWorker, which signs and POSTs — is deliberately NOT a
  * provider here; like WorkflowWorker, it is registered only in WorkerModule,
  * so the signing secret and the outbound HTTP call to a client-controlled URL
- * never execute in the API process. Email/SMS remain skeleton (no providers).
+ * never execute in the API process. Email/SMS are real providers as of this
+ * prompt — see below.
+ *
+ * Email/SMS are now REAL (this prompt): Postmark and MSG91 behind the exact
+ * same `NotificationDispatcher.send()` interface, chosen per-channel only when
+ * their credentials are configured, falling back to Prompt 25's console/http
+ * pair otherwise — see that file's header for the full argument. NEW here:
+ * `notification_deliveries` (recent-attempt log) and `NotificationChannelsController`
+ * (the settings screen's read model), both additive — no existing call site
+ * changed shape beyond gaining a required `tenantId` field.
  *
  * PgBossService is injected without importing WorkflowModule: it is @Global
  * and exports PgBossService precisely so a second durable-job use case (this
@@ -41,13 +52,14 @@ import { NotificationDispatcher } from './notification-dispatcher';
  * process free of identity/auth machinery it has no business touching.
  */
 @Module({
-  controllers: [WebhookConfigController],
+  controllers: [WebhookConfigController, NotificationChannelsController],
   providers: [
     { provide: SECRET_CIPHER, useClass: AesGcmSecretCipher },
     WebhookConfigRepository,
     WebhookSecretsRepository,
     WebhookDeliveriesRepository,
     WebhookDeliveryService,
+    NotificationDeliveriesRepository,
     // Transactional email/SMS (FR-GRV-01/05, FR-DSH-02/03). Unlike the webhook
     // pipeline this has no worker half: an OTP is worthless a minute late, so it
     // is sent inline and best-effort rather than queued. Registered in BOTH
@@ -63,6 +75,7 @@ import { NotificationDispatcher } from './notification-dispatcher';
     WebhookConfigRepository,
     WebhookSecretsRepository,
     WebhookDeliveriesRepository,
+    NotificationDeliveriesRepository,
     NotificationDispatcher,
   ],
 })

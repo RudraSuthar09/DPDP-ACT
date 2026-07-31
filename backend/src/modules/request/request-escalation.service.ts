@@ -1,7 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import type { EscalationRung, EscalationTrigger } from '@dpdp/shared';
+import {
+  SYSTEM_WORKER_ESCALATION_ACTOR_LABEL,
+  type EscalationRung,
+  type EscalationTrigger,
+} from '@dpdp/shared';
 import { NotificationDispatcher } from '../notify/notification-dispatcher';
+import { SystemAuditService } from '../audit/system-audit.service';
 import { RequestSlaRepository, type EscalationRow } from './request-sla.repository';
 import { RequestTicketsRepository } from './request-tickets.repository';
 
@@ -21,16 +27,15 @@ import { RequestTicketsRepository } from './request-tickets.repository';
  * in as a plain address.
  *
  * ON AUDIT. An escalation raised through the API is audited by the S5
- * interceptor like every other HTTP mutation. One raised by a fired deadline is
- * NOT — the worker has no HTTP request, and the audit sink has exactly one
- * writer by design (R3), so there is no honest way for a background process to
- * append to the chain without becoming a second writer. That is a real gap and
- * it is named rather than papered over. What backs the automatic path instead is
- * `request_escalations` itself: tenant-scoped, RLS-enforced, append-only by
- * trigger for every role including the owner. It is evidence of the same
- * quality; it is simply not in the same chain. Closing the gap properly means a
- * worker-side audit path, which is a deliberate design decision and not
- * something to slip in behind an escalation feature.
+ * interceptor like every other HTTP mutation — `RequestService.escalateNow`
+ * already annotates it and the route carries `@Audited(...)`, so nothing new
+ * is needed for that path. One raised by a FIRED DEADLINE used to be invisible
+ * to the chain: the worker has no HTTP request, so the interceptor never runs.
+ * That gap is now closed by `SystemAuditService` (see its header for the full
+ * argument for why it is a second sanctioned CALLER of the one sink, not a
+ * second writer) — injected here specifically because this service, not the
+ * handler that calls it, is the one place both the worker path and the manual
+ * path already converge, so the trigger-based gate below is written once.
  */
 @Injectable()
 export class RequestEscalationService {
@@ -40,6 +45,7 @@ export class RequestEscalationService {
     private readonly tickets: RequestTicketsRepository,
     private readonly sla: RequestSlaRepository,
     private readonly notifier: NotificationDispatcher,
+    private readonly systemAudit: SystemAuditService,
   ) {}
 
   /**
@@ -55,10 +61,16 @@ export class RequestEscalationService {
    * recorded with notified_ok = false rather than skipped. "We had nobody to
    * tell" is a fact a regulator would want to see; a missing row would read as
    * "the deadline never came".
+   *
+   * `tenantId` is required from every caller, but the S5 write below fires ONLY
+   * when `trigger !== 'manual'` — i.e. only for the worker's own two triggers.
+   * A manual escalation (`RequestService.escalateNow`) already lands in the
+   * chain through the ordinary HTTP path; writing here too would double it.
    */
   async escalate(
     client: PoolClient,
     input: {
+      tenantId: string;
       ticketId: string;
       referenceCode: string;
       subject: string;
@@ -74,6 +86,7 @@ export class RequestEscalationService {
 
     if (input.notify?.contact) {
       const result = await this.notifier.send({
+        tenantId: input.tenantId,
         channel: 'email',
         to: input.notify.contact,
         subject: `[${input.referenceCode}] Escalation — ${labelFor(input.rung)}`,
@@ -113,6 +126,28 @@ export class RequestEscalationService {
     // this level, nothing to bump.
     if (escalation) {
       await this.tickets.bumpEscalationLevel(client, input.ticketId, input.level);
+
+      // The worker-only half of this call: a manual escalation is already
+      // audited by the interceptor on its own HTTP route, so this fires
+      // exclusively for the two triggers only a fired deadline produces.
+      if (input.trigger !== 'manual') {
+        await this.systemAudit.record(client, input.tenantId, {
+          action: 'request.escalation.fired',
+          outcome: 'success',
+          correlationId: randomUUID(),
+          actorLabel: SYSTEM_WORKER_ESCALATION_ACTOR_LABEL,
+          targetType: 'request_ticket',
+          targetId: input.ticketId,
+          reason: input.reason,
+          afterState: {
+            referenceCode: input.referenceCode,
+            level: input.level,
+            rung: input.rung,
+            trigger: input.trigger,
+            notifiedOk,
+          },
+        });
+      }
     }
     return escalation;
   }

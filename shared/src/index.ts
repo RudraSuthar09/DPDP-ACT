@@ -11,3 +11,7 @@ export * from './consent';
 export * from './consent-notices';
 export * from './dashboard';
 export * from './request';
+export * from './grievance';
+export * from './dprequest';
+export * from './dpr-summary';
+export * from './breach';

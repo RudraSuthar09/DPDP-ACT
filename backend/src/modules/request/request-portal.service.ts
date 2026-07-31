@@ -116,6 +116,15 @@ export class RequestPortalService {
   async submit(
     input: SubmitRequestBody,
     provenance: { sourceIp: string | null; userAgent: string | null },
+    /**
+     * The one extension point a specialising module gets over this flow. A
+     * module whose statutory deadline depends on something the substrate does
+     * not know about — which right is being exercised, how severe a breach is —
+     * passes the key its own versioned policy records are filed under. Omitted
+     * (Grievance) means the base policy for the request type, i.e. exactly the
+     * behaviour before versioning existed.
+     */
+    options: { slaPolicyKey?: string } = {},
   ): Promise<{
     ticketId: string;
     referenceCode: string;
@@ -151,6 +160,9 @@ export class RequestPortalService {
         contactValue: input.contactValue,
         sourceIp: provenance.sourceIp,
         userAgent: provenance.userAgent,
+        // Recorded at INTAKE, not when the clock starts, so the key cannot
+        // drift between the request being filed and its contact being proved.
+        slaPolicyKey: options.slaPolicyKey ?? '',
       });
 
       // The submission itself IS the first entry in the append-only
@@ -440,6 +452,7 @@ export class RequestPortalService {
     // condition: a mail relay being down must not destroy a submission the
     // requester has already been told about. They can ask for a resend.
     const delivery = await this.notifier.send({
+      tenantId: ticket.tenant_id,
       channel: ticket.contact_channel,
       to: ticket.contact_value,
       subject: `Your verification code for request ${ticket.reference_code}`,

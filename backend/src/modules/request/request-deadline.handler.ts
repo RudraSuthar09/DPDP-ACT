@@ -79,6 +79,7 @@ export class RequestDeadlineHandler implements DeadlineHandler {
     }
 
     await this.escalation.escalate(client, {
+      tenantId: context.tenantId,
       ticketId: ticket.id,
       referenceCode: ticket.reference_code,
       subject: ticket.subject,

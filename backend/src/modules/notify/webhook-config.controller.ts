@@ -51,6 +51,47 @@ export class WebhookConfigController {
   }
 
   /**
+   * Where signed RIGHTS-REQUEST FULFILMENT calls go (FR-DPR-05/07).
+   *
+   * A second endpoint, not a second scheme: the signature, the header names and
+   * the per-tenant secret are all the consent webhook's (Prompt 22), so a client
+   * implements verification once. What differs is the obligation — a consent
+   * notification may be ignored, a fulfilment call carries a statutory deadline
+   * and its response is the evidence the action happened — and a tenant may
+   * reasonably route the two to different services.
+   *
+   * Kept as its own route rather than extra fields on `PUT config` so saving
+   * consent-webhook settings can never silently clear the fulfilment endpoint.
+   */
+  @Get('fulfilment')
+  @Roles('owner', 'dpo', 'compliance_officer')
+  async getFulfilment() {
+    const row = await this.config.getForCurrentTenant();
+    return {
+      url: row?.fulfilment_url ?? null,
+      enabled: row?.fulfilment_enabled ?? false,
+      updatedAt: row?.updated_at ?? null,
+    };
+  }
+
+  @Put('fulfilment')
+  @Roles('owner', 'dpo')
+  @Audited('notify.fulfilment_config.updated')
+  async setFulfilment(@Body() body: unknown) {
+    const input = parseWebhookConfigInput(body);
+    const ctx = this.tenantContext.getOrThrow();
+    if (input.url) {
+      await this.secrets.getOrCreate(ctx.tenantId);
+    }
+    const row = await this.config.setFulfilment({
+      url: input.url,
+      enabled: input.enabled,
+      actorId: ctx.userId,
+    });
+    return { url: row.fulfilment_url, enabled: row.fulfilment_enabled, updatedAt: row.updated_at };
+  }
+
+  /**
    * The tenant's own signing secret, in the clear — analogous to showing a
    * TOTP secret during MFA enrolment. Gated to owner/dpo (a step higher than
    * config read) and audited every time, because handing this out is handing

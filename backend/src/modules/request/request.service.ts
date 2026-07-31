@@ -10,6 +10,7 @@ import {
   type IdentityVerificationTask,
   type RequestCorrespondenceEntry,
   type RequestEscalation,
+  type EscalationLadderStep,
   type RequestSlaPolicy,
   type RequestStatus,
   type RequestStatusEvent,
@@ -22,6 +23,11 @@ import { AuditContextService } from '../audit/audit-context.service';
 import { RequestTicketsRepository, type TicketRow } from './request-tickets.repository';
 import { RequestVerificationRepository } from './request-verification.repository';
 import { RequestSlaRepository } from './request-sla.repository';
+import {
+  DeadlinePolicyService,
+  type ResolvedPolicy,
+} from '../deadlines/deadline-policy.service';
+import type { DeadlinePolicyVersionRow } from '../deadlines/deadline-policy.repository';
 import { RequestSlaService } from './request-sla.service';
 import { RequestEscalationService } from './request-escalation.service';
 import { defaultPolicyFor } from './request-sla-policy';
@@ -55,6 +61,7 @@ export class RequestService {
     private readonly slaRepo: RequestSlaRepository,
     private readonly slaService: RequestSlaService,
     private readonly escalation: RequestEscalationService,
+    private readonly policies: DeadlinePolicyService,
     private readonly audit: AuditContextService,
   ) {}
 
@@ -393,6 +400,7 @@ export class RequestService {
    *  rung of the same ladder the deadlines would have climbed, so a manual
    *  escalation and an automatic one are the same ladder, not two. */
   async escalateNow(ticketId: string, reason: string): Promise<RequestEscalation> {
+    const ctx = this.tenantContext.getOrThrow();
     const result = await this.db.withTenant(async (client) => {
       const ticket = await this.requireTicket(client, ticketId);
       if (CLOSED_REQUEST_STATUSES.includes(ticket.status)) {
@@ -403,6 +411,7 @@ export class RequestService {
         throw new BadRequestException('This request is already at the top of its escalation ladder.');
       }
       const escalation = await this.escalation.escalate(client, {
+        tenantId: ctx.tenantId,
         ticketId: ticket.id,
         referenceCode: ticket.reference_code,
         subject: ticket.subject,
@@ -503,6 +512,42 @@ export class RequestService {
       isDefault: false,
       updatedAt: result.row.updated_at.toISOString(),
     };
+  }
+
+  // --- versioned deadline policy ------------------------------------------
+  //
+  // Thin delegations to DeadlinePolicyService, which Breach uses identically.
+  // They stay on RequestService so the substrate's own callers (and its HTTP
+  // surface) do not have to learn a second service — but the mechanism itself
+  // is no longer this module's, and that is deliberate: three domains sharing
+  // one deadline register is the whole point of FR-BRC-02.
+
+  listPolicyVersions(requestType: RequestType): Promise<DeadlinePolicyVersionRow[]> {
+    return this.policies.listVersions(requestType);
+  }
+
+  /** The policy a NEW ticket with this key would be judged under right now. */
+  effectivePolicy(requestType: RequestType, policyKey: string): Promise<ResolvedPolicy> {
+    return this.db.withTenant((client) => this.slaService.policyFor(client, requestType, policyKey));
+  }
+
+  supersedePolicy(input: {
+    requestType: RequestType;
+    policyKey: string;
+    slaSeconds: number;
+    ladder: EscalationLadderStep[];
+    effectiveFrom: Date;
+    note: string | null;
+  }): Promise<DeadlinePolicyVersionRow> {
+    const { requestType, ...rest } = input;
+    return this.policies.supersede({ domain: requestType, ...rest });
+  }
+
+  ensurePolicyVersions(
+    requestType: RequestType,
+    seeds: { policyKey: string; slaSeconds: number; ladder: EscalationLadderStep[]; note: string }[],
+  ): Promise<number> {
+    return this.policies.ensureSeeded(requestType, seeds);
   }
 
   private async requireTicket(client: PoolClient, ticketId: string): Promise<TicketRow> {

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { IdentityService } from '../identity/identity.service';
 import { AuditContextService } from '../audit/audit-context.service';
-import { RopaRepository } from './ropa.repository';
+import { RopaRepository, type RopaEntryRow } from './ropa.repository';
 import { renderRopaPdf } from './ropa-pdf';
 import { renderRopaXlsx } from './ropa-xlsx';
 import type { RopaFormat } from './ropa.dto';
@@ -26,6 +26,24 @@ export class RopaService {
     private readonly identity: IdentityService,
     private readonly audit: AuditContextService,
   ) {}
+
+  /**
+   * The register's current state as DATA rather than as a document.
+   *
+   * Added for the DPR Personal Data Summary (FR-DPR-04), which needs exactly
+   * what the RoPA needs — every active element with its purposes, legal bases,
+   * retention, systems and vendors — but renders it per data principal instead
+   * of per organisation. Exposed here rather than by exporting RopaRepository,
+   * so DPRequestModule reads inventory through a service and never touches
+   * inventory tables itself (R2).
+   *
+   * Read-only and uncached, like `export`: the summary a data principal is
+   * handed reflects the register as it is at that instant, not as it was when
+   * something last warmed a cache.
+   */
+  activeEntries(): Promise<RopaEntryRow[]> {
+    return this.repo.listActiveEntries();
+  }
 
   async export(format: RopaFormat): Promise<RopaExportResult> {
     const [entries, user] = await Promise.all([this.repo.listActiveEntries(), this.identity.currentUser()]);
