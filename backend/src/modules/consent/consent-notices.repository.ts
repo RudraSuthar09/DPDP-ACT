@@ -139,6 +139,52 @@ export class ConsentNoticesRepository {
     });
   }
 
+  /**
+   * The same lookup as `findOne`, batched over many ids in two queries instead
+   * of one round trip per id. Exists for the subject consent timeline, which
+   * otherwise resolves every DISTINCT notice version its events reference with
+   * one request each — fine for a handful, a real waterfall (and a doubled one,
+   * since each cross-origin GET pays its own CORS preflight) once a subject's
+   * history spans a few dozen notice revisions. Missing/unknown ids are simply
+   * absent from the result, same as a 404 would have been per-id.
+   */
+  findMany(noticeVersionIds: string[]): Promise<NoticeVersionWithTranslations[]> {
+    if (noticeVersionIds.length === 0) {
+      return Promise.resolve([]);
+    }
+    return this.db.withTenant(async (client) => {
+      const { rows: versions } = await client.query<NoticeVersionRow>(
+        `SELECT * FROM consent_notice_versions WHERE id = ANY($1::uuid[])`,
+        [noticeVersionIds],
+      );
+      if (versions.length === 0) {
+        return [];
+      }
+
+      const { rows: translations } = await client.query<NoticeTranslationRow>(
+        `SELECT * FROM consent_notice_translations
+          WHERE notice_version_id = ANY($1::uuid[])
+          ORDER BY language`,
+        [versions.map((v) => v.id)],
+      );
+
+      const byVersion = new Map<string, NoticeTranslationRow[]>();
+      for (const t of translations) {
+        const list = byVersion.get(t.notice_version_id);
+        if (list) {
+          list.push(t);
+        } else {
+          byVersion.set(t.notice_version_id, [t]);
+        }
+      }
+
+      return versions.map((version) => ({
+        version,
+        translations: byVersion.get(version.id) ?? [],
+      }));
+    });
+  }
+
   /** One notice version plus its translations — the first-class notice_version_id lookup. */
   findOne(noticeVersionId: string): Promise<NoticeVersionWithTranslations | null> {
     return this.db.withTenant(async (client) => {

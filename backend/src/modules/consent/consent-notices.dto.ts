@@ -56,3 +56,30 @@ function asObject(body: unknown): Record<string, unknown> {
   }
   return body as Record<string, unknown>;
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Matches a subject timeline's realistic upper bound (a handful of purposes x
+ *  a handful of revisions each) with headroom, without letting the query
+ *  string become an unbounded list. */
+const MAX_NOTICE_IDS = 200;
+
+/** `?ids=a,b,c` for the batched notices lookup — GET, so the ids travel in the
+ *  query string, same as any other read-only list filter. */
+export function parseNoticeIdsQuery(ids: string | undefined): string[] {
+  const raw = (ids ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (raw.length === 0) {
+    throw new BadRequestException('ids must be a non-empty comma-separated list of UUIDs.');
+  }
+  if (raw.length > MAX_NOTICE_IDS) {
+    throw new BadRequestException(`ids must contain at most ${MAX_NOTICE_IDS} values.`);
+  }
+  for (const id of raw) {
+    if (!UUID_PATTERN.test(id)) {
+      throw new BadRequestException(`"${id}" is not a UUID.`);
+    }
+  }
+  return raw.map((id) => id.toLowerCase());
+}

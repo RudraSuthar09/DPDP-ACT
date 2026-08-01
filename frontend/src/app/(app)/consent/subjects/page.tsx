@@ -214,20 +214,21 @@ export default function SubjectConsentHistoryPage() {
     const missing = noticeIds.filter((id) => !(id in notices));
     if (missing.length === 0) return;
     let cancelled = false;
-    void Promise.all(
-      missing.map((id) =>
-        apiFetch<NoticeVersion>(`/consent/notices/${id}`)
-          .then((n) => [id, n] as const)
-          .catch(() => [id, null] as const),
-      ),
-    ).then((fetched) => {
-      if (cancelled) return;
-      setNotices((prev) => {
-        const next = { ...prev };
-        for (const [id, n] of fetched) next[id] = n;
-        return next;
+    // One request for every distinct version this timeline references, not one
+    // per version — a subject with a long history across several purposes'
+    // notice revisions used to mean a request (and, cross-origin, a CORS
+    // preflight alongside each) per version.
+    void apiFetch<{ notices: NoticeVersion[] }>(`/consent/notices?ids=${missing.join(',')}`)
+      .then((res) => new Map(res.notices.map((n) => [n.id, n] as const)))
+      .catch(() => new Map<string, NoticeVersion>())
+      .then((found) => {
+        if (cancelled) return;
+        setNotices((prev) => {
+          const next = { ...prev };
+          for (const id of missing) next[id] = found.get(id) ?? null;
+          return next;
+        });
       });
-    });
     return () => {
       cancelled = true;
     };

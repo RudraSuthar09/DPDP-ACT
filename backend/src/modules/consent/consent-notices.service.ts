@@ -61,4 +61,11 @@ export class ConsentNoticesService {
     }
     return found;
   }
+
+  /** Batched `findOne`, for a caller resolving many distinct notice versions
+   *  at once (the subject timeline) instead of one request per id. */
+  findMany(noticeVersionIds: string[]): Promise<NoticeVersionWithTranslations[]> {
+    const unique = Array.from(new Set(noticeVersionIds));
+    return this.repo.findMany(unique);
+  }
 }

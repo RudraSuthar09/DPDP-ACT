@@ -7,13 +7,14 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { TenantGuard } from '../../tenancy/tenant.guard';
 import { Roles } from '../identity/rbac/roles.decorator';
 import { Audited } from '../audit/audited.decorator';
 import { ConsentNoticesService } from './consent-notices.service';
-import { parseCreateNotice } from './consent-notices.dto';
+import { parseCreateNotice, parseNoticeIdsQuery } from './consent-notices.dto';
 import type { NoticeVersionWithTranslations } from './consent-notices.repository';
 
 /**
@@ -44,6 +45,20 @@ export class ConsentNoticesController {
   async list(@Param('purposeId', ParseUUIDPipe) purposeId: string) {
     const versions = await this.notices.listForPurpose(purposeId);
     return { notices: versions.map(toResponse) };
+  }
+
+  /**
+   * Many notice versions by id in one round trip — `?ids=a,b,c` — for the
+   * subject consent timeline, which otherwise resolves every DISTINCT notice
+   * version its events reference with one `findOne` each. An id with no
+   * matching notice is simply absent from `notices`, mirroring `findOne`'s
+   * 404 per-id without turning one bad id into a failed batch.
+   */
+  @Get('notices')
+  async findMany(@Query('ids') ids?: string) {
+    const parsed = parseNoticeIdsQuery(ids);
+    const found = await this.notices.findMany(parsed);
+    return { notices: found.map(toResponse) };
   }
 
   /** One notice version by its own id — the first-class notice_version_id. */
