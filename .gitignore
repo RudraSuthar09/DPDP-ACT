@@ -28,6 +28,10 @@ pnpm-debug.log*
 # not source.
 backend/var/
 
+# scripts/seed-demo.mjs's local state — the demo tenant's TOTP secret, which
+# cannot be re-derived from the server. Per-machine, never a real secret.
+scripts/.seed-demo-state.json
+
 # editor / OS
 .vscode/*
 !.vscode/extensions.json

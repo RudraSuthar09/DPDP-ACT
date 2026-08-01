@@ -32,7 +32,8 @@
     "breach:demo": "node scripts/breach-demo.mjs",
     "breach:ui": "node scripts/breach-ui.spec.mjs",
     "audit:gap:demo": "node scripts/audit-worker-gap-demo.mjs",
-    "notify:evidence:demo": "node scripts/notify-and-evidence-demo.mjs"
+    "notify:evidence:demo": "node scripts/notify-and-evidence-demo.mjs",
+    "seed:demo": "node scripts/seed-demo.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
