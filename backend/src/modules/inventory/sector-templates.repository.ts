@@ -10,7 +10,12 @@ import type { LegalBasis } from './entry-purposes.repository';
  * tenant-scoped repositories for that part.
  */
 
-export type SectorTemplateSector = 'healthcare' | 'retail' | 'edtech' | 'fintech';
+export type SectorTemplateSector =
+  | 'healthcare'
+  | 'retail'
+  | 'edtech'
+  | 'fintech'
+  | 'ca_tax_practice';
 
 export interface SectorTemplateRow {
   id: string;
@@ -31,6 +36,28 @@ export interface TemplateElement {
   description: string | null;
   storageLocation: string;
   purposes: TemplateElementPurpose[];
+  /** Names of entries in the version's `systems` array to link this element to. */
+  systemRefs: string[];
+  /** Names of entries in the version's `vendors` array, with per-link transfer notes. */
+  vendorRefs: Array<{ name: string; transferNotes: string | null }>;
+}
+
+/** Seeded into `inventory_systems` — same field set as the manual add form. */
+export interface TemplateSystem {
+  name: string;
+  systemType: string;
+  description: string | null;
+  hostingLocation: string | null;
+  accessControlNote: string | null;
+}
+
+/** Seeded into `inventory_vendors` — same field set as the manual add form. */
+export interface TemplateVendor {
+  name: string;
+  description: string | null;
+  contactEmail: string | null;
+  dpaReference: string | null;
+  country: string | null;
 }
 
 export interface SectorTemplateVersionRow {
@@ -38,6 +65,8 @@ export interface SectorTemplateVersionRow {
   template_id: string;
   version_number: number;
   elements: TemplateElement[];
+  systems: TemplateSystem[];
+  vendors: TemplateVendor[];
   created_at: Date;
 }
 
@@ -45,14 +74,18 @@ export interface SectorTemplateVersionRow {
 export class SectorTemplatesRepository {
   constructor(private readonly db: TenantDatabaseService) {}
 
-  /** Every template with its current (latest) version's element count. */
-  listWithElementCount(): Promise<Array<SectorTemplateRow & { elementCount: number }>> {
+  /** Every template with its current (latest) version's element/system/vendor counts. */
+  listWithElementCount(): Promise<
+    Array<SectorTemplateRow & { elementCount: number; systemCount: number; vendorCount: number }>
+  > {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query(
         `SELECT * FROM (
            SELECT DISTINCT ON (t.id)
              t.id, t.sector, t.name, t.created_at,
-             jsonb_array_length(v.elements) AS "elementCount"
+             jsonb_array_length(v.elements) AS "elementCount",
+             jsonb_array_length(v.systems)  AS "systemCount",
+             jsonb_array_length(v.vendors)  AS "vendorCount"
            FROM inventory_sector_templates t
            JOIN inventory_sector_template_versions v ON v.template_id = t.id
            ORDER BY t.id, v.version_number DESC

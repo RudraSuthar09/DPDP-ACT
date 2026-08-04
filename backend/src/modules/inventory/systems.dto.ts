@@ -10,6 +10,7 @@ export function parseSystemInput(body: unknown): SystemFields {
     systemType: requireString(obj, 'systemType', { min: 1, max: 100 }),
     description: optionalString(obj, 'description', { max: 2000 }),
     hostingLocation: optionalString(obj, 'hostingLocation', { max: 300 }),
+    accessControlNote: optionalString(obj, 'accessControlNote', { max: 2000 }),
   };
 }
 

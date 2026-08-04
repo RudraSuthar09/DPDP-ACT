@@ -1,5 +1,6 @@
 import type { ModuleArea, Role } from '@dpdp/shared';
 import type { AccessToken } from '../token.service';
+import type { ProductTourStatus } from '../users.repository';
 
 /**
  * The identity seam (FR-IDN-01/02/03).
@@ -163,4 +164,10 @@ export interface AuthenticatedUser {
    */
   portalSlug: string;
   mfaEnrolled: boolean;
+  /**
+   * Guided-tour state. On the profile because the shell must decide whether to
+   * auto-launch the tour on the very first render, and a second round trip for
+   * one enum would just make the tour flash in and out on every page load.
+   */
+  productTourStatus: ProductTourStatus;
 }

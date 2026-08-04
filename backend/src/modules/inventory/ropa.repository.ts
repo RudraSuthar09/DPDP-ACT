@@ -34,6 +34,9 @@ export interface RopaSystem {
   name: string;
   systemType: string;
   hostingLocation: string | null;
+  /** The system's access-control policy statement — the organisational
+   *  security measure a RoPA is expected to describe. FR-INV-06. */
+  accessControlNote: string | null;
 }
 export interface RopaVendor {
   name: string;
@@ -90,12 +93,13 @@ export class RopaRepository {
          ) purposes ON true
          LEFT JOIN LATERAL (
            SELECT jsonb_agg(jsonb_build_object(
-             'name', sv.name, 'systemType', sv.system_type, 'hostingLocation', sv.hosting_location
+             'name', sv.name, 'systemType', sv.system_type, 'hostingLocation', sv.hosting_location,
+             'accessControlNote', sv.access_control_note
            ) ORDER BY sv.name) AS data
            FROM inventory_entry_systems l
            JOIN inventory_systems s ON s.id = l.system_id AND s.status = 'active'
            JOIN LATERAL (
-             SELECT name, system_type, hosting_location
+             SELECT name, system_type, hosting_location, access_control_note
              FROM inventory_system_versions sv2
              WHERE sv2.system_id = s.id ORDER BY sv2.version_number DESC LIMIT 1
            ) sv ON true

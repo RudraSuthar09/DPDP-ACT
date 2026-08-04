@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
+import { TakeTheTourButton } from '../../../components/ProductTour';
 import { apiFetch, downloadFile, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
 
@@ -119,23 +120,30 @@ export default function DashboardPage() {
           <h1>Dashboard</h1>
           <p className="muted">Where things stand across every module, at a glance.</p>
         </div>
-        {user && EVIDENCE_BUNDLE_ROLES.has(user.role) && (
-          <button
-            type="button"
-            data-testid="export-evidence-bundle-btn"
-            onClick={() => void exportEvidenceBundle()}
-            disabled={exportingBundle}
-            title="A complete, verifiable export of this organisation's audit log (FR-AUD-05) — what you hand a regulator."
-          >
-            {exportingBundle ? 'Exporting…' : 'Export full evidence bundle'}
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          {/* Also in the topbar and in Settings, but the dashboard is where a
+              walkthrough actually gets started from — including when someone is
+              showing the platform to a client rather than learning it. No role
+              gate: every role can take the tour. */}
+          <TakeTheTourButton className="primary" testId="dashboard-take-the-tour" />
+          {user && EVIDENCE_BUNDLE_ROLES.has(user.role) && (
+            <button
+              type="button"
+              data-testid="export-evidence-bundle-btn"
+              onClick={() => void exportEvidenceBundle()}
+              disabled={exportingBundle}
+              title="A complete, verifiable export of this organisation's audit log (FR-AUD-05) — what you hand a regulator."
+            >
+              {exportingBundle ? 'Exporting…' : 'Export full evidence bundle'}
+            </button>
+          )}
+        </div>
       </div>
       {bundleError && <div className="error">{bundleError}</div>}
 
       {summaryError && <div className="error">{summaryError}</div>}
 
-      <div className="stat-grid">
+      <div className="stat-grid" data-tour="dashboard-stats">
         <StatTile
           label="Categories mapped"
           value={summary?.inventory.categories}

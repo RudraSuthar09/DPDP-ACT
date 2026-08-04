@@ -11,6 +11,7 @@ import {
   type RequestTicket,
 } from '@dpdp/shared';
 import { apiFetch, ApiError } from '../../../lib/api';
+import { useAuth } from '../../../lib/auth';
 import { slaBadgeClass, slaCountdownLabel, slaUrgency } from '../../../lib/sla';
 
 interface TeamMember {
@@ -80,6 +81,8 @@ export default function GrievanceInboxPage() {
         Complaints filed through the public portal (FR-GRV-01), tracked on the shared request
         substrate. Each ticket waits on identity verification before it can be worked (FR-GRV-04).
       </p>
+
+      <PortalLinkPanel />
 
       <div className="toolbar">
         <div className="field">
@@ -183,4 +186,58 @@ function statusBadge(status: RequestStatus): string {
   if (status === 'pending_identity_verification') return 'info';
   if (status === 'created' || status === 'contact_verified') return 'neutral';
   return 'neutral';
+}
+
+/**
+ * The tenant's own public request-portal address.
+ *
+ * The backend has always returned `portalSlug` on /auth/me — with a comment
+ * saying staff need to know and publish it — but nothing in the UI ever showed
+ * it, so the one thing a firm is supposed to hand its clients was a fact stored
+ * about them that they could not see. It belongs on this page because this is
+ * the inbox that fills up when somebody uses it.
+ *
+ * Not a credential: the slug authorises nothing (see portal-tenant.middleware.ts).
+ */
+function PortalLinkPanel() {
+  const { user } = useAuth();
+  const [copied, setCopied] = useState(false);
+  const [origin, setOrigin] = useState('');
+
+  // window is not available during SSR, so the absolute URL is assembled after
+  // mount rather than guessed from a build-time constant that would be wrong
+  // behind any reverse proxy.
+  useEffect(() => setOrigin(window.location.origin), []);
+
+  if (!user?.portalSlug) return null;
+  const url = origin ? `${origin}/portal/${user.portalSlug}` : `/portal/${user.portalSlug}`;
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard permission denied — the link is on screen and selectable.
+    }
+  }
+
+  return (
+    <div className="panel" style={{ marginBottom: 16 }} data-tour="portal-link">
+      <h2 style={{ marginTop: 0 }}>Your public request page</h2>
+      <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
+        Share this with your own clients. Anything they file here — a question about what you hold,
+        a correction, or a complaint — arrives in this inbox with a reference number and a deadline
+        already running.
+      </p>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <a className="mono" href={`/portal/${user.portalSlug}`} data-testid="portal-link-url">
+          {url}
+        </a>
+        <button type="button" onClick={() => void copy()} data-testid="portal-link-copy">
+          {copied ? 'Copied' : 'Copy link'}
+        </button>
+      </div>
+    </div>
+  );
 }

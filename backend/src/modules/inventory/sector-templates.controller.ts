@@ -5,8 +5,10 @@ import { Audited } from '../audit/audited.decorator';
 import { SectorTemplatesService } from './sector-templates.service';
 
 /**
- * FR-INV-11: sector templates (healthcare, retail, edtech, fintech) that
- * pre-seed common data elements. The catalog is global and read-only
+ * FR-INV-11: sector templates that pre-seed a starting register — common data
+ * elements, the systems they live on, and the vendors/recipients they reach.
+ * Everything seeded is ordinary, editable tenant data, never a locked list.
+ * The catalog is global and read-only
  * (@Roles is intentionally NOT applied to the GET routes — every role may
  * browse the catalog); applying one is a tenant-scoped write restricted the
  * same as any other register mutation.
@@ -25,6 +27,8 @@ export class SectorTemplatesController {
         sector: t.sector,
         name: t.name,
         elementCount: t.elementCount,
+        systemCount: t.systemCount,
+        vendorCount: t.vendorCount,
       })),
     };
   }
@@ -37,6 +41,8 @@ export class SectorTemplatesController {
       sector: template.sector,
       name: template.name,
       elements: version.elements,
+      systems: version.systems,
+      vendors: version.vendors,
     };
   }
 

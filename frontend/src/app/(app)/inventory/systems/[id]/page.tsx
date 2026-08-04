@@ -12,6 +12,7 @@ interface VersionEntry {
   systemType: string;
   description: string | null;
   hostingLocation: string | null;
+  accessControlNote: string | null;
   createdAt: string;
 }
 interface LinkedEntry {
@@ -42,7 +43,13 @@ export default function SystemDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ name: '', systemType: '', description: '', hostingLocation: '' });
+  const [form, setForm] = useState({
+    name: '',
+    systemType: '',
+    description: '',
+    hostingLocation: '',
+    accessControlNote: '',
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,6 +76,7 @@ export default function SystemDetailPage() {
       systemType: current.systemType,
       description: current.description ?? '',
       hostingLocation: current.hostingLocation ?? '',
+      accessControlNote: current.accessControlNote ?? '',
     });
     setEditing(true);
   }
@@ -84,6 +92,7 @@ export default function SystemDetailPage() {
           systemType: form.systemType.trim(),
           description: form.description.trim() || undefined,
           hostingLocation: form.hostingLocation.trim() || undefined,
+          accessControlNote: form.accessControlNote.trim() || undefined,
         },
       });
       setEditing(false);
@@ -147,6 +156,7 @@ export default function SystemDetailPage() {
             <Field label="Type" value={current.systemType} />
             <Field label="Description" value={current.description || '—'} />
             <Field label="Hosting location" value={current.hostingLocation || '—'} />
+            <Field label="Access control policy" value={current.accessControlNote || '—'} />
           </>
         ) : (
           <>
@@ -166,6 +176,13 @@ export default function SystemDetailPage() {
             <input
               value={form.hostingLocation}
               onChange={(e) => setForm((f) => ({ ...f, hostingLocation: e.target.value }))}
+            />
+            <label>Access control policy</label>
+            <textarea
+              rows={3}
+              value={form.accessControlNote}
+              onChange={(e) => setForm((f) => ({ ...f, accessControlNote: e.target.value }))}
+              placeholder="Who may access data on this system, and under what policy."
             />
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
               <button type="button" disabled={busy} onClick={() => setEditing(false)}>

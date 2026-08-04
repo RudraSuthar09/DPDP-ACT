@@ -167,7 +167,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
     editForm.purposeName.trim().length > 0 && editForm.retentionPeriod.trim().length > 0;
 
   return (
-    <div className="panel" style={{ marginTop: 16 }}>
+    <div className="panel" style={{ marginTop: 16 }} data-tour="purposes-panel">
       <h2 style={{ marginTop: 0 }}>Processing purposes</h2>
       <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
         Why this data is collected, the DPDP ground relied on, and how long it&apos;s kept — one data
@@ -198,6 +198,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
           ) : (
             <div
               key={p.id}
+              data-testid="purpose-row"
               style={{
                 border: '1px solid var(--border)',
                 borderRadius: 8,

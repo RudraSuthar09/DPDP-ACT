@@ -49,6 +49,7 @@ export class SystemsController {
         systemType: s.system_type,
         description: s.description,
         hostingLocation: s.hosting_location,
+        accessControlNote: s.access_control_note,
       })),
     };
   }
@@ -105,6 +106,7 @@ function toVersionResponse(v: SystemVersionRow) {
     systemType: v.system_type,
     description: v.description,
     hostingLocation: v.hosting_location,
+    accessControlNote: v.access_control_note,
     createdAt: v.created_at,
   };
 }

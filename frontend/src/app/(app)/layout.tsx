@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { useAuth } from '../../lib/auth';
 import { MODULE_NAV, OVERVIEW_NAV, PLATFORM_NAV, type NavItem } from '../../lib/nav';
+import { TakeTheTourButton, TourProvider } from '../../components/ProductTour';
 
 /**
  * The authenticated, tenant-aware shell. Every page under (app) renders inside
@@ -30,7 +31,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="shell">
+    // The tour lives inside the authenticated shell, so it can only ever run
+    // for a real signed-in user against their own real screens.
+    <TourProvider>
+      <div className="shell">
       <aside className="sidebar">
         <div className="brand">DPDP Platform</div>
 
@@ -56,14 +60,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
           <div className="who">
             {user.fullName} · {user.email} · <span className="mono">{user.role}</span>{' '}
-            <button style={{ marginLeft: 10 }} onClick={onSignOut}>
+            <TakeTheTourButton />
+            <button style={{ marginLeft: 8 }} onClick={onSignOut}>
               Sign out
             </button>
           </div>
         </header>
         <div className="content">{children}</div>
       </div>
-    </div>
+      </div>
+    </TourProvider>
   );
 }
 

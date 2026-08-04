@@ -40,15 +40,15 @@ export async function renderRopaXlsx(input: {
     views: [{ state: 'frozen', ySplit: 4 }],
   });
 
-  sheet.mergeCells('A1:K1');
+  sheet.mergeCells('A1:L1');
   sheet.getCell('A1').value = input.organisationName;
   sheet.getCell('A1').font = { bold: true, size: 14 };
 
-  sheet.mergeCells('A2:K2');
+  sheet.mergeCells('A2:L2');
   sheet.getCell('A2').value = 'Record of Processing Activities';
   sheet.getCell('A2').font = { bold: true, size: 12, color: { argb: 'FF444444' } };
 
-  sheet.mergeCells('A3:K3');
+  sheet.mergeCells('A3:L3');
   sheet.getCell('A3').value =
     `Generated ${input.generatedAt.toLocaleString()} — reflects current data at generation time, not a cached snapshot.`;
   sheet.getCell('A3').font = { italic: true, size: 9, color: { argb: 'FF888888' } };
@@ -63,6 +63,7 @@ export async function renderRopaXlsx(input: {
     'Legal basis note',
     'Retention period',
     'Systems',
+    'Access control',
     'Vendors / recipients',
     'PII classification',
     'PII review status',
@@ -83,6 +84,7 @@ export async function renderRopaXlsx(input: {
     { key: 'legalBasisNote', width: 24 },
     { key: 'retentionPeriod', width: 26 },
     { key: 'systems', width: 30 },
+    { key: 'accessControl', width: 40 },
     { key: 'vendors', width: 30 },
     { key: 'piiClassification', width: 20 },
     { key: 'piiStatus', width: 22 },
@@ -92,6 +94,10 @@ export async function renderRopaXlsx(input: {
   for (const entry of input.entries) {
     const systemsText = entry.systems
       .map((s) => `${s.name} (${s.systemType}${s.hostingLocation ? `, ${s.hostingLocation}` : ''})`)
+      .join('; ');
+    const accessControlText = entry.systems
+      .filter((s) => s.accessControlNote)
+      .map((s) => `${s.name}: ${s.accessControlNote}`)
       .join('; ');
     const vendorsText = entry.vendors
       .map((v) => `${v.name}${v.country ? ` (${v.country})` : ''}${v.transferNotes ? ` — ${v.transferNotes}` : ''}`)
@@ -113,6 +119,7 @@ export async function renderRopaXlsx(input: {
         legalBasisNote: purpose?.legalBasisNote ?? '',
         retentionPeriod: purpose?.retentionPeriod ?? '',
         systems: systemsText,
+        accessControl: accessControlText,
         vendors: vendorsText,
         piiClassification,
         piiStatus,

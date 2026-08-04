@@ -516,6 +516,74 @@ tbody tr:last-child td {
   font-size: 0.9rem;
 }
 
+/* --- guided product tour ---
+ * Positioning only. Every colour, radius, border and control below resolves to
+ * a token or class that already existed (--panel, --border, --accent, .panel,
+ * .muted, button.primary): the tour deliberately introduces NO new visual
+ * language, because a walkthrough that looks like a different product is
+ * teaching you the wrong thing about the one you just bought. */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  /* Dimming only — it must not swallow clicks on the highlighted screen behind
+   * it, so the backdrop is inert and only the card takes pointer events. */
+  background: rgba(26, 26, 30, 0.45);
+  pointer-events: none;
+}
+.tour-ring {
+  position: fixed;
+  z-index: 51;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 0 0 9999px rgba(26, 26, 30, 0.45);
+  pointer-events: none;
+  transition: top 0.15s ease, left 0.15s ease, width 0.15s ease, height 0.15s ease;
+}
+/* When a ring is drawn it supplies its own dimming via the huge box-shadow, so
+ * the flat overlay would double it. */
+.tour-overlay.has-ring {
+  background: transparent;
+}
+.tour-card {
+  position: fixed;
+  z-index: 52;
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: auto;
+  box-shadow: 0 10px 30px rgba(26, 26, 30, 0.18);
+}
+.tour-card .tour-step-count {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.tour-card .tour-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+.tour-card .tour-actions-right {
+  display: flex;
+  gap: 8px;
+}
+.tour-progress {
+  display: flex;
+  gap: 4px;
+  margin-top: 14px;
+}
+.tour-progress span {
+  height: 3px;
+  flex: 1;
+  border-radius: 999px;
+  background: var(--border);
+}
+.tour-progress span.done {
+  background: var(--accent);
+}
+
 /* --- consent event timeline --- */
 .timeline {
   list-style: none;

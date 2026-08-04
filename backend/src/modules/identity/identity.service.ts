@@ -91,8 +91,26 @@ export class IdentityService {
         organisationName: row.organisation_name,
         portalSlug: row.portal_slug,
         mfaEnrolled: row.mfa_enrolled_at !== null,
+        productTourStatus: row.product_tour_status,
       };
     });
+  }
+
+  /**
+   * Record that the caller finished with the guided tour — completed it or
+   * skipped it. Always the CALLER's own row: the user id comes from the tenant
+   * context (a verified token claim), never from the request, so this endpoint
+   * cannot be pointed at a colleague.
+   *
+   * Not audited (see the controller's @NoAudit) and not versioned: interface
+   * state, not evidence. See the migration for the full argument.
+   */
+  async setProductTourStatus(status: 'completed' | 'skipped'): Promise<{ productTourStatus: string }> {
+    const ctx = this.tenantContext.getOrThrow();
+    await this.db.withTenant((client) =>
+      this.users.setProductTourStatus(client, ctx.userId, status),
+    );
+    return { productTourStatus: status };
   }
 
   /** The five module areas provisioned for this workspace (FR-IDN-01). */

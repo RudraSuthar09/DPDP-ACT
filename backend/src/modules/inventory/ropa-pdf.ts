@@ -93,6 +93,16 @@ function drawEntry(doc: PDFKit.PDFDocument, entry: RopaEntryRow) {
     : 'None recorded';
   labelValue(doc, 'Systems', systemsText);
 
+  // Only rendered when at least one system carries a statement — an empty
+  // "Access control: —" line reads as a claim that none exists, which is worse
+  // than saying nothing.
+  const accessNotes = entry.systems
+    .filter((s) => s.accessControlNote)
+    .map((s) => `${s.name}: ${s.accessControlNote}`);
+  if (accessNotes.length > 0) {
+    labelValue(doc, 'Access control', accessNotes.join('  •  '));
+  }
+
   const vendorsText = entry.vendors.length
     ? entry.vendors
         .map((v) => `${v.name}${v.country ? ` (${v.country})` : ''}${v.transferNotes ? ` — ${v.transferNotes}` : ''}`)
@@ -150,5 +160,11 @@ function piiSummary(entry: RopaEntryRow): string {
 
 /** Rough upper-bound estimate so we page-break BEFORE splitting an entry awkwardly. */
 function estimateEntryHeight(entry: RopaEntryRow): number {
-  return 140 + entry.purposes.length * 22 + (entry.description ? 20 : 0);
+  const accessNoteChars = entry.systems.reduce((n, s) => n + (s.accessControlNote?.length ?? 0), 0);
+  return (
+    140 +
+    entry.purposes.length * 22 +
+    (entry.description ? 20 : 0) +
+    (accessNoteChars > 0 ? 20 + Math.ceil(accessNoteChars / 90) * 12 : 0)
+  );
 }

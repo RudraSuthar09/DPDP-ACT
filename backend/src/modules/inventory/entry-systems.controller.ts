@@ -37,6 +37,7 @@ export class EntrySystemsController {
         systemType: s.system_type,
         description: s.description,
         hostingLocation: s.hosting_location,
+        accessControlNote: s.access_control_note,
       })),
     };
   }

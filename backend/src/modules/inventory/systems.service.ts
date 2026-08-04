@@ -11,6 +11,7 @@ function versionState(v: SystemVersionRow) {
     systemType: v.system_type,
     description: v.description,
     hostingLocation: v.hosting_location,
+    accessControlNote: v.access_control_note,
   };
 }
 

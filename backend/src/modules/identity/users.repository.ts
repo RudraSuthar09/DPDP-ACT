@@ -32,12 +32,18 @@ export interface UserRow {
   mfa_last_step: string | null;
   failed_login_attempts: number;
   locked_until: Date | null;
+  product_tour_status: ProductTourStatus;
+  product_tour_updated_at: Date | null;
 }
+
+/** Guided-tour state (interface state, not evidence — see the migration). */
+export type ProductTourStatus = 'pending' | 'completed' | 'skipped';
 
 const USER_COLUMNS = `
   id, tenant_id, email, full_name, password_hash, password_algo, role, status,
   mfa_secret_ciphertext, mfa_enrolled_at, mfa_last_step,
-  failed_login_attempts, locked_until
+  failed_login_attempts, locked_until,
+  product_tour_status, product_tour_updated_at
 `;
 
 @Injectable()
@@ -222,6 +228,30 @@ export class UsersRepository {
           SET failed_login_attempts = 0, locked_until = NULL, last_login_at = now()
         WHERE id = $1`,
       [userId],
+    );
+  }
+
+  // --- Guided tour (interface state) ---------------------------------------
+
+  /**
+   * Record that this user finished with the product tour. Updated in place, on
+   * purpose — see 1737002600000_user-product-tour-state.sql for why this one
+   * fact is not versioned and not audited like everything else on this table.
+   *
+   * Scoped `WHERE id = $1` under RLS, and the id always comes from the caller's
+   * OWN verified token (never a body field), so a user can only ever set their
+   * own tour state.
+   */
+  async setProductTourStatus(
+    client: PoolClient,
+    userId: string,
+    status: Exclude<ProductTourStatus, 'pending'>,
+  ): Promise<void> {
+    await client.query(
+      `UPDATE users
+          SET product_tour_status = $2, product_tour_updated_at = now(), updated_at = now()
+        WHERE id = $1`,
+      [userId, status],
     );
   }
 

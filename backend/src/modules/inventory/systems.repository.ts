@@ -27,6 +27,7 @@ export interface SystemVersionRow {
   system_type: string;
   description: string | null;
   hosting_location: string | null;
+  access_control_note: string | null;
   created_at: Date;
   created_by: string | null;
 }
@@ -36,6 +37,8 @@ export interface SystemFields {
   systemType: string;
   description: string | null;
   hostingLocation: string | null;
+  /** Who may reach data on this system, and under what policy. FR-INV-06. */
+  accessControlNote: string | null;
 }
 
 export interface SystemListRow {
@@ -48,6 +51,7 @@ export interface SystemListRow {
   system_type: string;
   description: string | null;
   hosting_location: string | null;
+  access_control_note: string | null;
 }
 
 export interface EntrySystemLinkRow {
@@ -74,10 +78,19 @@ export class SystemsRepository {
 
       const { rows: versionRows } = await client.query<SystemVersionRow>(
         `INSERT INTO inventory_system_versions
-           (system_id, version_number, name, system_type, description, hosting_location, created_by)
-         VALUES ($1, 1, $2, $3, $4, $5, $6)
+           (system_id, version_number, name, system_type, description, hosting_location,
+            access_control_note, created_by)
+         VALUES ($1, 1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [system.id, fields.name, fields.systemType, fields.description, fields.hostingLocation, actorId],
+        [
+          system.id,
+          fields.name,
+          fields.systemType,
+          fields.description,
+          fields.hostingLocation,
+          fields.accessControlNote,
+          actorId,
+        ],
       );
 
       return { system, version: versionRows[0]! };
@@ -90,7 +103,8 @@ export class SystemsRepository {
         `SELECT * FROM (
            SELECT DISTINCT ON (s.id)
              s.id, s.status, s.created_at, s.updated_at,
-             v.version_number, v.name, v.system_type, v.description, v.hosting_location
+             v.version_number, v.name, v.system_type, v.description, v.hosting_location,
+             v.access_control_note
            FROM inventory_systems s
            JOIN inventory_system_versions v ON v.system_id = s.id
            ${includeTombstoned ? '' : "WHERE s.status = 'active'"}
@@ -144,10 +158,20 @@ export class SystemsRepository {
 
       const { rows: nextRows } = await client.query<SystemVersionRow>(
         `INSERT INTO inventory_system_versions
-           (system_id, version_number, name, system_type, description, hosting_location, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+           (system_id, version_number, name, system_type, description, hosting_location,
+            access_control_note, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
-        [systemId, nextNumber, fields.name, fields.systemType, fields.description, fields.hostingLocation, actorId],
+        [
+          systemId,
+          nextNumber,
+          fields.name,
+          fields.systemType,
+          fields.description,
+          fields.hostingLocation,
+          fields.accessControlNote,
+          actorId,
+        ],
       );
 
       await client.query(`UPDATE inventory_systems SET updated_at = now() WHERE id = $1`, [systemId]);
@@ -211,7 +235,8 @@ export class SystemsRepository {
            SELECT DISTINCT ON (s.id)
              l.id AS "linkId",
              s.id, s.status, s.created_at, s.updated_at,
-             v.version_number, v.name, v.system_type, v.description, v.hosting_location
+             v.version_number, v.name, v.system_type, v.description, v.hosting_location,
+             v.access_control_note
            FROM inventory_entry_systems l
            JOIN inventory_systems s ON s.id = l.system_id
            JOIN inventory_system_versions v ON v.system_id = s.id

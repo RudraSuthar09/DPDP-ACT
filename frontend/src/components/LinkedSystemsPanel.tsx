@@ -11,6 +11,7 @@ interface LinkedSystem {
   systemType: string;
   description: string | null;
   hostingLocation: string | null;
+  accessControlNote: string | null;
 }
 interface SystemOption {
   id: string;
@@ -103,11 +104,16 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
         linked.map((s) => (
           <div
             key={s.linkId}
-            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 0' }}
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '6px 0' }}
           >
             <div>
               <strong>{s.name}</strong> <span className="muted">({s.systemType})</span>
               {s.hostingLocation && <span className="muted"> — {s.hostingLocation}</span>}
+              {s.accessControlNote && (
+                <div className="muted" style={{ fontSize: '0.8rem', marginTop: 2 }}>
+                  Access control: {s.accessControlNote}
+                </div>
+              )}
             </div>
             {canManage && (
               <button disabled={busy} onClick={() => void onUnlink(s.linkId, s.name)}>

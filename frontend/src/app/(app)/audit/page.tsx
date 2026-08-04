@@ -97,7 +97,7 @@ export default function AuditPage() {
 
   return (
     <div>
-      <h1>Audit Log</h1>
+      <h1 data-tour="audit-main">Audit Log</h1>
       <p className="muted">
         Append-only, hash-chained record of every state change in this workspace (FR-AUD-03).
       </p>

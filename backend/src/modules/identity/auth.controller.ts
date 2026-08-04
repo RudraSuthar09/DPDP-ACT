@@ -1,16 +1,19 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
   HttpCode,
   HttpStatus,
   Inject,
+  Patch,
   Post,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { TenantGuard } from '../../tenancy/tenant.guard';
-import { Audited } from '../audit/audited.decorator';
+import { AllowReadOnly } from './rbac/roles.decorator';
+import { Audited, NoAudit } from '../audit/audited.decorator';
 import { TokenService } from './token.service';
 import { IdentityService } from './identity.service';
 import {
@@ -168,6 +171,34 @@ export class AuthController {
   @UseGuards(TenantGuard)
   async me() {
     return this.identityService.currentUser();
+  }
+
+  /**
+   * Dismiss or complete the guided tour, for the CALLER only (the user id comes
+   * from the verified token, never the body).
+   *
+   * Two deliberate decorators:
+   *
+   * `@NoAudit()` — the S5 chain is the tenant's compliance evidence. "Someone
+   * clicked Skip on a walkthrough" is interface state, and every such row
+   * dilutes the log a regulator actually reads. This is the documented escape
+   * hatch for exactly that, and it is greppable.
+   *
+   * `@AllowReadOnly()` — Auditor and Viewer are read-only roles and this is a
+   * PATCH, so the RBAC read-only floor would otherwise refuse it. A read-only
+   * user still has to be able to close their own tour; refusing would leave
+   * them with a walkthrough that reopens on every single sign-in forever.
+   */
+  @Patch('me/product-tour')
+  @UseGuards(TenantGuard)
+  @AllowReadOnly()
+  @NoAudit()
+  async setProductTour(@Body() body: unknown) {
+    const status = (body as { status?: unknown } | null)?.status;
+    if (status !== 'completed' && status !== 'skipped') {
+      throw new BadRequestException("status must be 'completed' or 'skipped'.");
+    }
+    return this.identityService.setProductTourStatus(status);
   }
 
   /**

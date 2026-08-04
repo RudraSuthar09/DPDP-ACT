@@ -86,7 +86,7 @@ export default function InventoryPage() {
         )}
       </div>
 
-      <div className="table-wrap">
+      <div className="table-wrap" data-tour="inventory-register">
         <table>
           <thead>
             <tr>

@@ -13,10 +13,17 @@ interface SystemListItem {
   systemType: string;
   description: string | null;
   hostingLocation: string | null;
+  accessControlNote: string | null;
 }
 
 const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
-const EMPTY_FORM = { name: '', systemType: '', description: '', hostingLocation: '' };
+const EMPTY_FORM = {
+  name: '',
+  systemType: '',
+  description: '',
+  hostingLocation: '',
+  accessControlNote: '',
+};
 
 /** Systems/assets register (FR-INV-06) — where data lives. */
 export default function SystemsPage() {
@@ -60,6 +67,7 @@ export default function SystemsPage() {
           systemType: form.systemType.trim(),
           description: form.description.trim() || undefined,
           hostingLocation: form.hostingLocation.trim() || undefined,
+          accessControlNote: form.accessControlNote.trim() || undefined,
         },
       });
       setForm(EMPTY_FORM);
@@ -121,6 +129,13 @@ export default function SystemsPage() {
             onChange={(e) => setForm((f) => ({ ...f, hostingLocation: e.target.value }))}
             placeholder="e.g. AWS ap-south-1"
           />
+          <label>Access control policy (optional)</label>
+          <textarea
+            rows={3}
+            value={form.accessControlNote}
+            onChange={(e) => setForm((f) => ({ ...f, accessControlNote: e.target.value }))}
+            placeholder="Who may access data on this system, and under what policy — e.g. &quot;restricted to staff directly involved in the assignment, need-to-know basis; access logged&quot;"
+          />
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
             <button type="button" disabled={busy} onClick={() => { setAdding(false); setForm(EMPTY_FORM); }}>
               Cancel
@@ -132,7 +147,7 @@ export default function SystemsPage() {
         </div>
       )}
 
-      <div className="table-wrap">
+      <div className="table-wrap" data-tour="systems-register">
         <table>
           <thead>
             <tr>
