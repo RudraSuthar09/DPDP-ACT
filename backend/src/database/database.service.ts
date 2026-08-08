@@ -28,6 +28,15 @@ export interface PortalTenantResolution {
   name: string;
 }
 
+/** What the hosted consent-form peephole returns: which tenant AND which form
+ *  a `/forms/:slug` public page is about, plus the title it prints before the
+ *  form itself loads. Nothing else about either leaves the database. */
+export interface ConsentFormSlugResolution {
+  tenantId: string;
+  formId: string;
+  title: string;
+}
+
 /**
  * The tenant-scoped database gateway. Every module that touches the database
  * does so through this service — there is deliberately NO generic `query()` that
@@ -253,6 +262,20 @@ export class TenantDatabaseService implements OnModuleDestroy {
   async resolvePortalSlug(slug: string): Promise<PortalTenantResolution | null> {
     const { rows } = await this.pool.query<PortalTenantResolution>(
       'SELECT tenant_id AS "tenantId", name FROM app.resolve_portal_slug($1)',
+      [slug.trim().toLowerCase()],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The form-level sibling of resolvePortalSlug (FR-CON's consent-form hosted
+   * link): "which tenant, and which form, does this public page render?".
+   * Backed by app.consent_form_directory, an un-RLS'd shadow of
+   * `consent_forms` that dpdp_app holds no privileges on.
+   */
+  async resolveConsentFormSlug(slug: string): Promise<ConsentFormSlugResolution | null> {
+    const { rows } = await this.pool.query<ConsentFormSlugResolution>(
+      'SELECT tenant_id AS "tenantId", form_id AS "formId", title FROM app.resolve_consent_form_slug($1)',
       [slug.trim().toLowerCase()],
     );
     return rows[0] ?? null;

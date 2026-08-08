@@ -6,6 +6,7 @@ import type { Role, TenantContext } from '@dpdp/shared';
 import { TenantContextService } from './tenant-context.service';
 import { verifyTenantJwt } from './jwt';
 import { PORTAL_PATH_PREFIX, portalRequestPath } from './portal-tenant.middleware';
+import { FORM_PATH_PREFIX, formRequestPath } from './form-tenant.middleware';
 
 /**
  * The edge of Seam S1. For every request it:
@@ -42,6 +43,13 @@ export class TenantContextMiddleware implements NestMiddleware {
     //      routes are reachable by exactly one kind of caller" is true of the
     //      middleware chain and not only of the guard.
     if (portalRequestPath(req).startsWith(PORTAL_PATH_PREFIX)) {
+      next();
+      return;
+    }
+    // Same reasoning as the portal skip above, for the hosted consent-form
+    // link: a staff access token must not establish tenant context on a route
+    // FormGuard expects FormTenantMiddleware alone to have resolved.
+    if (formRequestPath(req).startsWith(FORM_PATH_PREFIX)) {
       next();
       return;
     }

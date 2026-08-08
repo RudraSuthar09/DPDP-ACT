@@ -12,6 +12,7 @@ import { TenantContextService } from '../../../tenancy/tenant-context.service';
 import {
   ALLOW_PUBLIC_KEY_KEY,
   ALLOW_READ_ONLY_KEY,
+  PUBLIC_FORM_KEY,
   PUBLIC_PORTAL_KEY,
   ROLES_KEY,
 } from './roles.decorator';
@@ -92,13 +93,20 @@ export class RolesGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
+    // Distinct again: a public consent-form hosted-link route, reached with no
+    // credential at all — the form-builder sibling of publicPortal above.
+    const publicForm = this.reflector.getAllAndOverride<boolean | undefined>(PUBLIC_FORM_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
 
     if (
       isReadOnlyRole(ctx.role) &&
       !SAFE_METHODS.has(request.method.toUpperCase()) &&
       !allowReadOnly &&
       !allowPublicKey &&
-      !publicPortal
+      !publicPortal &&
+      !publicForm
     ) {
       throw new ForbiddenException(`The ${ctx.role} role is read-only and cannot modify data.`);
     }

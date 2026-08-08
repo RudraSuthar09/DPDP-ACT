@@ -6,29 +6,34 @@ import { fileURLToPath } from 'node:url';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.join(dirname, 'dist');
-const outfile = path.join(distDir, 'consent-sdk.min.js');
-
 mkdirSync(distDir, { recursive: true });
 
-await build({
-  entryPoints: [path.join(dirname, 'src', 'index.ts')],
-  outfile,
-  bundle: true,
-  minify: true,
-  format: 'iife',
-  target: ['es2019'],
-  legalComments: 'none',
-  sourcemap: false,
-  logLevel: 'info',
-});
-
-const code = readFileSync(outfile);
-const integrity = 'sha384-' + createHash('sha384').update(code).digest('base64');
 const { version } = JSON.parse(readFileSync(path.join(dirname, 'package.json'), 'utf8'));
 
-writeFileSync(
-  path.join(distDir, 'manifest.json'),
-  JSON.stringify({ version, file: 'consent-sdk.min.js', integrity, sizeBytes: code.length }, null, 2) + '\n',
-);
+async function buildBundle(entry, outfileName, manifestName) {
+  const outfile = path.join(distDir, outfileName);
+  await build({
+    entryPoints: [path.join(dirname, 'src', entry)],
+    outfile,
+    bundle: true,
+    minify: true,
+    format: 'iife',
+    target: ['es2019'],
+    legalComments: 'none',
+    sourcemap: false,
+    logLevel: 'info',
+  });
+  const code = readFileSync(outfile);
+  const integrity = 'sha384-' + createHash('sha384').update(code).digest('base64');
+  writeFileSync(
+    path.join(distDir, manifestName),
+    JSON.stringify({ version, file: outfileName, integrity, sizeBytes: code.length }, null, 2) + '\n',
+  );
+  console.log(`${entry}: built ${outfile} (${code.length} bytes raw)`);
+}
 
-console.log(`consent-sdk: built ${outfile} (${code.length} bytes raw)`);
+// The grant/withdraw SDK — every site embedding it pays this cost (5KB budget).
+await buildBundle('index.ts', 'consent-sdk.min.js', 'manifest.json');
+// The consent FORM widget — a separate, larger bundle (it renders a UI), only
+// paid by a site that opts into the pre-built form rather than the hosted link.
+await buildBundle('form-widget.ts', 'consent-form-widget.min.js', 'form-widget-manifest.json');

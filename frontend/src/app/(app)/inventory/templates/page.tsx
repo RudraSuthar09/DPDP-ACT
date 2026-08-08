@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
@@ -57,6 +58,14 @@ const SECTOR_LABELS: Record<string, string> = {
 export default function SectorTemplatesPage() {
   const { user } = useAuth();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
+  const router = useRouter();
+
+  // Picker hidden from the UI (nav tab removed in ../layout.tsx); this guard
+  // blocks reaching the page via a direct/typed URL too. Reversible: remove
+  // this effect + the commented nav entry to restore it, no backend change.
+  useEffect(() => {
+    router.replace('/inventory');
+  }, [router]);
 
   const [templates, setTemplates] = useState<TemplateListItem[]>([]);
   const [loading, setLoading] = useState(true);

@@ -89,6 +89,9 @@ import { RopaRepository } from './ropa.repository';
   // RopaService is exported for the DPR Personal Data Summary (FR-DPR-04):
   // it reads the register's current state through a service, never through
   // RopaRepository or the inventory tables directly (R2).
-  exports: [RegisterService, RopaService],
+  // EntryPurposesService is exported so the Consent module's form builder can
+  // resolve a Data Inventory element's purpose ids when a consent-form row is
+  // linked directly to that element (through a service, never the table — R2).
+  exports: [RegisterService, RopaService, EntryPurposesService],
 })
 export class InventoryModule {}

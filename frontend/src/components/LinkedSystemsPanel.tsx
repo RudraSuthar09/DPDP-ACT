@@ -32,6 +32,13 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Inline "+ Add new system" — creates through the SAME POST /inventory/systems
+  // the dedicated Systems register page uses (no new backend), then links the
+  // new system to this entry, so it appears here and in the register at once.
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newType, setNewType] = useState('');
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -88,6 +95,35 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
     }
   }
 
+  async function onCreateAndLink() {
+    if (!newName.trim() || !newType.trim()) {
+      setError('A new system needs a name and a type.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      // 1. Create it in the real Systems register (same endpoint as /inventory/systems).
+      const created = await apiFetch<{ id: string }>('/inventory/systems', {
+        method: 'POST',
+        body: { name: newName.trim(), systemType: newType.trim() },
+      });
+      // 2. Link the brand-new system to this entry.
+      await apiFetch(`/inventory/register/${entryId}/systems`, {
+        method: 'POST',
+        body: { systemId: created.id },
+      });
+      setNewName('');
+      setNewType('');
+      setAdding(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not create and link this system.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="panel" style={{ marginTop: 16 }}>
       <h2 style={{ marginTop: 0 }}>Systems (where this data lives)</h2>
@@ -123,11 +159,11 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
           </div>
         ))}
 
-      {canManage && !loading && (
+      {canManage && !loading && !adding && (
         <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
           <select value={selected} onChange={(e) => setSelected(e.target.value)} style={{ flex: 1 }}>
             <option value="">
-              {available.length === 0 ? 'No more systems to link' : 'Select a system to link…'}
+              {available.length === 0 ? 'No existing systems to link' : 'Select a system to link…'}
             </option>
             {available.map((o) => (
               <option key={o.id} value={o.id}>
@@ -138,6 +174,38 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
           <button disabled={busy || !selected} onClick={() => void onLink()}>
             Link
           </button>
+          <button disabled={busy} onClick={() => { setAdding(true); setSelected(''); setError(null); }}>
+            + Add new system
+          </button>
+        </div>
+      )}
+
+      {canManage && !loading && adding && (
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+          <label htmlFor="new-system-name" style={{ marginTop: 0 }}>New system name</label>
+          <input
+            id="new-system-name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="e.g. Firm's document server"
+            disabled={busy}
+          />
+          <label htmlFor="new-system-type">Type</label>
+          <input
+            id="new-system-type"
+            value={newType}
+            onChange={(e) => setNewType(e.target.value)}
+            placeholder="e.g. On-prem storage, SaaS CRM, email"
+            disabled={busy}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="primary" disabled={busy || !newName.trim() || !newType.trim()} onClick={() => void onCreateAndLink()}>
+              {busy ? 'Adding…' : 'Create & link'}
+            </button>
+            <button disabled={busy} onClick={() => { setAdding(false); setNewName(''); setNewType(''); setError(null); }}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -1,17 +1,41 @@
 /*
- * Minimal, unopinionated styling. Structure over polish — the visual design pass
- * comes later. A neutral light theme, system fonts, plain borders. Just enough to
- * make the shell legible and the audit table readable.
+ * The design system. This is the deliberate visual pass (Design Checkpoints
+ * B/C), done once across the whole app rather than screen-by-screen. It EVOLVES
+ * the earlier structure-first styling — every token and class name here already
+ * existed or is additive, so no screen had to change to adopt it. The language
+ * is unchanged on purpose: a neutral light theme, system fonts, one blue accent.
+ * What the pass adds is what "deliberate" is made of — consistent depth
+ * (shadows), a single focus treatment everywhere, hover feedback, smooth
+ * transitions, and denser/quieter data tables — not a new look.
  */
 :root {
-  --bg: #f7f7f8;
+  --bg: #f6f7f9;
   --panel: #ffffff;
-  --border: #e2e2e6;
-  --text: #1a1a1e;
-  --muted: #6b6b76;
+  --border: #e4e6eb;
+  --border-strong: #d3d6dd;
+  --text: #17181c;
+  --muted: #666975;
   --accent: #2b5cc8;
+  --accent-hover: #244fae;
+  /* The soft accent wash + its border were repeated as literals (#eaf0fb /
+   * #c9d8f4) across nav, badges, clocks — tokenised here so "selected blue"
+   * is one value, not five drifting copies. */
+  --accent-soft: #eaf0fb;
+  --accent-soft-border: #cbd9f4;
   --danger: #b42318;
   --ok: #067647;
+  --warning: #92400e;
+
+  /* One radius and shadow scale, so panels/cards/inputs share a family rather
+   * than each picking a nearby number. */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 2px rgba(23, 24, 28, 0.04), 0 1px 3px rgba(23, 24, 28, 0.06);
+  --shadow-md: 0 2px 6px rgba(23, 24, 28, 0.06), 0 8px 24px rgba(23, 24, 28, 0.06);
+  --ring: 0 0 0 3px rgba(43, 92, 200, 0.28);
+
+  --transition: 120ms ease;
 }
 
 * {
@@ -28,11 +52,15 @@ body {
     sans-serif;
   font-size: 15px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 a {
   color: var(--accent);
   text-decoration: none;
+  transition: color var(--transition);
 }
 a:hover {
   text-decoration: underline;
@@ -40,15 +68,36 @@ a:hover {
 
 h1 {
   font-size: 1.5rem;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
   margin: 0 0 4px;
 }
 h2 {
   font-size: 1.1rem;
+  line-height: 1.3;
+  letter-spacing: -0.005em;
   margin: 0 0 8px;
+}
+h3 {
+  font-size: 0.95rem;
+  margin: 20px 0 8px;
 }
 
 .muted {
   color: var(--muted);
+}
+
+/* A single, consistent keyboard-focus treatment for every interactive element —
+ * previously nothing had one. Uses :focus-visible so it shows for keyboard and
+ * programmatic focus but not on mouse click, and never clips (offset ring). */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-color: var(--accent);
+}
+a:focus-visible {
+  border-radius: 3px;
+  box-shadow: var(--ring);
 }
 
 /* --- forms --- */
@@ -63,28 +112,44 @@ select,
 textarea {
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text);
   font: inherit;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+input::placeholder,
+textarea::placeholder {
+  color: #9a9daa;
 }
 textarea {
   resize: vertical;
 }
 button {
   font: inherit;
+  font-weight: 500;
   padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   background: var(--panel);
   color: var(--text);
   cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition),
+    color var(--transition);
+}
+button:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--muted);
 }
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 button:disabled {
   opacity: 0.5;
@@ -99,14 +164,19 @@ button:disabled {
 .notice {
   background: #fff8e6;
   border: 1px solid #f0d98c;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 10px 12px;
   font-size: 0.9rem;
   margin-top: 12px;
 }
+/* overflow-wrap:anywhere, not word-break:break-all — a long hash/key still
+ * wraps to fit its container, but an ordinary token like
+ * "identity.auth.session_issued" (the audit ACTION column) no longer shatters
+ * mid-word when the column is merely narrowish. Directly improves audit-log and
+ * key/ref readability everywhere .mono appears. */
 .mono {
   font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 /* --- centered auth card --- */
@@ -122,8 +192,9 @@ button:disabled {
   max-width: 420px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 28px;
+  box-shadow: var(--shadow-md);
 }
 
 /* --- app shell --- */
@@ -156,15 +227,16 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
+  transition: background var(--transition), color var(--transition);
 }
 .nav-item:hover {
   text-decoration: none;
   background: var(--bg);
 }
 .nav-item.current {
-  background: #eaf0fb;
+  background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
 }
@@ -225,8 +297,9 @@ button:disabled {
 .table-wrap {
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--panel);
+  box-shadow: var(--shadow-sm);
 }
 table {
   border-collapse: collapse;
@@ -236,29 +309,57 @@ table {
 th,
 td {
   text-align: left;
-  padding: 9px 12px;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
 th {
   background: var(--bg);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
   color: var(--muted);
   position: sticky;
   top: 0;
+  /* Keeps the header visually detached from rows as they scroll under it,
+   * instead of the header text colliding with the first row's. */
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+  border-bottom: none;
+  white-space: nowrap;
+}
+/* Quiet row hover across every data table — orients the eye on dense screens
+ * (audit log, inventory register, ticket inboxes) without zebra striping's
+ * visual noise. */
+tbody tr {
+  transition: background var(--transition);
+}
+tbody tr:hover {
+  background: #fafbfc;
 }
 tbody tr:last-child td {
   border-bottom: none;
+}
+/* Mono values INSIDE a table cell stay on one line. Components already truncate
+ * long refs/hashes/ids before they reach a cell (e.g. the audit Target column
+ * renders "02cf2987…"), so nothing here needs to wrap — and letting the audit
+ * ACTION column ("identity.auth.session_issued") stay intact instead of
+ * shattering mid-word is the single biggest audit-log readability win. Full
+ * untruncated hashes only ever appear in panels, where .mono still wraps. The
+ * table itself scrolls (.table-wrap overflow-x) in the rare case it must. */
+td .mono,
+td.mono {
+  white-space: nowrap;
 }
 
 .badge {
   display: inline-block;
   font-size: 0.72rem;
   font-weight: 600;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 .badge.success {
   background: #e7f5ee;
@@ -273,7 +374,7 @@ tbody tr:last-child td {
   color: var(--danger);
 }
 .badge.info {
-  background: #eaf0fb;
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .badge.neutral {
@@ -289,8 +390,9 @@ tbody tr:last-child td {
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 20px;
+  box-shadow: var(--shadow-sm);
 }
 
 /* --- dashboard counters --- */
@@ -303,13 +405,20 @@ tbody tr:last-child td {
 .stat-tile {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+.stat-tile:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-strong);
 }
 .stat-tile .stat-value {
-  font-size: 1.8rem;
+  font-size: 1.9rem;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
 }
 .stat-tile .stat-label {
   font-size: 0.8rem;
@@ -395,8 +504,9 @@ tbody tr:last-child td {
 .clock-card {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 16px;
+  box-shadow: var(--shadow-sm);
 }
 .clock-card label {
   font-size: 1rem;
@@ -421,9 +531,9 @@ tbody tr:last-child td {
 }
 .clock-question {
   margin-top: 12px;
-  background: #eaf0fb;
-  border: 1px solid #c9d8f4;
-  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-border);
+  border-radius: var(--radius);
   padding: 12px 14px;
   font-size: 0.9rem;
 }
@@ -444,9 +554,10 @@ tbody tr:last-child td {
   max-width: 440px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 20px;
   align-self: flex-start;
+  box-shadow: var(--shadow-md);
 }
 @media (min-width: 480px) {
   .portal-wrap {
@@ -595,9 +706,10 @@ tbody tr:last-child td {
   position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 14px 16px;
   margin-bottom: 12px;
+  box-shadow: var(--shadow-sm);
 }
 .timeline-item::before {
   content: '';

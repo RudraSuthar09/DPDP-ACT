@@ -9,7 +9,9 @@ const TABS = [
   { href: '/inventory/systems', label: 'Systems & assets' },
   { href: '/inventory/vendors', label: 'Vendors & processors' },
   { href: '/inventory/data-flows', label: 'Data flow' },
-  { href: '/inventory/templates', label: 'Sector templates' },
+  // Sector template picker hidden from UI (kept reversible): backend/apply
+  // endpoint and seed data are untouched, only this entry point is removed.
+  // { href: '/inventory/templates', label: 'Sector templates' },
 ];
 
 /**

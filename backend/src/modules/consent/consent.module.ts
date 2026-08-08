@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
 import { NotifyModule } from '../notify/notify.module';
+import { InventoryModule } from '../inventory/inventory.module';
 import { TenantConsentSecretsRepository } from './tenant-consent-secrets.repository';
 import { ConsentController } from './consent.controller';
 import { ConsentService } from './consent.service';
@@ -16,6 +17,12 @@ import { ConsentPublicController } from './consent-public.controller';
 import { ConsentApiKeysController } from './consent-api-keys.controller';
 import { ConsentApiKeysService } from './consent-api-keys.service';
 import { ConsentApiKeysRepository } from './consent-api-keys.repository';
+import { ConsentFormsController } from './consent-forms.controller';
+import { ConsentFormsPublicController } from './consent-forms-public.controller';
+import { ConsentFormsPortalController } from './consent-forms-portal.controller';
+import { ConsentFormsService } from './consent-forms.service';
+import { ConsentFormsRepository } from './consent-forms.repository';
+import { ConsentInventoryLinkRepository } from './consent-inventory-link.repository';
 
 /**
  * Consent Register — Seam S2. Ingests consent events, pseudonymises the subject
@@ -46,7 +53,11 @@ import { ConsentApiKeysRepository } from './consent-api-keys.repository';
   // WebhookDeliveryService — every consent change schedules a signed webhook
   // (FR-CON-07) through ConsentService, never by this module reaching into
   // notify's tables directly (R2).
-  imports: [IdentityModule, NotifyModule],
+  // InventoryModule for EntryPurposesService — the consent-form builder links a
+  // row directly to a Data Inventory element and needs that element's purpose
+  // ids (through a service, never the table — R2). Inventory does not import
+  // Consent, so this is not circular.
+  imports: [IdentityModule, NotifyModule, InventoryModule],
   controllers: [
     ConsentController,
     ConsentNoticesController,
@@ -57,6 +68,13 @@ import { ConsentApiKeysRepository } from './consent-api-keys.repository';
     // ordinary same-module DI rather than widening ConsentModule's exports.
     ConsentPublicController,
     ConsentApiKeysController,
+    // Consent forms (widget + hosted-link distribution): three controllers,
+    // one staff-JWT and two public (publishable-key and slug), all sharing
+    // ConsentFormsService via same-module DI for the same reason the SDK's
+    // routes do — see ConsentFormsService's header (R3: no second write path).
+    ConsentFormsController,
+    ConsentFormsPublicController,
+    ConsentFormsPortalController,
   ],
   providers: [
     ConsentService,
@@ -69,6 +87,9 @@ import { ConsentApiKeysRepository } from './consent-api-keys.repository';
     ConsentProofService,
     ConsentApiKeysService,
     ConsentApiKeysRepository,
+    ConsentFormsService,
+    ConsentFormsRepository,
+    ConsentInventoryLinkRepository,
   ],
   // ConsentService only — never ConsentRepository, ConsentNoticesRepository, or
   // EVENT_SINK. It exposes the active-consents counter (FR-DSH-01) to the

@@ -25,8 +25,17 @@ import {
  *
  * A template is a STARTING POINT, never a locked list. Nothing it writes is
  * flagged, protected or special-cased anywhere downstream; the tenant edits,
- * tombstones and adds to it exactly as if they had typed it themselves. Applying
- * one twice simply seeds a second copy — it never overwrites or reconciles.
+ * tombstones and adds to it exactly as if they had typed it themselves.
+ *
+ * APPLYING THE SAME TEMPLATE TWICE IS IDEMPOTENT (added after a live incident:
+ * one tenant applied the CA/tax template on two consecutive days and got every
+ * element duplicated — audit seq 56 + 65). `apply()` now skips any element whose
+ * category already exists as an active register entry, and reuses (rather than
+ * re-creates) any system/vendor whose name already exists active. A second
+ * application of an unchanged template therefore creates nothing; applying a
+ * template that overlaps an existing register only adds what is genuinely
+ * missing. It still never overwrites or edits what is already there — skipping
+ * is not reconciling.
  */
 @Injectable()
 export class SectorTemplatesService {
@@ -53,17 +62,28 @@ export class SectorTemplatesService {
   }
 
   /**
-   * Seed the calling tenant's register from a template's current version.
+   * Seed the calling tenant's register from a template's current version,
+   * IDEMPOTENTLY (see the class header for the incident this prevents).
    *
-   * Order matters: systems and vendors are created FIRST so their new ids are
-   * known by name, then each element is created and linked to the ones it
-   * names. A ref naming something the template does not define is a malformed
-   * catalog row, so it fails loudly rather than silently seeding an element
-   * with no storage location recorded against it.
+   * The register's CURRENT active state is read once up front. Then:
+   *   - a template system/vendor whose name already exists active is REUSED
+   *     (its existing id is linked to), never re-created;
+   *   - a template element whose category already exists active is SKIPPED
+   *     entirely — no second entry, no second set of purposes.
+   * So re-applying an unchanged template creates nothing, and applying a
+   * partially-overlapping template adds only what is missing.
+   *
+   * Order still matters: systems and vendors are resolved (created-or-reused)
+   * FIRST so their ids are known by name, then each not-yet-present element is
+   * created and linked to the ones it names. A ref naming something neither the
+   * template defines nor the tenant already has is a malformed catalog row, so
+   * it fails loudly rather than silently seeding an element with no storage
+   * location recorded against it.
    *
    * One audit entry summarises the whole batch, same pattern as CSV import —
    * an apply is one request, and AuditContextService merges annotations per
-   * request, so this is one hash-chain entry describing everything seeded.
+   * request, so this is one hash-chain entry describing everything created and
+   * everything skipped.
    */
   async apply(templateId: string) {
     const ctx = this.tenantContext.getOrThrow();
@@ -75,9 +95,33 @@ export class SectorTemplatesService {
     const templateSystems = validateSystems(found.version.systems);
     const templateVendors = validateVendors(found.version.vendors);
 
-    const systemIdsByName = new Map<string, string>();
+    // The tenant's current active register — the basis for "does this already
+    // exist?". Read through the same repositories everything else uses (R2),
+    // active rows only (a tombstoned duplicate should not block re-seeding).
+    const [existingEntries, existingSystems, existingVendors] = await Promise.all([
+      this.entries.listCurrent(false),
+      this.systems.listCurrent(false),
+      this.vendors.listCurrent(false),
+    ]);
+    const existingCategories = new Set(existingEntries.map((e) => normalise(e.category)));
+
+    // Name -> id maps seeded with what ALREADY exists, so template refs link to
+    // the tenant's current system/vendor rather than a fresh duplicate.
+    const systemIdsByName = new Map<string, string>(
+      existingSystems.map((s) => [normalise(s.name), s.id]),
+    );
+    const vendorIdsByName = new Map<string, string>(
+      existingVendors.map((v) => [normalise(v.name), v.id]),
+    );
+
     const createdSystems: Array<{ systemId: string; name: string }> = [];
+    const reusedSystems: Array<{ systemId: string; name: string }> = [];
     for (const s of templateSystems) {
+      const existingId = systemIdsByName.get(normalise(s.name));
+      if (existingId) {
+        reusedSystems.push({ systemId: existingId, name: s.name });
+        continue;
+      }
       const { system } = await this.systems.create(
         {
           name: s.name,
@@ -88,13 +132,18 @@ export class SectorTemplatesService {
         },
         ctx.userId,
       );
-      systemIdsByName.set(s.name, system.id);
+      systemIdsByName.set(normalise(s.name), system.id);
       createdSystems.push({ systemId: system.id, name: s.name });
     }
 
-    const vendorIdsByName = new Map<string, string>();
     const createdVendors: Array<{ vendorId: string; name: string }> = [];
+    const reusedVendors: Array<{ vendorId: string; name: string }> = [];
     for (const v of templateVendors) {
+      const existingId = vendorIdsByName.get(normalise(v.name));
+      if (existingId) {
+        reusedVendors.push({ vendorId: existingId, name: v.name });
+        continue;
+      }
       const { vendor } = await this.vendors.create(
         {
           name: v.name,
@@ -105,7 +154,7 @@ export class SectorTemplatesService {
         },
         ctx.userId,
       );
-      vendorIdsByName.set(v.name, vendor.id);
+      vendorIdsByName.set(normalise(v.name), vendor.id);
       createdVendors.push({ vendorId: vendor.id, name: v.name });
     }
 
@@ -116,7 +165,15 @@ export class SectorTemplatesService {
       systemCount: number;
       vendorCount: number;
     }> = [];
+    const skipped: string[] = [];
     for (const element of elements) {
+      // The idempotency guard: an element whose category is already an active
+      // register entry is not seeded again. This is what stops a second apply
+      // from duplicating the whole template.
+      if (existingCategories.has(normalise(element.category))) {
+        skipped.push(element.category);
+        continue;
+      }
       const { entry } = await this.entries.create(
         {
           category: element.category,
@@ -125,6 +182,10 @@ export class SectorTemplatesService {
         },
         ctx.userId,
       );
+      // Guard against the same category appearing twice within one template
+      // application too (defence in depth — the catalog shouldn't, but this
+      // keeps the invariant true regardless).
+      existingCategories.add(normalise(element.category));
       for (const purpose of element.purposes) {
         await this.purposes.create(
           entry.id,
@@ -139,7 +200,7 @@ export class SectorTemplatesService {
         );
       }
       for (const name of element.systemRefs) {
-        const systemId = systemIdsByName.get(name);
+        const systemId = systemIdsByName.get(normalise(name));
         if (!systemId) {
           throw new InternalServerErrorException(
             `Sector template element "${element.category}" refers to system "${name}", which the template does not define.`,
@@ -148,7 +209,7 @@ export class SectorTemplatesService {
         await this.systems.link(entry.id, systemId, ctx.userId);
       }
       for (const ref of element.vendorRefs) {
-        const vendorId = vendorIdsByName.get(ref.name);
+        const vendorId = vendorIdsByName.get(normalise(ref.name));
         if (!vendorId) {
           throw new InternalServerErrorException(
             `Sector template element "${element.category}" refers to vendor "${ref.name}", which the template does not define.`,
@@ -170,23 +231,40 @@ export class SectorTemplatesService {
       targetId: found.template.id,
       reason:
         `Applied sector template "${found.template.name}" — ${created.length} data element(s), ` +
-        `${createdSystems.length} system(s), ${createdVendors.length} vendor(s) seeded as an editable starting point`,
+        `${createdSystems.length} system(s), ${createdVendors.length} vendor(s) seeded` +
+        (skipped.length > 0
+          ? `; ${skipped.length} element(s) skipped as already present (idempotent re-apply)`
+          : '') +
+        ' as an editable starting point',
       afterState: {
         sector: found.template.sector,
         templateId: found.template.id,
         createdEntries: created,
+        skippedCategories: skipped,
         createdSystems,
+        reusedSystems,
         createdVendors,
+        reusedVendors,
       },
     });
 
     return {
       template: { id: found.template.id, sector: found.template.sector, name: found.template.name },
       created,
+      skipped,
       createdSystems,
+      reusedSystems,
       createdVendors,
+      reusedVendors,
     };
   }
+}
+
+/** Case/whitespace-insensitive key for "does this category/name already exist?".
+ *  A template's "Aadhaar Card" and a hand-typed "aadhaar card " are the same
+ *  element for idempotency purposes. */
+function normalise(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 /**

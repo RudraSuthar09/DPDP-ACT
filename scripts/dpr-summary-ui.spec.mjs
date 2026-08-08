@@ -162,6 +162,11 @@ try {
   await mfaInput.fill(totp(secret));
   await page.click('button[type=submit]');
   await page.waitForURL(/\/dashboard/, { timeout: 15000 });
+  // A fresh tenant's guided product tour (added after this spec was written)
+  // force-navigates every page load back to the current tour step's target,
+  // so goto(ticket) bounces to /dashboard. Skip it via the same endpoint the
+  // "Skip" button calls — exactly what a real user does before navigating.
+  await api('PATCH', '/auth/me/product-tour', { token: staff, body: { status: 'skipped' } });
   await page.goto(`${WEB}/dprequest/${submitted.ticketId}`);
   await page.waitForSelector('[data-testid="dpr-detail-right"]', { timeout: 15000 });
   ok('ticket detail page loaded through the real UI');

@@ -22,7 +22,7 @@ export const OVERVIEW_NAV: NavItem[] = [
 
 export const MODULE_NAV: NavItem[] = [
   { href: '/inventory', label: 'Data Inventory', active: true },
-  { href: '/consent', label: 'Consent Register', active: true },
+  { href: '/consent/forms', label: 'Consent Register', active: true },
   { href: '/grievance', label: 'Grievance Register', active: true },
   { href: '/dprequest', label: 'Data Principal Requests', active: true },
   { href: '/breach', label: 'Breach Register', active: true },

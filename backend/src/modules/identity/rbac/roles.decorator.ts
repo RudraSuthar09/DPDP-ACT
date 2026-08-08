@@ -5,6 +5,7 @@ export const ROLES_KEY = 'dpdp:roles';
 export const ALLOW_READ_ONLY_KEY = 'dpdp:allow-read-only';
 export const ALLOW_PUBLIC_KEY_KEY = 'dpdp:allow-public-key';
 export const PUBLIC_PORTAL_KEY = 'dpdp:public-portal';
+export const PUBLIC_FORM_KEY = 'dpdp:public-form';
 
 /**
  * Restrict a route to specific roles (FR-IDN-03).
@@ -70,3 +71,12 @@ export const AllowPublicKey = () => SetMetadata(ALLOW_PUBLIC_KEY_KEY, true);
  * PortalTenantMiddleware, so the marking cannot drift away from the reality.
  */
 export const PublicPortal = () => SetMetadata(PUBLIC_PORTAL_KEY, true);
+
+/**
+ * The hosted-consent-form sibling of @PublicPortal, for the exact same reason:
+ * a member of the public filling in a consent form has no account and is not
+ * going to be asked for one. FormGuard refuses any route carrying this that was
+ * not resolved by FormTenantMiddleware, so — same as @PublicPortal — the
+ * marking cannot drift away from the reality of who can reach the route.
+ */
+export const PublicForm = () => SetMetadata(PUBLIC_FORM_KEY, true);

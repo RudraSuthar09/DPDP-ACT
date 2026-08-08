@@ -33,6 +33,13 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Inline "+ Add new vendor" — creates through the SAME POST /inventory/vendors
+  // the dedicated Vendors register page uses (no new backend), then links the
+  // new vendor to this entry.
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newCountry, setNewCountry] = useState('');
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -90,6 +97,36 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
     }
   }
 
+  async function onCreateAndLink() {
+    if (!newName.trim()) {
+      setError('A new vendor needs a name.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      // 1. Create it in the real Vendors register (same endpoint as /inventory/vendors).
+      const created = await apiFetch<{ id: string }>('/inventory/vendors', {
+        method: 'POST',
+        body: { name: newName.trim(), ...(newCountry.trim() ? { country: newCountry.trim() } : {}) },
+      });
+      // 2. Link the brand-new vendor to this entry (carrying any transfer notes typed above).
+      await apiFetch(`/inventory/register/${entryId}/vendors`, {
+        method: 'POST',
+        body: { vendorId: created.id, ...(notes.trim() ? { transferNotes: notes.trim() } : {}) },
+      });
+      setNewName('');
+      setNewCountry('');
+      setNotes('');
+      setAdding(false);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not create and link this vendor.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="panel" style={{ marginTop: 16 }}>
       <h2 style={{ marginTop: 0 }}>Vendors (who else receives this data)</h2>
@@ -120,12 +157,12 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
           </div>
         ))}
 
-      {canManage && !loading && (
+      {canManage && !loading && !adding && (
         <div style={{ marginTop: 12 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <select value={selected} onChange={(e) => setSelected(e.target.value)} style={{ flex: 1 }}>
               <option value="">
-                {available.length === 0 ? 'No more vendors to link' : 'Select a vendor to link…'}
+                {available.length === 0 ? 'No existing vendors to link' : 'Select a vendor to link…'}
               </option>
               {available.map((o) => (
                 <option key={o.id} value={o.id}>
@@ -141,9 +178,50 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Transfer notes (optional) — e.g. SCC executed, purpose of the transfer"
           />
-          <button style={{ marginTop: 8 }} disabled={busy || !selected} onClick={() => void onLink()}>
-            Link
-          </button>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button disabled={busy || !selected} onClick={() => void onLink()}>
+              Link
+            </button>
+            <button disabled={busy} onClick={() => { setAdding(true); setSelected(''); setError(null); }}>
+              + Add new vendor
+            </button>
+          </div>
+        </div>
+      )}
+
+      {canManage && !loading && adding && (
+        <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+          <label htmlFor="new-vendor-name" style={{ marginTop: 0 }}>New vendor name</label>
+          <input
+            id="new-vendor-name"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="e.g. Income Tax Portal"
+            disabled={busy}
+          />
+          <label htmlFor="new-vendor-country">Country (optional)</label>
+          <input
+            id="new-vendor-country"
+            value={newCountry}
+            onChange={(e) => setNewCountry(e.target.value)}
+            placeholder="e.g. India"
+            disabled={busy}
+          />
+          <input
+            style={{ marginTop: 8 }}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Transfer notes (optional) — e.g. SCC executed, purpose of the transfer"
+            disabled={busy}
+          />
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button className="primary" disabled={busy || !newName.trim()} onClick={() => void onCreateAndLink()}>
+              {busy ? 'Adding…' : 'Create & link'}
+            </button>
+            <button disabled={busy} onClick={() => { setAdding(false); setNewName(''); setNewCountry(''); setError(null); }}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>
