@@ -133,8 +133,9 @@ export default function WebhookSettingsPage() {
     <div>
       <h1>Webhook settings</h1>
       <p className="muted">
-        Every consent grant or withdrawal (FR-CON-07) fires a signed webhook to your system. Sign
-        verification uses the secret below — an HMAC over the raw request body.
+        Every consent grant or withdrawal sends a signed notification to your system. You can
+        verify each one came from us using the secret below — a cryptographic signature computed
+        over the message content.
       </p>
 
       {error && <div className="error">{error}</div>}
@@ -184,8 +185,8 @@ export default function WebhookSettingsPage() {
           {canWrite && (
             <div style={{ marginTop: 16 }}>
               <div className="muted" style={{ fontSize: '0.8rem' }}>
-                Signing secret (HMAC) — shown once you reveal it, never stored in this page&apos;s
-                state before that.
+                Signing secret — shown once you reveal it, never stored in this page&apos;s state
+                before that.
               </div>
               {secret ? (
                 <div className="mono panel" style={{ marginTop: 8, wordBreak: 'break-all' }}>

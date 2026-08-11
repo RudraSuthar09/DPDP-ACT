@@ -177,9 +177,9 @@ export default function ImportInventoryPage() {
     <div>
       <h1>Import from CSV/Excel</h1>
       <p className="muted">
-        Guided import for the Data Inventory register (FR-INV-02). Only column NAMES and the
+        Guided import for the Data Inventory register. Only column NAMES and the
         categories you confirm are ever stored — the file&apos;s row data is never read beyond its
-        header (I1).
+        header.
       </p>
 
       {error && <div className="error">{error}</div>}
@@ -200,7 +200,7 @@ export default function ImportInventoryPage() {
               padding: 28,
               textAlign: 'center',
               cursor: 'pointer',
-              background: dragOver ? '#eaf0fb' : 'var(--bg)',
+              background: dragOver ? 'var(--accent-soft)' : 'var(--bg)',
             }}
           >
             <input

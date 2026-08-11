@@ -54,7 +54,7 @@ export default function ConsentPage() {
     <div>
       <h1 data-tour="consent-main">Consent Register</h1>
       <p className="muted">
-        Purposes and notices consent is collected against (FR-CON-01/02) — versioned, never
+        Purposes and notices consent is collected against — versioned, never
         hard-deleted.
       </p>
 

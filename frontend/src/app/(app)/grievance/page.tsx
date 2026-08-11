@@ -78,8 +78,8 @@ export default function GrievanceInboxPage() {
     <div>
       <h1>Grievance Register</h1>
       <p className="muted">
-        Complaints filed through the public portal (FR-GRV-01), tracked on the shared request
-        substrate. Each ticket waits on identity verification before it can be worked (FR-GRV-04).
+        Complaints filed through the public portal, tracked on the shared request
+        substrate. Each ticket waits on identity verification before it can be worked.
       </p>
 
       <PortalLinkPanel />

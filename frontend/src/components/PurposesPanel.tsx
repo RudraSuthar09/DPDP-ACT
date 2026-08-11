@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
+import { useToast } from './Toast';
 
 export type LegalBasis = 'consent' | 'legitimate_use' | 'contract' | 'legal_obligation' | 'other';
 
@@ -62,6 +63,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,6 +104,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
       });
       setAddForm(EMPTY_FORM);
       setAdding(false);
+      showToast('Purpose added.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add this purpose.');
@@ -130,6 +133,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
         body: toBody(editForm),
       });
       setEditingId(null);
+      showToast('Purpose saved as a new version.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save this purpose.');
@@ -154,6 +158,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
         method: 'DELETE',
         body: { reason: reason.trim() },
       });
+      showToast('Purpose removed.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not remove this purpose.');
@@ -171,7 +176,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
       <h2 style={{ marginTop: 0 }}>Processing purposes</h2>
       <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
         Why this data is collected, the DPDP ground relied on, and how long it&apos;s kept — one data
-        element can have several purposes, each with its own legal basis and retention (FR-INV-05).
+        element can have several purposes, each with its own legal basis and retention.
         Every edit creates a new version; nothing is overwritten.
       </p>
 
@@ -282,7 +287,7 @@ function PurposeForm({
   }
 
   return (
-    <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
+    <div className="reveal" style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
       <label>Purpose name</label>
       <input
         value={form.purposeName}

@@ -35,7 +35,7 @@ export default function InventoryLayout({ children }: { children: React.ReactNod
           flexWrap: 'wrap',
         }}
       >
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div className="subtabs">
           {TABS.map((tab) => {
             const current =
               tab.href === '/inventory' ? pathname === '/inventory' : pathname.startsWith(tab.href);
@@ -43,8 +43,7 @@ export default function InventoryLayout({ children }: { children: React.ReactNod
               <Link
                 key={tab.href}
                 href={tab.href}
-                className={`nav-item${current ? ' current' : ''}`}
-                style={{ display: 'inline-flex' }}
+                className={`subtab${current ? ' current' : ''}`}
               >
                 {tab.label}
               </Link>

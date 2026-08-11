@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
+import { useToast } from '../../../../../components/Toast';
 
 interface VersionEntry {
   versionNumber: number;
@@ -44,6 +45,7 @@ export default function VendorDetailPage() {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ name: '', description: '', contactEmail: '', dpaReference: '', country: '' });
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -90,6 +92,7 @@ export default function VendorDetailPage() {
         },
       });
       setEditing(false);
+      showToast('Vendor saved as a new version.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save this vendor.');
@@ -109,6 +112,7 @@ export default function VendorDetailPage() {
     setError(null);
     try {
       await apiFetch(`/inventory/vendors/${id}`, { method: 'DELETE', body: { reason: reason.trim() } });
+      showToast('Vendor removed.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not remove this vendor.');

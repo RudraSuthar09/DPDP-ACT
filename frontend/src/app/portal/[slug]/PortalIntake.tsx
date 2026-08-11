@@ -79,6 +79,9 @@ export function PortalIntake({ slug }: { slug: string }) {
 
   const [confirmation, setConfirmation] = useState<VerifyResponse | null>(null);
 
+  const canSubmitRequest =
+    subject.trim().length >= 3 && body.trim().length >= 10 && contactValue.trim().length > 0;
+
   function fail(err: unknown) {
     setError(err instanceof PortalApiError ? err.message : 'Something went wrong. Please try again.');
   }
@@ -328,7 +331,7 @@ export function PortalIntake({ slug }: { slug: string }) {
       {error && <div className="error">{error}</div>}
 
       <div className="portal-actions">
-        <button className="primary" type="submit" disabled={busy}>
+        <button className="primary" type="submit" disabled={busy || !canSubmitRequest}>
           {busy ? 'Submitting…' : 'Submit request'}
         </button>
       </div>

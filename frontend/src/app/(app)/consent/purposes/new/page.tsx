@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch, ApiError } from '../../../../../lib/api';
+import { useToast } from '../../../../../components/Toast';
 
 /** Create a consent purpose (FR-CON-01) against the real POST /consent/purposes. */
 export default function NewConsentPurposePage() {
@@ -12,6 +13,7 @@ export default function NewConsentPurposePage() {
   const [description, setDescription] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -22,6 +24,7 @@ export default function NewConsentPurposePage() {
         method: 'POST',
         body: { name: name.trim(), description: description.trim() || undefined },
       });
+      showToast('Purpose created.');
       router.replace(`/consent/purposes/${created.id}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create this purpose.');

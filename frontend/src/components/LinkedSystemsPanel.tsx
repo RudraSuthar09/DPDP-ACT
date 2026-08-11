@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
+import { useToast } from './Toast';
 
 interface LinkedSystem {
   linkId: string;
@@ -31,6 +32,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   // Inline "+ Add new system" — creates through the SAME POST /inventory/systems
   // the dedicated Systems register page uses (no new backend), then links the
@@ -73,6 +75,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
         body: { systemId: selected },
       });
       setSelected('');
+      showToast('System linked.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not link this system.');
@@ -87,6 +90,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
     setError(null);
     try {
       await apiFetch(`/inventory/register/systems/links/${linkId}`, { method: 'DELETE' });
+      showToast('System unlinked.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not unlink this system.');
@@ -116,6 +120,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
       setNewName('');
       setNewType('');
       setAdding(false);
+      showToast('System created and linked.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create and link this system.');
@@ -128,7 +133,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
     <div className="panel" style={{ marginTop: 16 }}>
       <h2 style={{ marginTop: 0 }}>Systems (where this data lives)</h2>
       <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
-        FR-INV-06. Manage the systems register itself at{' '}
+        Manage the systems register itself at{' '}
         <Link href="/inventory/systems">Systems &amp; assets</Link>.
       </p>
 
@@ -171,7 +176,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
               </option>
             ))}
           </select>
-          <button disabled={busy || !selected} onClick={() => void onLink()}>
+          <button className="primary" disabled={busy || !selected} onClick={() => void onLink()}>
             Link
           </button>
           <button disabled={busy} onClick={() => { setAdding(true); setSelected(''); setError(null); }}>
@@ -181,7 +186,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
       )}
 
       {canManage && !loading && adding && (
-        <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+        <div className="reveal" style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
           <label htmlFor="new-system-name" style={{ marginTop: 0 }}>New system name</label>
           <input
             id="new-system-name"

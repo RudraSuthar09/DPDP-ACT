@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
+import { useToast } from './Toast';
 
 interface LinkedVendor {
   linkId: string;
@@ -32,6 +33,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   // Inline "+ Add new vendor" — creates through the SAME POST /inventory/vendors
   // the dedicated Vendors register page uses (no new backend), then links the
@@ -75,6 +77,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
       });
       setSelected('');
       setNotes('');
+      showToast('Vendor linked.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not link this vendor.');
@@ -89,6 +92,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
     setError(null);
     try {
       await apiFetch(`/inventory/register/vendors/links/${linkId}`, { method: 'DELETE' });
+      showToast('Vendor unlinked.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not unlink this vendor.');
@@ -119,6 +123,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
       setNewCountry('');
       setNotes('');
       setAdding(false);
+      showToast('Vendor created and linked.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create and link this vendor.');
@@ -131,7 +136,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
     <div className="panel" style={{ marginTop: 16 }}>
       <h2 style={{ marginTop: 0 }}>Vendors (who else receives this data)</h2>
       <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
-        FR-INV-07. Manage the vendor register itself at{' '}
+        Manage the vendor register itself at{' '}
         <Link href="/inventory/vendors">Vendors &amp; processors</Link>.
       </p>
 
@@ -179,7 +184,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
             placeholder="Transfer notes (optional) — e.g. SCC executed, purpose of the transfer"
           />
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button disabled={busy || !selected} onClick={() => void onLink()}>
+            <button className="primary" disabled={busy || !selected} onClick={() => void onLink()}>
               Link
             </button>
             <button disabled={busy} onClick={() => { setAdding(true); setSelected(''); setError(null); }}>
@@ -190,7 +195,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
       )}
 
       {canManage && !loading && adding && (
-        <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+        <div className="reveal" style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
           <label htmlFor="new-vendor-name" style={{ marginTop: 0 }}>New vendor name</label>
           <input
             id="new-vendor-name"

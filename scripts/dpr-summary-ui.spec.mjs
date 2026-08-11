@@ -74,8 +74,8 @@ async function api(method, path, { body, token, expect } = {}) {
   return json;
 }
 
-const { totp } = await import('file:///E:/DPDP%20ACT/DPDP-ACT/backend/dist/modules/identity/crypto/totp.js');
-const { base32Decode } = await import('file:///E:/DPDP%20ACT/DPDP-ACT/backend/dist/modules/identity/crypto/base32.js');
+const { totp } = await import(new URL('../backend/dist/modules/identity/crypto/totp.js', import.meta.url));
+const { base32Decode } = await import(new URL('../backend/dist/modules/identity/crypto/base32.js', import.meta.url));
 
 // Mock client system — returns a link for Tier 2 values requests.
 const received = [];
@@ -149,6 +149,10 @@ try {
   ok('fulfilment endpoint configured');
 
   step(2, 'Log in through the real UI and open the ticket');
+  // TOTP replay protection correctly rejects reusing step 1's enrol/confirm
+  // code within the same 30s window — wait for a fresh one before logging in
+  // (same fix as tour-ui.spec.mjs).
+  await new Promise((r) => setTimeout(r, 30_000 - (Date.now() % 30_000) + 1000));
   browser = await chromium.launch();
   const page = await browser.newPage();
   await page.goto(`${WEB}/login`);

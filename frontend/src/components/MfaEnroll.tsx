@@ -195,7 +195,7 @@ export function MfaEnroll({
         />
         {error && <div className="error">{error}</div>}
         <div style={{ marginTop: 16 }}>
-          <button className="primary" type="submit" disabled={busy}>
+          <button className="primary" type="submit" disabled={busy || code.trim().length !== 6}>
             {busy ? 'Confirming…' : 'Confirm & finish'}
           </button>
         </div>

@@ -3,10 +3,15 @@
  * B/C), done once across the whole app rather than screen-by-screen. It EVOLVES
  * the earlier structure-first styling — every token and class name here already
  * existed or is additive, so no screen had to change to adopt it. The language
- * is unchanged on purpose: a neutral light theme, system fonts, one blue accent.
+ * is unchanged on purpose: a neutral light theme, system fonts, one accent.
  * What the pass adds is what "deliberate" is made of — consistent depth
  * (shadows), a single focus treatment everywhere, hover feedback, smooth
  * transitions, and denser/quieter data tables — not a new look.
+ *
+ * Accent is a muted clay/terracotta, chosen to keep 4.5:1+ contrast for
+ * white-on-accent (button.primary text) AND accent-on-accent-soft (badge/
+ * nav-item text) simultaneously — see PART A verification notes in the
+ * polish-pass PR description for the computed ratios.
  */
 :root {
   --bg: #f6f7f9;
@@ -15,13 +20,13 @@
   --border-strong: #d3d6dd;
   --text: #17181c;
   --muted: #666975;
-  --accent: #2b5cc8;
-  --accent-hover: #244fae;
+  --accent: #9c4e37;
+  --accent-hover: #86402c;
   /* The soft accent wash + its border were repeated as literals (#eaf0fb /
-   * #c9d8f4) across nav, badges, clocks — tokenised here so "selected blue"
+   * #c9d8f4) across nav, badges, clocks — tokenised here so "selected accent"
    * is one value, not five drifting copies. */
-  --accent-soft: #eaf0fb;
-  --accent-soft-border: #cbd9f4;
+  --accent-soft: #f8ede6;
+  --accent-soft-border: #edd3c4;
   --danger: #b42318;
   --ok: #067647;
   --warning: #92400e;
@@ -33,9 +38,17 @@
   --radius-lg: 12px;
   --shadow-sm: 0 1px 2px rgba(23, 24, 28, 0.04), 0 1px 3px rgba(23, 24, 28, 0.06);
   --shadow-md: 0 2px 6px rgba(23, 24, 28, 0.06), 0 8px 24px rgba(23, 24, 28, 0.06);
-  --ring: 0 0 0 3px rgba(43, 92, 200, 0.28);
+  --ring: 0 0 0 3px rgba(156, 78, 55, 0.35);
 
-  --transition: 120ms ease;
+  --transition: 150ms ease-out;
+  --transition-slow: 220ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition: 0ms;
+    --transition-slow: 0ms;
+  }
 }
 
 * {
@@ -651,6 +664,11 @@ td.mono {
   pointer-events: none;
   transition: top 0.15s ease, left 0.15s ease, width 0.15s ease, height 0.15s ease;
 }
+@media (prefers-reduced-motion: reduce) {
+  .tour-ring {
+    transition: none;
+  }
+}
 /* When a ring is drawn it supplies its own dimming via the huge box-shadow, so
  * the flat overlay would double it. */
 .tour-overlay.has-ring {
@@ -744,4 +762,248 @@ td.mono {
   padding-top: 10px;
   border-top: 1px solid var(--border);
   font-size: 0.82rem;
+}
+
+/* --- motion: page load, panel reveal, toasts ---
+ * Sparingly, per the polish pass: short (150-250ms), ease-out, never on the
+ * critical path of an action (a save confirmation must appear instantly).
+ * Everything here folds to 0ms under prefers-reduced-motion via the
+ * --transition/--transition-slow tokens going to 0ms at the top of this file,
+ * except the two @keyframes below, which are separately neutralised so an
+ * opacity/transform animation can't get stuck mid-way for reduced-motion users.
+ */
+@keyframes content-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.content {
+  animation: content-fade-in var(--transition-slow) both;
+}
+
+@keyframes panel-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scaleY(0.98);
+    transform-origin: top;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+/* Applied alongside .panel at the toggle site of an add/edit/escalate
+ * sub-form — the closest thing this app has to an accordion. */
+.reveal {
+  animation: panel-reveal var(--transition-slow) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .content,
+  .reveal {
+    animation: none;
+  }
+}
+
+/* --- toasts (S2/S3 mutation feedback) ---
+ * Bottom-right stack, plain language, auto-dismissing. Never blocks the
+ * action it confirms — it appears after the state update, not instead of one. */
+.toast-stack {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(360px, calc(100vw - 40px));
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 0.88rem;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  animation: toast-in var(--transition-slow) both;
+}
+.toast-error {
+  border-left-color: var(--danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}
+
+/* --- page header: H1 (+ subtitle) left, primary actions right ---
+ * Additive layout shell reused by the card-based list screens (Data
+ * Inventory, Systems & assets, Vendors & processors). Doesn't replace
+ * anything — a plain <h1> outside a .page-header still renders exactly as
+ * it did before this was added. */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.page-header h1 {
+  margin-bottom: 4px;
+}
+.page-header-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* --- underline sub-tabs ---
+ * A second tab style, deliberately distinct from the pill-shaped .nav-item
+ * (sidebar) and the filled .tab (notice-language switcher) — neither of
+ * those is touched. Used for the Data Inventory module's Register/Systems/
+ * Vendors/Data flow switcher. */
+.subtabs {
+  display: flex;
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.subtab {
+  display: inline-block;
+  padding: 9px 1px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color var(--transition), border-color var(--transition);
+}
+.subtab:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+.subtab.current {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+/* --- plain-text topbar actions ---
+ * "Take the tour" / "Sign out" read as text links, not boxed buttons — the
+ * base button styles are untouched, this only opts specific buttons out of
+ * them. */
+button.link-button {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 500;
+  border-radius: 2px;
+}
+button.link-button:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  text-decoration: underline;
+}
+
+/* --- nav icons ---
+ * Sized to sit inline with the existing .nav-item label at 1:1 with the
+ * text's line-height; currentColor so they inherit .nav-item's normal/
+ * current/disabled color automatically, no separate icon-color rule needed. */
+.nav-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+}
+.nav-item-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* --- entry cards ---
+ * The card equivalent of .table-wrap/table for small, low-volume registers
+ * (Data Inventory, Systems & assets, Vendors & processors) — high-volume,
+ * scan-heavy lists (Audit Log, the Grievance/DPR inboxes, Breach incidents)
+ * deliberately keep the table, per the polish pass's own reasoning: a table
+ * is the right tool once a screen exists to be scanned/sorted, not browsed. */
+.entry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+.entry-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-strong);
+}
+.entry-card-title {
+  font-weight: 600;
+  font-size: 1rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.entry-card-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+.entry-card-field {
+  min-width: 0;
+}
+.entry-card-field .field-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.entry-card-field .field-value {
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+.entry-card-field .field-value.status-active {
+  color: var(--accent);
+  font-weight: 700;
+}
+.entry-card-field .field-value.status-muted {
+  color: var(--muted);
+  font-weight: 600;
+}
+.entry-card-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }

@@ -10,6 +10,7 @@ import {
   type BreachSeverity,
 } from '@dpdp/shared';
 import { apiFetch, ApiError } from '../../../lib/api';
+import { useToast } from '../../../components/Toast';
 
 interface RegisterEntry {
   id: string;
@@ -47,6 +48,8 @@ export default function BreachRegisterPage() {
   const [affected, setAffected] = useState('');
   const [severity, setSeverity] = useState<BreachSeverity>('high');
   const [busy, setBusy] = useState(false);
+  const { showToast } = useToast();
+  const canSubmit = title.trim().length >= 3 && whatHappened.trim().length >= 10;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,6 +103,7 @@ export default function BreachRegisterPage() {
       setSystems('');
       setSelectedEntries([]);
       setAffected('');
+      showToast('Incident opened.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not open the incident.');
@@ -114,7 +118,7 @@ export default function BreachRegisterPage() {
       <p className="muted">
         Personal data breach incidents (DPDP §8(6)). Every gate&apos;s deadline runs from the moment
         the breach was <strong>discovered</strong> — not from when it was logged — and comes from a
-        versioned policy record, never from code (FR-BRC-02).
+        versioned policy record, never from code.
       </p>
 
       {error && <div className="error">{error}</div>}
@@ -146,7 +150,7 @@ export default function BreachRegisterPage() {
       </div>
 
       {showForm && (
-        <form className="portal-form" onSubmit={submit} data-testid="incident-form">
+        <form className="portal-form reveal" onSubmit={submit} data-testid="incident-form">
           <label htmlFor="title">Title</label>
           <input id="title" value={title} onChange={(e) => setTitle(e.target.value)} minLength={3} maxLength={200} required />
 
@@ -220,7 +224,7 @@ export default function BreachRegisterPage() {
           </select>
 
           <div className="portal-actions">
-            <button className="primary" type="submit" disabled={busy} data-testid="submit-incident">
+            <button className="primary" type="submit" disabled={busy || !canSubmit} data-testid="submit-incident">
               {busy ? 'Opening…' : 'Open incident'}
             </button>
           </div>

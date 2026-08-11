@@ -50,6 +50,14 @@ export default function LoginPage() {
   // carried between steps
   const [challengeToken, setChallengeToken] = useState('');
 
+  const canLogin = email.trim().length > 0 && password.length > 0;
+  const canRegister =
+    orgName.trim().length > 0 &&
+    ownerName.trim().length > 0 &&
+    email.trim().length > 0 &&
+    password.length >= 12;
+  const canVerify = code.trim().length === 6;
+
   function fail(e: unknown) {
     setError(e instanceof ApiError ? e.message : 'Something went wrong.');
   }
@@ -132,7 +140,7 @@ export default function LoginPage() {
               />
               {error && <div className="error">{error}</div>}
               <div style={{ marginTop: 16 }}>
-                <button className="primary" type="submit" disabled={busy}>
+                <button className="primary" type="submit" disabled={busy || !canLogin}>
                   {busy ? 'Signing in…' : 'Sign in'}
                 </button>
               </div>
@@ -155,7 +163,7 @@ export default function LoginPage() {
 
         {step === 'register' && (
           <>
-            <p className="muted">Create your workspace and Owner account (FR-IDN-01).</p>
+            <p className="muted">Create your workspace and Owner account.</p>
             <form onSubmit={onRegister}>
               <label>Organisation name</label>
               <input value={orgName} onChange={(e) => setOrgName(e.target.value)} required />
@@ -172,7 +180,7 @@ export default function LoginPage() {
               />
               {error && <div className="error">{error}</div>}
               <div style={{ marginTop: 16 }}>
-                <button className="primary" type="submit" disabled={busy}>
+                <button className="primary" type="submit" disabled={busy || !canRegister}>
                   {busy ? 'Creating…' : 'Create workspace'}
                 </button>
               </div>
@@ -211,7 +219,7 @@ export default function LoginPage() {
               />
               {error && <div className="error">{error}</div>}
               <div style={{ marginTop: 16 }}>
-                <button className="primary" type="submit" disabled={busy}>
+                <button className="primary" type="submit" disabled={busy || !canVerify}>
                   {busy ? 'Verifying…' : 'Verify'}
                 </button>
               </div>

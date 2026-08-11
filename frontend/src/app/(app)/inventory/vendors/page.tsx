@@ -1,9 +1,11 @@
 'use client';
 
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
+import { useToast } from '../../../../components/Toast';
+import { PageHeader } from '../../../../components/PageHeader';
 
 interface VendorListItem {
   id: string;
@@ -22,6 +24,7 @@ const EMPTY_FORM = { name: '', description: '', contactEmail: '', dpaReference: 
 /** Third-party processor / vendor register (FR-INV-07) — who else receives this data. */
 export default function VendorsPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
 
   const [vendors, setVendors] = useState<VendorListItem[]>([]);
@@ -31,6 +34,7 @@ export default function VendorsPage() {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -66,6 +70,7 @@ export default function VendorsPage() {
       });
       setForm(EMPTY_FORM);
       setAdding(false);
+      showToast('Vendor added.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add this vendor.');
@@ -78,15 +83,21 @@ export default function VendorsPage() {
 
   return (
     <div>
-      <h1>Vendors &amp; processors</h1>
-      <p className="muted">
-        Third-party processors who receive data (FR-INV-07). Link a vendor to a data element from the
-        element&apos;s own page.
-      </p>
+      <PageHeader
+        title="Vendors & processors"
+        subtitle="Third-party processors who receive data. Link a vendor to a data element from the element's own page."
+        actions={
+          canManage && !adding ? (
+            <button className="primary" type="button" onClick={() => setAdding(true)}>
+              + Add vendor
+            </button>
+          ) : undefined
+        }
+      />
 
       {error && <div className="error">{error}</div>}
 
-      <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+      <div className="toolbar">
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
           <input
             type="checkbox"
@@ -96,15 +107,10 @@ export default function VendorsPage() {
           />
           Show tombstoned
         </label>
-        {canManage && !adding && (
-          <button className="primary" type="button" onClick={() => setAdding(true)}>
-            + Add vendor
-          </button>
-        )}
       </div>
 
       {adding && (
-        <div className="panel" style={{ maxWidth: 480, marginBottom: 16 }}>
+        <div className="panel reveal" style={{ maxWidth: 480, marginBottom: 16 }}>
           <label>Name</label>
           <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
           <label>Description (optional)</label>
@@ -136,42 +142,42 @@ export default function VendorsPage() {
         </div>
       )}
 
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Country</th>
-              <th>DPA reference</th>
-              <th>Version</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {vendors.map((v) => (
-              <tr key={v.id}>
-                <td>{v.name}</td>
-                <td>{v.country || '—'}</td>
-                <td>{v.dpaReference || '—'}</td>
-                <td className="mono">v{v.versionNumber}</td>
-                <td>
-                  <span className={`badge ${v.status === 'active' ? 'success' : 'denied'}`}>{v.status}</span>
-                </td>
-                <td>
-                  <Link href={`/inventory/vendors/${v.id}`}>View</Link>
-                </td>
-              </tr>
-            ))}
-            {vendors.length === 0 && !loading && (
-              <tr>
-                <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 24 }}>
-                  No vendors recorded yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <div className="entry-grid">
+        {vendors.map((v) => (
+          <div key={v.id} className="entry-card">
+            <div className="entry-card-title">{v.name}</div>
+            <div className="entry-card-meta">
+              <div className="entry-card-field">
+                <div className="field-label">Country</div>
+                <div className="field-value">{v.country || '—'}</div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">DPA reference</div>
+                <div className="field-value">{v.dpaReference || '—'}</div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Status</div>
+                <div className={`field-value ${v.status === 'active' ? 'status-active' : 'status-muted'}`}>
+                  {v.status === 'active' ? 'Active' : 'Tombstoned'}
+                </div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Version</div>
+                <div className="field-value mono">v{v.versionNumber}</div>
+              </div>
+            </div>
+            <div className="entry-card-footer">
+              <button type="button" onClick={() => router.push(`/inventory/vendors/${v.id}`)}>
+                View details
+              </button>
+            </div>
+          </div>
+        ))}
+        {vendors.length === 0 && !loading && (
+          <p className="muted" style={{ textAlign: 'center', padding: 24, gridColumn: '1 / -1' }}>
+            No vendors recorded yet.
+          </p>
+        )}
       </div>
     </div>
   );

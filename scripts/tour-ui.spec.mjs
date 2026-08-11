@@ -46,8 +46,8 @@ async function api(method, path, { body, token, expect } = {}) {
   return json;
 }
 
-const { totp } = await import('file:///E:/DPDP%20ACT/DPDP-ACT/backend/dist/modules/identity/crypto/totp.js');
-const { base32Decode } = await import('file:///E:/DPDP%20ACT/DPDP-ACT/backend/dist/modules/identity/crypto/base32.js');
+const { totp } = await import(new URL('../backend/dist/modules/identity/crypto/totp.js', import.meta.url));
+const { base32Decode } = await import(new URL('../backend/dist/modules/identity/crypto/base32.js', import.meta.url));
 
 const sfx = randomBytes(3).toString('hex');
 const EMAIL = `ca-${sfx}@tourfirm.example`;

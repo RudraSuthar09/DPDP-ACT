@@ -214,7 +214,7 @@ export default function InventoryEntryDetailPage() {
         <Field label="Storage location" value={current.storageLocation} />
         {(current.legacyPurpose || current.legacyRetentionPeriod) && (
           <p className="muted" style={{ fontSize: '0.8rem' }}>
-            Legacy purpose/retention from before FR-INV-05: {current.legacyPurpose || '—'} /{' '}
+            Legacy purpose/retention recorded before this became a separate field: {current.legacyPurpose || '—'} /{' '}
             {current.legacyRetentionPeriod || '—'}. See the Processing purposes panel below for the
             current, versioned purposes.
           </p>
@@ -229,7 +229,7 @@ export default function InventoryEntryDetailPage() {
         <h2 style={{ marginTop: 0 }}>PII classification</h2>
         <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
           A rule-based suggestion your compliance officer confirms — the platform advises, never
-          decides (FR-INV-03/04).
+          decides.
         </p>
 
         {entry.piiDecision === 'accepted' && (
@@ -300,7 +300,7 @@ export default function InventoryEntryDetailPage() {
 
       <h2 style={{ marginTop: 28 }}>Version history</h2>
       <p className="muted" style={{ marginTop: 0 }}>
-        Every edit creates a new version. Nothing is ever overwritten (FR-INV-08).
+        Every edit creates a new version. Nothing is ever overwritten.
       </p>
       <div className="table-wrap">
         <table>

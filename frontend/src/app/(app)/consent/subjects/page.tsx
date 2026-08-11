@@ -240,7 +240,7 @@ export default function SubjectConsentHistoryPage() {
     <div>
       <h1>Subject consent history</h1>
       <p className="muted">
-        One data principal&apos;s complete consent record (FR-CON-05/08). The log is append-only: a
+        One data principal&apos;s complete consent record. The log is append-only: a
         withdrawal is a <strong>new entry alongside</strong> the grant it revokes — the grant is
         never overwritten or removed, which is the only reason the question &ldquo;what was true on
         3rd March?&rdquo; stays answerable.
@@ -252,7 +252,7 @@ export default function SubjectConsentHistoryPage() {
           Your own system&apos;s customer or subject identifier. It is sent once, in the body of a
           POST, and hashed with this workspace&apos;s own secret. It never appears in a URL, a query
           string, or a log — only the derived reference below does, and that reference cannot be
-          reversed back to the identifier by this platform (I2).
+          reversed back to the identifier by this platform.
         </p>
 
         <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -403,7 +403,7 @@ export default function SubjectConsentHistoryPage() {
                 <h2 style={{ marginTop: 0 }}>Download proof of consent</h2>
                 <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
                   A certificate for one purpose showing status and the exact notice text and version
-                  shown at that time (FR-CON-08).
+                  shown at that time.
                 </p>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                   <div>

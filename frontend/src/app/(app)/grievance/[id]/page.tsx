@@ -19,6 +19,7 @@ import {
 import { apiFetch, downloadFile, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
 import { slaBadgeClass, slaCountdownLabel, slaUrgency } from '../../../../lib/sla';
+import { useToast } from '../../../../components/Toast';
 
 const HANDLER_ROLES = new Set(['owner', 'dpo', 'compliance_officer', 'grievance_officer']);
 
@@ -175,7 +176,7 @@ export default function GrievanceTicketDetailPage() {
         <h2 style={{ marginTop: 0 }}>Escalation ladder</h2>
         <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
           Grievance Officer → DPO → escalation contact. Climbed automatically as the SLA clock
-          runs, or manually below (FR-GRV-05) — one ladder, two ways of reaching the next rung.
+          runs, or manually below — one ladder, two ways of reaching the next rung.
         </p>
 
         {detail.timers.length === 0 ? (
@@ -252,6 +253,7 @@ function CategoryControl({
   const [value, setValue] = useState<GrievanceCategory>(current ?? 'other');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   async function onSave() {
     setBusy(true);
@@ -259,6 +261,7 @@ function CategoryControl({
     try {
       await apiFetch(`/grievance/tickets/${ticketId}/category`, { method: 'POST', body: { category: value } });
       setEditing(false);
+      showToast('Category updated.');
       await onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not update the category.');
@@ -276,7 +279,7 @@ function CategoryControl({
   }
 
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+    <div className="reveal" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
       <select
         value={value}
         onChange={(e) => setValue(e.target.value as GrievanceCategory)}
@@ -323,7 +326,7 @@ function ResolutionExportButton({ ticketId, referenceCode }: { ticketId: string;
   return (
     <span>
       <button type="button" onClick={() => void onDownload()} disabled={busy} data-testid="resolution-export">
-        {busy ? 'Generating…' : 'Download resolution PDF (FR-GRV-06)'}
+        {busy ? 'Generating…' : 'Download resolution PDF'}
       </button>
       {error && <span className="error" style={{ marginLeft: 8 }}>{error}</span>}
     </span>
@@ -335,6 +338,7 @@ function IdentityVerificationPanel({ ticketId, onDone }: { ticketId: string; onD
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -346,6 +350,7 @@ function IdentityVerificationPanel({ ticketId, onDone }: { ticketId: string; onD
         body: { outcome, reason },
       });
       setReason('');
+      showToast('Verification recorded.');
       await onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not record the verification.');
@@ -356,7 +361,7 @@ function IdentityVerificationPanel({ ticketId, onDone }: { ticketId: string; onD
 
   return (
     <form className="panel" onSubmit={onSubmit} style={{ marginTop: 16 }} data-testid="identity-verification-form">
-      <h2 style={{ marginTop: 0 }}>Identity verification (FR-GRV-04)</h2>
+      <h2 style={{ marginTop: 0 }}>Identity verification</h2>
       <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
         The platform proved the requester controls the contact channel above. It cannot tell you
         who they are — that is a lookup in your own customer records. Record what you found.
@@ -404,6 +409,7 @@ function CorrespondenceForm({ ticketId, onDone }: { ticketId: string; onDone: ()
   const [body, setBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -412,6 +418,7 @@ function CorrespondenceForm({ ticketId, onDone }: { ticketId: string; onDone: ()
     try {
       await apiFetch(`/requests/${ticketId}/correspondence`, { method: 'POST', body: { direction, body } });
       setBody('');
+      showToast(direction === 'outbound' ? 'Reply sent.' : 'Note added.');
       await onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add correspondence.');
@@ -464,6 +471,7 @@ function AssignPanel({
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -475,6 +483,7 @@ function AssignPanel({
         body: { assigneeUserId, reason: reason.trim() },
       });
       setReason('');
+      showToast('Request reassigned.');
       await onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not reassign this request.');
@@ -525,6 +534,7 @@ function StatusPanel({
   const [resolution, setResolution] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const targets: Array<'in_progress' | 'resolved' | 'closed'> = ['in_progress', 'resolved', 'closed'];
   const needsResolution = target === 'resolved' || target === 'closed';
@@ -543,9 +553,11 @@ function StatusPanel({
           ...(needsResolution && resolution.trim() ? { resolution: resolution.trim() } : {}),
         },
       });
+      const doneTarget = target;
       setTarget('');
       setReason('');
       setResolution('');
+      showToast(`Status changed to ${doneTarget.replace('_', ' ')}.`);
       await onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not change status.');
@@ -610,6 +622,7 @@ function EscalateForm({ ticketId, disabled, onDone }: { ticketId: string; disabl
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -619,6 +632,7 @@ function EscalateForm({ ticketId, disabled, onDone }: { ticketId: string; disabl
       await apiFetch(`/requests/${ticketId}/escalate`, { method: 'POST', body: { reason: reason.trim() } });
       setReason('');
       setOpen(false);
+      showToast('Request escalated.');
       await onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not escalate this request.');
@@ -638,7 +652,7 @@ function EscalateForm({ ticketId, disabled, onDone }: { ticketId: string; disabl
   }
 
   return (
-    <form onSubmit={onSubmit} style={{ marginTop: 14 }} data-testid="escalate-form">
+    <form className="reveal" onSubmit={onSubmit} style={{ marginTop: 14 }} data-testid="escalate-form">
       <label htmlFor="escalate-reason">Reason for escalating now (min 10 characters)</label>
       <textarea
         id="escalate-reason"

@@ -121,7 +121,7 @@ export default function SectorTemplatesPage() {
     <div>
       <h1>Sector templates</h1>
       <p className="muted">
-        Pre-seed a starting register for your sector (FR-INV-11) — data elements with their
+        Pre-seed a starting register for your sector — data elements with their
         processing purposes, legal basis and retention, the systems those elements live on, and the
         vendors and recipients they reach. Nothing already in your registers is changed.
       </p>

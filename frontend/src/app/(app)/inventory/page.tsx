@@ -1,10 +1,10 @@
 'use client';
 
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
+import { PageHeader } from '../../../components/PageHeader';
 
 /**
  * Data Inventory register (FR-INV-01/08) against the real /inventory/register
@@ -57,14 +57,26 @@ export default function InventoryPage() {
 
   return (
     <div>
-      <h1>Data Inventory</h1>
-      <p className="muted">
-        Categories of data, purposes, and retention — descriptions, never customer records (I1).
-      </p>
+      <PageHeader
+        title="Data Inventory"
+        subtitle="Categories of data, purposes, and retention — descriptions, never customer records."
+        actions={
+          canManage ? (
+            <>
+              <button type="button" onClick={() => router.push('/inventory/import')}>
+                Import CSV/Excel
+              </button>
+              <button className="primary" type="button" onClick={() => router.push('/inventory/register')}>
+                + Add data element
+              </button>
+            </>
+          ) : undefined
+        }
+      />
 
       {error && <div className="error">{error}</div>}
 
-      <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+      <div className="toolbar">
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
           <input
             type="checkbox"
@@ -74,70 +86,60 @@ export default function InventoryPage() {
           />
           Show tombstoned
         </label>
-        {canManage && (
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button type="button" onClick={() => router.push('/inventory/import')}>
-              Import CSV/Excel
-            </button>
-            <button className="primary" type="button" onClick={() => router.push('/inventory/register')}>
-              + Add data element
-            </button>
-          </div>
-        )}
       </div>
 
-      <div className="table-wrap" data-tour="inventory-register">
-        <table>
-          <thead>
-            <tr>
-              <th>Category</th>
-              <th>Storage location</th>
-              <th>Purposes</th>
-              <th>Version</th>
-              <th>Classification</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {elements.map((el) => (
-              <tr key={el.id}>
-                <td>{el.category}</td>
-                <td>{el.storageLocation}</td>
-                <td>
+      <div className="entry-grid" data-tour="inventory-register">
+        {elements.map((el) => (
+          <div key={el.id} className="entry-card">
+            <div className="entry-card-title">{el.category}</div>
+            <div className="entry-card-meta">
+              <div className="entry-card-field">
+                <div className="field-label">Purpose</div>
+                <div className="field-value">
                   {el.purposeCount > 0 ? (
                     `${el.purposeCount} purpose${el.purposeCount === 1 ? '' : 's'}`
                   ) : (
                     <span className="muted">None yet</span>
                   )}
-                </td>
-                <td className="mono">v{el.versionNumber}</td>
-                <td>
+                </div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Storage</div>
+                <div className="field-value">{el.storageLocation}</div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Status</div>
+                <div className={`field-value ${el.status === 'active' ? 'status-active' : 'status-muted'}`}>
+                  {el.status === 'active' ? 'Active' : 'Tombstoned'}
+                </div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Classification</div>
+                <div className="field-value">
                   {el.piiDecision === 'accepted' && (
                     <span className="badge success">{el.piiCategory}</span>
                   )}
                   {el.piiDecision === 'rejected' && <span className="muted">Not classified</span>}
                   {el.piiDecision === 'undecided' && <span className="muted">Unreviewed</span>}
-                </td>
-                <td>
-                  <span className={`badge ${el.status === 'active' ? 'success' : 'denied'}`}>
-                    {el.status}
-                  </span>
-                </td>
-                <td>
-                  <Link href={`/inventory/${el.id}`}>View history</Link>
-                </td>
-              </tr>
-            ))}
-            {elements.length === 0 && !loading && (
-              <tr>
-                <td colSpan={7} className="muted" style={{ textAlign: 'center', padding: 24 }}>
-                  No data elements yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                </div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Version</div>
+                <div className="field-value mono">v{el.versionNumber}</div>
+              </div>
+            </div>
+            <div className="entry-card-footer">
+              <button type="button" onClick={() => router.push(`/inventory/${el.id}`)}>
+                View details
+              </button>
+            </div>
+          </div>
+        ))}
+        {elements.length === 0 && !loading && (
+          <p className="muted" style={{ textAlign: 'center', padding: 24, gridColumn: '1 / -1' }}>
+            No data elements yet.
+          </p>
+        )}
       </div>
     </div>
   );

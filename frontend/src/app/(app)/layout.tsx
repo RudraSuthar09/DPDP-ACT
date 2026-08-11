@@ -6,6 +6,8 @@ import { useEffect } from 'react';
 import { useAuth } from '../../lib/auth';
 import { MODULE_NAV, OVERVIEW_NAV, PLATFORM_NAV, type NavItem } from '../../lib/nav';
 import { TakeTheTourButton, TourProvider } from '../../components/ProductTour';
+import { ToastProvider } from '../../components/Toast';
+import { NAV_ICONS } from '../../components/NavIcons';
 
 /**
  * The authenticated, tenant-aware shell. Every page under (app) renders inside
@@ -33,6 +35,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     // The tour lives inside the authenticated shell, so it can only ever run
     // for a real signed-in user against their own real screens.
+    <ToastProvider>
     <TourProvider>
       <div className="shell">
       <aside className="sidebar">
@@ -60,24 +63,29 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
           <div className="who">
             {user.fullName} · {user.email} · <span className="mono">{user.role}</span>{' '}
-            <TakeTheTourButton />
-            <button style={{ marginLeft: 8 }} onClick={onSignOut}>
+            <TakeTheTourButton className="link-button" />
+            <button className="link-button" style={{ marginLeft: 12 }} onClick={onSignOut}>
               Sign out
             </button>
           </div>
         </header>
-        <div className="content">{children}</div>
+        <div className="content" key={pathname}>{children}</div>
       </div>
       </div>
     </TourProvider>
+    </ToastProvider>
   );
 }
 
 function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
+  const Icon = NAV_ICONS[item.href];
   if (!item.active) {
     return (
       <span className="nav-item disabled" title={item.note}>
-        {item.label}
+        <span className="nav-item-label">
+          {Icon && <Icon />}
+          {item.label}
+        </span>
         {item.note && <span className="tag">{item.note}</span>}
       </span>
     );
@@ -85,7 +93,10 @@ function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
   const current = pathname === item.href;
   return (
     <Link href={item.href} className={`nav-item${current ? ' current' : ''}`}>
-      {item.label}
+      <span className="nav-item-label">
+        {Icon && <Icon />}
+        {item.label}
+      </span>
     </Link>
   );
 }

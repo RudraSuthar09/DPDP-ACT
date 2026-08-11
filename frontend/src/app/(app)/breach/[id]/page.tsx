@@ -205,7 +205,7 @@ export default function BreachIncidentPage() {
                     required
                     style={{ width: '100%' }}
                   />
-                  <button className="primary" type="submit" disabled={busy !== null}>
+                  <button className="primary" type="submit" disabled={busy !== null || gateNotes.trim().length < 10}>
                     {busy === gate ? 'Saving…' : `Complete ${BREACH_GATE_LABELS[gate]}`}
                   </button>
                 </form>
@@ -241,7 +241,12 @@ export default function BreachIncidentPage() {
             required
           />
           <div className="portal-actions">
-            <button className="primary" type="submit" disabled={busy !== null} data-testid="close-incident">
+            <button
+              className="primary"
+              type="submit"
+              disabled={busy !== null || closureNote.trim().length < 10}
+              data-testid="close-incident"
+            >
               {busy === 'close' ? 'Closing…' : 'Close incident'}
             </button>
           </div>

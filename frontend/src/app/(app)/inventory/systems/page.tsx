@@ -1,9 +1,11 @@
 'use client';
 
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
+import { useToast } from '../../../../components/Toast';
+import { PageHeader } from '../../../../components/PageHeader';
 
 interface SystemListItem {
   id: string;
@@ -28,6 +30,7 @@ const EMPTY_FORM = {
 /** Systems/assets register (FR-INV-06) — where data lives. */
 export default function SystemsPage() {
   const { user } = useAuth();
+  const router = useRouter();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
 
   const [systems, setSystems] = useState<SystemListItem[]>([]);
@@ -37,6 +40,7 @@ export default function SystemsPage() {
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -72,6 +76,7 @@ export default function SystemsPage() {
       });
       setForm(EMPTY_FORM);
       setAdding(false);
+      showToast('System added.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add this system.');
@@ -84,14 +89,21 @@ export default function SystemsPage() {
 
   return (
     <div>
-      <h1>Systems &amp; assets</h1>
-      <p className="muted">
-        Where data lives (FR-INV-06). Link a system to a data element from the element&apos;s own page.
-      </p>
+      <PageHeader
+        title="Systems & assets"
+        subtitle="Where data lives. Link a system to a data element from the element's own page."
+        actions={
+          canManage && !adding ? (
+            <button className="primary" type="button" onClick={() => setAdding(true)}>
+              + Add system
+            </button>
+          ) : undefined
+        }
+      />
 
       {error && <div className="error">{error}</div>}
 
-      <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+      <div className="toolbar">
         <label style={{ display: 'flex', alignItems: 'center', gap: 6, margin: 0 }}>
           <input
             type="checkbox"
@@ -101,15 +113,10 @@ export default function SystemsPage() {
           />
           Show tombstoned
         </label>
-        {canManage && !adding && (
-          <button className="primary" type="button" onClick={() => setAdding(true)}>
-            + Add system
-          </button>
-        )}
       </div>
 
       {adding && (
-        <div className="panel" style={{ maxWidth: 480, marginBottom: 16 }}>
+        <div className="panel reveal" style={{ maxWidth: 480, marginBottom: 16 }}>
           <label>Name</label>
           <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
           <label>Type</label>
@@ -147,42 +154,42 @@ export default function SystemsPage() {
         </div>
       )}
 
-      <div className="table-wrap" data-tour="systems-register">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Hosting location</th>
-              <th>Version</th>
-              <th>Status</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {systems.map((s) => (
-              <tr key={s.id}>
-                <td>{s.name}</td>
-                <td>{s.systemType}</td>
-                <td>{s.hostingLocation || '—'}</td>
-                <td className="mono">v{s.versionNumber}</td>
-                <td>
-                  <span className={`badge ${s.status === 'active' ? 'success' : 'denied'}`}>{s.status}</span>
-                </td>
-                <td>
-                  <Link href={`/inventory/systems/${s.id}`}>View</Link>
-                </td>
-              </tr>
-            ))}
-            {systems.length === 0 && !loading && (
-              <tr>
-                <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: 24 }}>
-                  No systems recorded yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <div className="entry-grid" data-tour="systems-register">
+        {systems.map((s) => (
+          <div key={s.id} className="entry-card">
+            <div className="entry-card-title">{s.name}</div>
+            <div className="entry-card-meta">
+              <div className="entry-card-field">
+                <div className="field-label">Type</div>
+                <div className="field-value">{s.systemType}</div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Hosting location</div>
+                <div className="field-value">{s.hostingLocation || '—'}</div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Status</div>
+                <div className={`field-value ${s.status === 'active' ? 'status-active' : 'status-muted'}`}>
+                  {s.status === 'active' ? 'Active' : 'Tombstoned'}
+                </div>
+              </div>
+              <div className="entry-card-field">
+                <div className="field-label">Version</div>
+                <div className="field-value mono">v{s.versionNumber}</div>
+              </div>
+            </div>
+            <div className="entry-card-footer">
+              <button type="button" onClick={() => router.push(`/inventory/systems/${s.id}`)}>
+                View details
+              </button>
+            </div>
+          </div>
+        ))}
+        {systems.length === 0 && !loading && (
+          <p className="muted" style={{ textAlign: 'center', padding: 24, gridColumn: '1 / -1' }}>
+            No systems recorded yet.
+          </p>
+        )}
       </div>
     </div>
   );

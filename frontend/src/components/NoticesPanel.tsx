@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { NOTICE_LANGUAGES, noticeLanguageLabel, type NoticeLanguageCode } from '@dpdp/shared';
 import { apiFetch, ApiError } from '../lib/api';
 import { NoticeViewer, type NoticeTranslation } from './NoticeViewer';
+import { useToast } from './Toast';
 
 interface NoticeVersion {
   id: string;
@@ -30,6 +31,7 @@ export function NoticesPanel({ purposeId, canManage }: { purposeId: string; canM
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +63,7 @@ export function NoticesPanel({ purposeId, canManage }: { purposeId: string; canM
         body: { translations },
       });
       setAdding(false);
+      showToast('Notice published.');
       await load();
       setExpandedId(created.id);
     } catch (err) {
@@ -76,7 +79,7 @@ export function NoticesPanel({ purposeId, canManage }: { purposeId: string; canM
     <div className="panel" style={{ marginTop: 16 }}>
       <h2 style={{ marginTop: 0 }}>Notice</h2>
       <p className="muted" style={{ marginTop: 0, fontSize: '0.85rem' }}>
-        The exact text shown to a data principal before consent is collected (FR-CON-02), in every
+        The exact text shown to a data principal before consent is collected, in every
         language you publish it in. Every edit publishes a new version — nothing already published
         is ever rewritten.
       </p>
@@ -177,7 +180,7 @@ function NoticeEditor({
   }
 
   return (
-    <div style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
+    <div className="reveal" style={{ border: '1px dashed var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
       <div className="tab-strip">
         {languages.map((l) => (
           <button

@@ -3,10 +3,12 @@
 import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../../lib/api';
+import Link from 'next/link';
 import {
   InventoryEntryWizard,
   type InventoryEntryFields,
 } from '../../../../../components/InventoryEntryWizard';
+import { useToast } from '../../../../../components/Toast';
 
 interface VersionEntry {
   versionNumber: number;
@@ -28,6 +30,7 @@ export default function EditInventoryEntryPage() {
   const [initial, setInitial] = useState<InventoryEntryFields | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,14 +60,18 @@ export default function EditInventoryEntryPage() {
 
   async function handleSubmit(fields: InventoryEntryFields) {
     await apiFetch(`/inventory/register/${id}`, { method: 'PATCH', body: fields });
+    showToast('Data element saved as a new version.');
     router.replace(`/inventory/${id}`);
   }
 
   return (
     <div>
-      <h1>Edit data element</h1>
+      <p className="muted" style={{ marginBottom: 4 }}>
+        <Link href={`/inventory/${id}`}>← Back to {initial ? initial.category : 'Data Inventory'}</Link>
+      </p>
+      <h1>Edit {initial ? initial.category : 'data element'}</h1>
       <p className="muted">
-        Saving creates a new version — the previous one is kept, never overwritten (FR-INV-08).
+        Saving creates a new version — the previous one is kept, never overwritten.
       </p>
       {error && <div className="error">{error}</div>}
       {loading && <p className="muted">Loading…</p>}

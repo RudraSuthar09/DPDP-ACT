@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ROLES, type Role } from '@dpdp/shared';
 import { apiFetch, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
+import { useToast } from '../../../components/Toast';
 
 /**
  * Org Admin surface (FR-IDN-04/05): team list, invite flow, role assignment,
@@ -102,7 +103,7 @@ export default function TeamPage() {
     <div>
       <h1>Team</h1>
       <p className="muted">
-        Your organisation&apos;s people, roles, and lifecycle (FR-IDN-03/05) — never hard-deleted.
+        Your organisation&apos;s people, roles, and lifecycle — never hard-deleted.
       </p>
 
       {error && <div className="error">{error}</div>}
@@ -225,12 +226,14 @@ function MemberRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
-  async function run(fn: () => Promise<unknown>) {
+  async function run(fn: () => Promise<unknown>, successMessage?: string) {
     setBusy(true);
     setError(null);
     try {
       await fn();
+      if (successMessage) showToast(successMessage);
       onChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Action failed.');
@@ -243,8 +246,9 @@ function MemberRow({
     if (role === member.role) return;
     const reason = promptReason(`changing this person's role to ${ROLE_LABEL[role]}`);
     if (reason === null) return;
-    await run(() =>
-      apiFetch(`/users/${member.userId}/role`, { method: 'POST', body: { role, reason } }),
+    await run(
+      () => apiFetch(`/users/${member.userId}/role`, { method: 'POST', body: { role, reason } }),
+      `Role changed to ${ROLE_LABEL[role]}.`,
     );
   }
 
@@ -255,15 +259,19 @@ function MemberRow({
     if (status === 'removed' && !window.confirm('Removal is permanent and cannot be undone. Continue?')) {
       return;
     }
-    await run(() =>
-      apiFetch(`/users/${member.userId}/status`, { method: 'POST', body: { status, reason } }),
+    await run(
+      () => apiFetch(`/users/${member.userId}/status`, { method: 'POST', body: { status, reason } }),
+      status === 'removed' ? 'Member removed.' : 'Member suspended.',
     );
   }
 
   async function onReactivate() {
     const reason = promptReason('reactivating this person');
     if (reason === null) return;
-    await run(() => apiFetch(`/users/${member.userId}/reactivate`, { method: 'POST', body: { reason } }));
+    await run(
+      () => apiFetch(`/users/${member.userId}/reactivate`, { method: 'POST', body: { reason } }),
+      'Member reactivated.',
+    );
   }
 
   return (
@@ -323,6 +331,7 @@ function MemberRow({
 function InvitationRow({ invitation, onChanged }: { invitation: Invitation; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   async function onRevoke() {
     const reason = promptReason('revoking this invitation');
@@ -331,6 +340,7 @@ function InvitationRow({ invitation, onChanged }: { invitation: Invitation; onCh
     setError(null);
     try {
       await apiFetch(`/users/invitations/${invitation.id}/revoke`, { method: 'POST', body: { reason } });
+      showToast('Invitation revoked.');
       onChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Action failed.');
@@ -362,6 +372,7 @@ function InviteForm({ onInvited }: { onInvited: (link: string) => void }) {
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const canSubmit = email.trim().length > 0 && fullName.trim().length > 0 && reason.trim().length > 0;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -382,7 +393,7 @@ function InviteForm({ onInvited }: { onInvited: (link: string) => void }) {
   }
 
   return (
-    <form onSubmit={onSubmit} className="panel" style={{ marginTop: 12 }}>
+    <form onSubmit={onSubmit} className="panel reveal" style={{ marginTop: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
         <div>
           <label>Email</label>
@@ -409,7 +420,7 @@ function InviteForm({ onInvited }: { onInvited: (link: string) => void }) {
       </div>
       {error && <div className="error">{error}</div>}
       <div style={{ marginTop: 12 }}>
-        <button className="primary" type="submit" disabled={busy}>
+        <button className="primary" type="submit" disabled={busy || !canSubmit}>
           {busy ? 'Sending…' : 'Create invitation'}
         </button>
       </div>
@@ -432,7 +443,7 @@ function Designations({
     <div className="panel" style={{ marginTop: 12 }}>
       <h2 style={{ marginTop: 0 }}>Published designations</h2>
       <p className="muted" style={{ marginTop: 0 }}>
-        Who is named as this org&apos;s DPO and Grievance Officer (FR-IDN-04). Shown on the public portal
+        Who is named as this org&apos;s DPO and Grievance Officer. Shown on the public portal
         once it ships.
       </p>
       <DesignationRow
@@ -472,6 +483,7 @@ function DesignationRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { showToast } = useToast();
   const currentMember = members.find((m) => m.userId === current?.userId);
 
   async function onAssign(userId: string) {
@@ -485,6 +497,7 @@ function DesignationRow({
         method: 'POST',
         body: { designation: kind, userId, reason },
       });
+      showToast(`${label} updated.`);
       onChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not set the designation.');

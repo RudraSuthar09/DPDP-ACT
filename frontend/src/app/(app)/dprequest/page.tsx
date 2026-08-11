@@ -116,9 +116,9 @@ export default function DPRequestQueuePage() {
     <div>
       <h1>Data Principal Requests</h1>
       <p className="muted">
-        Rights requests filed through the public portal (FR-DPR-01), tracked on the same request
+        Rights requests filed through the public portal, tracked on the same request
         substrate as the Grievance Register. Each one waits on identity verification before it can
-        be worked (FR-GRV-04), and each carries the statutory deadline for the right it exercises.
+        be worked, and each carries the statutory deadline for the right it exercises.
       </p>
 
       <div className="toolbar">

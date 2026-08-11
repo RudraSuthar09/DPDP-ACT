@@ -4,6 +4,7 @@ import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
+import { useToast } from '../../../../../components/Toast';
 
 interface Row {
   id: string;
@@ -54,6 +55,7 @@ export default function ConsentFormBuilderPage() {
   const [newElementCategory, setNewElementCategory] = useState('');
   const [newElementStorage, setNewElementStorage] = useState('');
   const [copied, setCopied] = useState(false);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setError(null);
@@ -79,12 +81,19 @@ export default function ConsentFormBuilderPage() {
     if (!form) return;
     const name = window.prompt('Rename this form', form.name);
     if (name === null || name.trim().length < 2) return;
-    await mutate(() => apiFetch(`/consent/forms/${id}`, { method: 'PUT', body: { name: name.trim(), description: form.description } }));
+    await mutate(
+      () => apiFetch(`/consent/forms/${id}`, { method: 'PUT', body: { name: name.trim(), description: form.description } }),
+      'Form renamed.',
+    );
   }
 
   async function onToggleForm() {
     if (!form) return;
-    await mutate(() => apiFetch(`/consent/forms/${id}/active`, { method: 'PATCH', body: { isActive: !form.isActive } }));
+    const turningOn = !form.isActive;
+    await mutate(
+      () => apiFetch(`/consent/forms/${id}/active`, { method: 'PATCH', body: { isActive: turningOn } }),
+      turningOn ? 'Form turned on.' : 'Form turned off.',
+    );
   }
 
   async function onAddRow() {
@@ -120,6 +129,7 @@ export default function ConsentFormBuilderPage() {
       setInventoryChoice('');
       setNewElementCategory('');
       setNewElementStorage('');
+      showToast('Row added.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add the row.');
@@ -129,19 +139,24 @@ export default function ConsentFormBuilderPage() {
   }
 
   async function onToggleRow(row: Row) {
-    await mutate(() => apiFetch(`/consent/forms/${id}/rows/${row.id}/active`, { method: 'PATCH', body: { active: !row.active } }));
+    const activating = !row.active;
+    await mutate(
+      () => apiFetch(`/consent/forms/${id}/rows/${row.id}/active`, { method: 'PATCH', body: { active: activating } }),
+      activating ? 'Row activated.' : 'Row deactivated.',
+    );
   }
 
   async function onRemoveRow(row: Row) {
     if (!window.confirm(`Remove the "${row.label}" row from this form?`)) return;
-    await mutate(() => apiFetch(`/consent/forms/${id}/rows/${row.id}`, { method: 'DELETE' }));
+    await mutate(() => apiFetch(`/consent/forms/${id}/rows/${row.id}`, { method: 'DELETE' }), 'Row removed.');
   }
 
-  async function mutate(fn: () => Promise<unknown>) {
+  async function mutate(fn: () => Promise<unknown>, successMessage?: string) {
     setBusy(true);
     setError(null);
     try {
       await fn();
+      if (successMessage) showToast(successMessage);
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong.');
@@ -221,7 +236,7 @@ export default function ConsentFormBuilderPage() {
               <option value={INVENTORY_NEW}>+ Add new element…</option>
             </select>
             {inventoryChoice === INVENTORY_NEW && (
-              <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: '2px solid var(--accent-soft-border)' }}>
+              <div className="reveal" style={{ marginTop: 8, paddingLeft: 12, borderLeft: '2px solid var(--accent-soft-border)' }}>
                 <label htmlFor="new-el-cat" style={{ marginTop: 0 }}>New element category</label>
                 <input id="new-el-cat" value={newElementCategory} onChange={(e) => setNewElementCategory(e.target.value)} placeholder="e.g. Aadhaar Card" disabled={busy} />
                 <label htmlFor="new-el-store">Storage location</label>

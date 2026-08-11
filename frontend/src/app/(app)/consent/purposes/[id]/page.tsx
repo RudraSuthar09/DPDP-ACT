@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
 import { NoticesPanel } from '../../../../../components/NoticesPanel';
+import { useToast } from '../../../../../components/Toast';
 
 interface VersionEntry {
   versionNumber: number;
@@ -44,6 +45,7 @@ export default function ConsentPurposeDetailPage() {
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState('');
   const [editDescription, setEditDescription] = useState('');
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,6 +81,7 @@ export default function ConsentPurposeDetailPage() {
         body: { name: editName.trim(), description: editDescription.trim() || undefined },
       });
       setEditing(false);
+      showToast('Purpose saved as a new version.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save this purpose.');
@@ -100,6 +103,7 @@ export default function ConsentPurposeDetailPage() {
     setError(null);
     try {
       await apiFetch(`/consent/purposes/${id}`, { method: 'DELETE', body: { reason: reason.trim() } });
+      showToast('Purpose removed.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not remove this purpose.');
@@ -153,7 +157,7 @@ export default function ConsentPurposeDetailPage() {
             <Field label="Description" value={current.description || '—'} />
             {canEdit && (
               <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-                <button type="button" disabled={busy} onClick={startEdit}>
+                <button className="primary" type="button" disabled={busy} onClick={startEdit}>
                   Edit (creates a new version)
                 </button>
                 <button type="button" disabled={busy} onClick={() => void onTombstone()}>
@@ -184,7 +188,7 @@ export default function ConsentPurposeDetailPage() {
 
       <h2 style={{ marginTop: 28 }}>Version history</h2>
       <p className="muted" style={{ marginTop: 0 }}>
-        Every edit creates a new version. Nothing is ever overwritten (FR-CON-01, I4).
+        Every edit creates a new version. Nothing is ever overwritten.
       </p>
       <div className="table-wrap">
         <table>

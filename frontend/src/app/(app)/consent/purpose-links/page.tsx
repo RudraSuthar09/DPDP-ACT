@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
 import { PiiConfidenceBadge } from '../../../../components/PiiConfidenceBadge';
+import { useToast } from '../../../../components/Toast';
 
 interface PurposeLink {
   id: string;
@@ -57,6 +58,7 @@ export default function PurposeLinksPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -88,6 +90,7 @@ export default function PurposeLinksPage() {
         method: 'POST',
         body: { consentPurposeId: s.consentPurposeId, inventoryPurposeId: s.inventoryPurposeId },
       });
+      showToast('Mapping accepted.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not accept this suggestion.');
@@ -110,6 +113,7 @@ export default function PurposeLinksPage() {
     setError(null);
     try {
       await apiFetch(`/dprequest/purpose-links/${link.id}`, { method: 'DELETE', body: { reason: reason.trim() } });
+      showToast('Mapping removed.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not remove this mapping.');
@@ -125,7 +129,7 @@ export default function PurposeLinksPage() {
       <h1>Consent ↔ Inventory mapping</h1>
       <p className="muted">
         Which inventory purposes each consent purpose reaches — the mapping Tier 1 Personal Data
-        Summaries use to attribute data categories to a subject&apos;s consent (FR-DPR-04). A
+        Summaries use to attribute data categories to a subject&apos;s consent. A
         pairing here is only ever a suggestion by name similarity; nothing is added to a summary
         until a person accepts it.
       </p>

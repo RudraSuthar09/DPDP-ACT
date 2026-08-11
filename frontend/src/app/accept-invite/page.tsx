@@ -26,6 +26,7 @@ function AcceptInviteForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<AcceptResult | null>(null);
+  const canSubmit = fullName.trim().length > 0 && password.length >= 12;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -78,7 +79,7 @@ function AcceptInviteForm() {
               />
               {error && <div className="error">{error}</div>}
               <div style={{ marginTop: 16 }}>
-                <button className="primary" type="submit" disabled={busy}>
+                <button className="primary" type="submit" disabled={busy || !canSubmit}>
                   {busy ? 'Joining…' : 'Accept invitation'}
                 </button>
               </div>

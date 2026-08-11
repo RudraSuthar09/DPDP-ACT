@@ -99,7 +99,8 @@ export default function AuditPage() {
     <div>
       <h1 data-tour="audit-main">Audit Log</h1>
       <p className="muted">
-        Append-only, hash-chained record of every state change in this workspace (FR-AUD-03).
+        A tamper-evident record of every change made in this workspace — nothing is ever edited or
+        removed from this log.
       </p>
 
       <div className="toolbar">

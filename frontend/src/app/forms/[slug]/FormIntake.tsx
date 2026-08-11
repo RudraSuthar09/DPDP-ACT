@@ -24,6 +24,7 @@ export function FormIntake({ slug, rows }: { slug: string; rows: PublicFormRow[]
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const canSubmit = name.trim().length > 0 && (email.trim().length > 0 || phone.trim().length > 0);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -88,7 +89,7 @@ export function FormIntake({ slug, rows }: { slug: string; rows: PublicFormRow[]
         </label>
       ))}
 
-      <button className="primary" type="submit" disabled={busy} style={{ marginTop: 16 }}>
+      <button className="primary" type="submit" disabled={busy || !canSubmit} style={{ marginTop: 16 }}>
         {busy ? 'Saving…' : 'Save my choices'}
       </button>
     </form>

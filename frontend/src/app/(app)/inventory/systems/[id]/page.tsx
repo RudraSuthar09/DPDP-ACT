@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
+import { useToast } from '../../../../../components/Toast';
 
 interface VersionEntry {
   versionNumber: number;
@@ -50,6 +51,7 @@ export default function SystemDetailPage() {
     hostingLocation: '',
     accessControlNote: '',
   });
+  const { showToast } = useToast();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,6 +98,7 @@ export default function SystemDetailPage() {
         },
       });
       setEditing(false);
+      showToast('System saved as a new version.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save this system.');
@@ -115,6 +118,7 @@ export default function SystemDetailPage() {
     setError(null);
     try {
       await apiFetch(`/inventory/systems/${id}`, { method: 'DELETE', body: { reason: reason.trim() } });
+      showToast('System removed.');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not remove this system.');

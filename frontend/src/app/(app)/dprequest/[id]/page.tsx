@@ -62,6 +62,9 @@ export default function DPRequestDetailPage() {
   const [outcome, setOutcome] = useState<IdentityVerificationOutcome>('matched');
   const [verifyReason, setVerifyReason] = useState('');
 
+  const canResolveSubjectRef = customerId.trim().length > 0 && resolveReason.trim().length >= 10;
+  const canRecordVerdict = verifyReason.trim().length >= 10;
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -181,7 +184,7 @@ export default function DPRequestDetailPage() {
           <p className="muted">
             Enter this person&apos;s customer id from your own systems. It is hashed with your
             organisation&apos;s own secret to locate matching consent records, and the raw id is
-            never stored on this platform and cannot be recovered from what is (I2).
+            never stored on this platform and cannot be recovered from what is.
           </p>
           {canHandle && (
             <form
@@ -219,7 +222,7 @@ export default function DPRequestDetailPage() {
                 required
               />
               <div className="portal-actions">
-                <button className="primary" type="submit" disabled={busy}>
+                <button className="primary" type="submit" disabled={busy || !canResolveSubjectRef}>
                   {busy ? 'Resolving…' : 'Resolve subject reference'}
                 </button>
               </div>
@@ -252,7 +255,7 @@ export default function DPRequestDetailPage() {
         >
           <p className="muted">
             The platform proved the contact channel and can prove nothing further. Whether this is
-            one of your data principals is a question only your records answer (FR-GRV-04).
+            one of your data principals is a question only your records answer.
           </p>
           <label htmlFor="outcome">Verdict</label>
           <select
@@ -277,7 +280,7 @@ export default function DPRequestDetailPage() {
             required
           />
           <div className="portal-actions">
-            <button className="primary" type="submit" disabled={busy}>
+            <button className="primary" type="submit" disabled={busy || !canRecordVerdict}>
               {busy ? 'Recording…' : 'Record verdict'}
             </button>
           </div>

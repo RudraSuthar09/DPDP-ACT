@@ -132,7 +132,7 @@ export default function DashboardPage() {
               data-testid="export-evidence-bundle-btn"
               onClick={() => void exportEvidenceBundle()}
               disabled={exportingBundle}
-              title="A complete, verifiable export of this organisation's audit log (FR-AUD-05) — what you hand a regulator."
+              title="A complete, verifiable export of this organisation's audit log — what you hand a regulator."
             >
               {exportingBundle ? 'Exporting…' : 'Export full evidence bundle'}
             </button>

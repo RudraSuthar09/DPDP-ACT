@@ -66,7 +66,7 @@ export default function DataFlowsPage() {
     <div>
       <h1>Data flow</h1>
       <p className="muted">
-        Elements → purposes → recipients (FR-INV-10). Every row is one data element flowing to one
+        Elements → purposes → recipients. Every row is one data element flowing to one
         purpose and (if shared externally) one recipient — an element with several purposes or
         vendors appears in several rows.
       </p>
