@@ -16,15 +16,26 @@ import { NAV_ICONS } from '../../components/NavIcons';
  * tenant context the token carries (Seam S1).
  */
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const { user, loading, signOut } = useAuth();
+  const { user, loading, connectionError, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
+  // A connectionError means the API could not be REACHED — nothing about the
+  // session itself was rejected. That is never a reason to sign someone out;
+  // it is retried in the background (see AuthProvider), so only bounce to
+  // /login once we're sure there is genuinely no valid session.
   useEffect(() => {
-    if (!loading && !user) router.replace('/login');
-  }, [loading, user, router]);
+    if (!loading && !user && !connectionError) router.replace('/login');
+  }, [loading, user, connectionError, router]);
 
   if (loading) return <p style={{ padding: 24 }} className="muted">Loading…</p>;
+  if (!user && connectionError) {
+    return (
+      <p style={{ padding: 24 }} className="muted">
+        Could not reach the server. Your session is still signed in — retrying automatically…
+      </p>
+    );
+  }
   if (!user) return null; // redirecting
 
   function onSignOut() {
@@ -69,7 +80,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </button>
           </div>
         </header>
-        <div className="content" key={pathname}>{children}</div>
+        {connectionError && (
+          <div
+            className="notice"
+            style={{ margin: '0 24px', marginTop: 12, borderRadius: 6 }}
+          >
+            Lost the connection to the server — retrying in the background. You&apos;re still
+            signed in; this will clear itself once the connection is back.
+          </div>
+        )}
+        <div className="content">{children}</div>
       </div>
       </div>
     </TourProvider>

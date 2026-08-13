@@ -47,10 +47,12 @@ export class TokenService {
     if (!this.secret) {
       throw new Error('JWT_SECRET is required — it signs the tenant claim Seam S1 depends on.');
     }
-    // Short-lived by default: this is a bearer token with no revocation list in
-    // Stage 1, so its lifetime IS its blast radius. A suspended user keeps a
-    // valid token until it expires; 15 minutes bounds that.
-    this.accessTtlSeconds = Number(config.get('ACCESS_TOKEN_TTL_SECONDS') ?? 900);
+    // There is no revocation list in Stage 1, so this number IS the blast
+    // radius of a leaked token, and how long a just-suspended user can still
+    // act — the shorter the more secure. Set to a day by product decision, so
+    // a normal working session is never interrupted by expiry; tighten it via
+    // ACCESS_TOKEN_TTL_SECONDS if that tradeoff changes.
+    this.accessTtlSeconds = Number(config.get('ACCESS_TOKEN_TTL_SECONDS') ?? 86400);
     // Long enough to open an authenticator app, short enough that a stolen
     // half-login is worthless by the time it is used.
     this.mfaChallengeTtlSeconds = Number(config.get('MFA_CHALLENGE_TTL_SECONDS') ?? 300);

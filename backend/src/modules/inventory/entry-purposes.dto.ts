@@ -26,7 +26,18 @@ export function parseEntryPurposeInput(body: unknown): EntryPurposeFields {
     legalBasis: legalBasis as LegalBasis,
     legalBasisNote: optionalString(obj, 'legalBasisNote', { max: 1000 }),
     retentionPeriod: requireString(obj, 'retentionPeriod', { min: 1, max: 200 }),
+    retentionMonths: optionalPositiveInt(obj, 'retentionMonths'),
   };
+}
+
+function optionalPositiveInt(input: Record<string, unknown>, field: string): number | null {
+  const value = input[field];
+  if (value === undefined || value === null || value === '') return null;
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (typeof n !== 'number' || !Number.isInteger(n) || n <= 0) {
+    throw new BadRequestException(`${field} must be a positive whole number of months.`);
+  }
+  return n;
 }
 
 export function parsePurposeTombstoneInput(body: unknown): { reason: string | null } {

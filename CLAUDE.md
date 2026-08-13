@@ -12,8 +12,10 @@ client's systems and helps them _prove_ they handle personal data lawfully.
 
 > **The one rule everything defers to:** _Business data stays with the client.
 > Compliance data lives on the platform._ The platform stores metadata, events,
-> tickets, and logs — **never customer records**. This is not a preference; it is
-> the product.
+> tickets, and logs — it **never persists a customer data value** (see I1's
+> two-mode model: under an explicitly enabled Mode-B source a raw value may
+> transit transiently to an authorized viewer, but is never stored). This is not
+> a preference; it is the product.
 
 ## Where we are
 
@@ -29,9 +31,20 @@ microservices — ever, forcibly.
 
 ## The four invariants (I1–I4) — if a feature can't honour these, it doesn't ship
 
-- **I1 — Never store customer records.** Only metadata, categories, events,
-  tickets, logs. There is no code path that reads a customer row. Connectors are
-  introspection-only, permanently.
+- **I1 — The central platform never PERSISTS customer data values.** It stores
+  only metadata, categories, events, tickets, logs — never a customer record in
+  any durable store. Data access is **per data source** and **two-mode**:
+  - **Mode A — metadata-only (the default for every source).** Structure and
+    descriptions only; no code path reads a customer row. The
+    metadata/introspection path (S4 `SchemaSource`) stays this way permanently
+    and must never gain a raw-value read capability.
+  - **Mode B — Gateway-connected (explicit opt-in, per source, role-gated,
+    tenant-scoped, auditable).** Raw values may be read live and shown to an
+    authorized user, **transiently only** — never persisted to central
+    PostgreSQL, normal logs, audit annotations, error messages, temporary
+    persistence layers, or any other durable storage. A tenant may run one
+    source in Mode A and another in Mode B; enabling Mode B on one source grants
+    nothing about any other source.
 - **I2 — Customer references are pseudonymised and irreversible to the platform.**
   The client's internal customer ID is HMAC'd with a per-tenant secret. The client
   can re-derive it (they hold the ID); the platform never can.
@@ -58,8 +71,11 @@ system behind it tomorrow. **Build the seams now, build the systems later.**
   Shared by Breach, Grievance, and DPRequest (same physics). Retrofit cost: **severe.**
 - **S4 — `SchemaSource` interface — with NO `readRows()`.** Only `ManualEntry` and
   `FileImport` implementations exist in Stage 1. `readRows()` must never exist in
-  the contract, so no connector can ever exfiltrate customer data — I1 enforced by
-  the type system. Later: DB drivers, SaaS adapters, on-prem agent.
+  the contract, so no connector can ever exfiltrate customer data — I1's **Mode-A**
+  metadata path enforced by the type system. **Mode-B** raw-value access (I1) is a
+  SEPARATE Gateway capability that never routes through `SchemaSource`; this
+  interface stays introspection-only, permanently. Later: DB drivers, SaaS
+  adapters, on-prem agent.
 - **S5 — Audit interceptor.** Hash-chained, append-only Postgres table, written by
   **one interceptor** — never by individual services. Later: ClickHouse + daily
   Merkle roots in S3 Object Lock. Retrofit cost: **impossible** — you cannot
@@ -79,9 +95,12 @@ system behind it tomorrow. **Build the seams now, build the systems later.**
   database.**
 - **R5 — Never skip the cross-tenant isolation suite** (`NFR-SEC-05`) — even in
   Stage 0. It runs on every PR and protects the only promise we actually sell.
-- **R6 — Never store customer data "just temporarily."** There is no such thing.
-  One row of patient data in our DB and the product's premise — and legal position
-  — is dead.
+- **R6 — Never PERSIST customer data "just temporarily."** There is no such thing
+  as temporary durable storage: one row of patient data written to our DB (or a
+  temp table, cache, file, or log) and the product's premise — and legal position
+  — is dead. This governs PERSISTENCE; a Mode-B raw value held in memory for the
+  duration of one authorized operation and never written down is transit, not
+  storage (see I1).
 
 ## The five modules
 

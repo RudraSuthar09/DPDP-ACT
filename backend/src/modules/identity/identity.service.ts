@@ -92,6 +92,8 @@ export class IdentityService {
         portalSlug: row.portal_slug,
         mfaEnrolled: row.mfa_enrolled_at !== null,
         productTourStatus: row.product_tour_status,
+        plan: row.plan,
+        deploymentType: row.deployment_type,
       };
     });
   }

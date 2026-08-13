@@ -19,6 +19,46 @@ import { TenantDatabaseService } from '../../database/database.service';
 export class ConsentInventoryLinkRepository {
   constructor(private readonly db: TenantDatabaseService) {}
 
+  /** For a consent purpose, its linked inventory purposes that carry a STRUCTURED
+   *  retention (retention_months set) — the raw material for a retention clock on
+   *  a consent grant. Reads inventory tables here, an extension of the same
+   *  documented cross-module bridge exception this repo already embodies (the link
+   *  relates consent and inventory rows; resolving the link's inventory side is
+   *  its whole job). Returns retention months + the element category + entry id
+   *  for display; never a customer value. */
+  linkedRetainableInventoryPurposes(
+    consentPurposeId: string,
+  ): Promise<Array<{ inventoryPurposeId: string; retentionMonths: number; legalBasis: string; entryId: string; category: string }>> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<{
+        inventoryPurposeId: string;
+        retentionMonths: number;
+        legalBasis: string;
+        entryId: string;
+        category: string;
+      }>(
+        `SELECT l.inventory_purpose_id AS "inventoryPurposeId",
+                ipv.retention_months AS "retentionMonths",
+                ipv.legal_basis AS "legalBasis",
+                ip.entry_id AS "entryId",
+                ev.category AS category
+           FROM consent_purpose_inventory_links l
+           JOIN inventory_entry_purposes ip ON ip.id = l.inventory_purpose_id AND ip.status = 'active'
+           JOIN LATERAL (
+             SELECT retention_months, legal_basis FROM inventory_entry_purpose_versions
+              WHERE purpose_id = l.inventory_purpose_id ORDER BY version_number DESC LIMIT 1
+           ) ipv ON true
+           JOIN LATERAL (
+             SELECT category FROM inventory_register_entry_versions
+              WHERE entry_id = ip.entry_id ORDER BY version_number DESC LIMIT 1
+           ) ev ON true
+          WHERE l.consent_purpose_id = $1 AND l.status = 'active' AND ipv.retention_months IS NOT NULL`,
+        [consentPurposeId],
+      );
+      return rows;
+    });
+  }
+
   /** Idempotently link a consent purpose to each of an element's inventory
    *  purposes. ON CONFLICT DO NOTHING against the active-pair unique index, so
    *  re-linking (or a pair dprequest already curated) is a safe no-op. Returns

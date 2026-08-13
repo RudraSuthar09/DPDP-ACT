@@ -20,6 +20,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { AuditExportModule } from './modules/audit/audit-export.module';
 import { NotifyModule } from './modules/notify/notify.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { DataSourceModule } from './modules/datasource/data-source.module';
 
 @Module({
   imports: [
@@ -48,6 +49,9 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     AuditExportModule,
     NotifyModule,
     DashboardModule,
+    // Phase 1 of the Gateway line of work: metadata + per-source access mode
+    // only (I1/§2.1). No Gateway, no connector, no raw-data path.
+    DataSourceModule,
   ],
 })
 export class AppModule {}

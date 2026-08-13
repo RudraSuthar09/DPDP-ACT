@@ -30,6 +30,7 @@ export const MODULE_NAV: NavItem[] = [
 
 export const PLATFORM_NAV: NavItem[] = [
   { href: '/team', label: 'Team', active: true },
+  { href: '/data-sources', label: 'Data Sources', active: true },
   { href: '/audit', label: 'Audit Log', active: true },
   { href: '/settings/notifications', label: 'Notifications', active: true },
   { href: '/settings', label: 'Settings', active: true },

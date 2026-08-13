@@ -23,6 +23,9 @@ import { ConsentFormsPortalController } from './consent-forms-portal.controller'
 import { ConsentFormsService } from './consent-forms.service';
 import { ConsentFormsRepository } from './consent-forms.repository';
 import { ConsentInventoryLinkRepository } from './consent-inventory-link.repository';
+import { RetentionController } from './retention.controller';
+import { RetentionService } from './retention.service';
+import { RetentionRepository } from './retention.repository';
 
 /**
  * Consent Register — Seam S2. Ingests consent events, pseudonymises the subject
@@ -75,6 +78,7 @@ import { ConsentInventoryLinkRepository } from './consent-inventory-link.reposit
     ConsentFormsController,
     ConsentFormsPublicController,
     ConsentFormsPortalController,
+    RetentionController,
   ],
   providers: [
     ConsentService,
@@ -90,12 +94,17 @@ import { ConsentInventoryLinkRepository } from './consent-inventory-link.reposit
     ConsentFormsService,
     ConsentFormsRepository,
     ConsentInventoryLinkRepository,
+    RetentionService,
+    RetentionRepository,
   ],
   // ConsentService only — never ConsentRepository, ConsentNoticesRepository, or
   // EVENT_SINK. It exposes the active-consents counter (FR-DSH-01) to the
   // Dashboard module without letting anyone reach the event table or the write
   // path directly (R2/R3). Notices have no cross-module consumer yet, so
   // nothing of theirs is exported either — add it the day something needs it.
-  exports: [ConsentService],
+  // RetentionService is exported too, so the Dashboard module can read the
+  // "approaching / past retention" counters (FR-DSH) through a service, never the
+  // retention table (R2).
+  exports: [ConsentService, RetentionService],
 })
 export class ConsentModule {}

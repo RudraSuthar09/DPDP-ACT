@@ -23,6 +23,7 @@ import { EVENT_SINK } from './postgres-event-sink';
 import { SubjectRefHasher } from './subject-ref';
 import type { RecordConsentBody, SubjectHistoryQuery } from './dto';
 import { WebhookDeliveryService } from '../notify/webhook-delivery.service';
+import { RetentionService } from './retention.service';
 
 /**
  * Consent Register operations (FR-CON-01..08).
@@ -42,6 +43,7 @@ export class ConsentService {
     private readonly audit: AuditContextService,
     @Inject(EVENT_SINK) private readonly sink: EventSink,
     private readonly webhooks: WebhookDeliveryService,
+    private readonly retention: RetentionService,
   ) {}
 
   // --- purposes (FR-CON-01) --------------------------------------------------
@@ -143,6 +145,14 @@ export class ConsentService {
       evidenceHash: body.evidenceHash,
       idempotencyKey: body.idempotencyKey,
     });
+
+    // A GRANT starts a retention clock for any inventory purpose this consent
+    // purpose is linked to (best-effort, never fails the grant). The single
+    // chokepoint every grant path funnels through, so retention materialises
+    // once, here — see RetentionService.onConsentGrant.
+    if (body.status === 'GRANTED') {
+      await this.retention.onConsentGrant(subjectRef, body.purposeId, body.occurredAt);
+    }
 
     return { receipt, subjectRef, purposeName };
   }

@@ -46,7 +46,7 @@ export interface EventSink {
  * physics — a deadline-bound, must-not-be-lost state machine — which is exactly
  * why one runner (and, later, one Temporal deployment) serves all three.
  */
-export const WORKFLOW_KINDS = ['breach', 'grievance', 'dprequest'] as const;
+export const WORKFLOW_KINDS = ['breach', 'grievance', 'dprequest', 'retention'] as const;
 export type WorkflowKind = (typeof WORKFLOW_KINDS)[number];
 
 /**

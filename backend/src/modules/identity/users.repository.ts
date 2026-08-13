@@ -133,15 +133,25 @@ export class UsersRepository {
   async findProfile(
     client: PoolClient,
     userId: string,
-  ): Promise<(UserRow & { organisation_name: string; portal_slug: string }) | null> {
+  ): Promise<
+    | (UserRow & {
+        organisation_name: string;
+        portal_slug: string;
+        plan: string;
+        deployment_type: string;
+      })
+    | null
+  > {
     const { rows } = await client.query<
-      UserRow & { organisation_name: string; portal_slug: string }
+      UserRow & { organisation_name: string; portal_slug: string; plan: string; deployment_type: string }
     >(
       `SELECT ${USER_COLUMNS.split(',')
         .map((c) => `u.${c.trim()}`)
         .join(', ')},
               o.name AS organisation_name,
-              o.portal_slug
+              o.portal_slug,
+              o.plan,
+              o.deployment_type
        FROM users u
        JOIN organisations o ON o.id = u.tenant_id
        WHERE u.id = $1`,

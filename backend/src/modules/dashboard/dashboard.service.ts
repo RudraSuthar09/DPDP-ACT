@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { DashboardActivityEntry, DashboardSummary } from '@dpdp/shared';
 import { RegisterService } from '../inventory/register.service';
 import { ConsentService } from '../consent/consent.service';
+import { RetentionService } from '../consent/retention.service';
 import { WorkflowJobsRepository } from '../workflow/workflow-jobs.repository';
 import { AuditVerifierService } from '../audit/audit-verifier.service';
 import { describeAction } from './activity-labels';
@@ -17,18 +18,21 @@ export class DashboardService {
   constructor(
     private readonly register: RegisterService,
     private readonly consent: ConsentService,
+    private readonly retention: RetentionService,
     private readonly workflowJobs: WorkflowJobsRepository,
     private readonly auditVerifier: AuditVerifierService,
   ) {}
 
   async summary(): Promise<DashboardSummary> {
-    const [inventory, activeConsents, openIncidents, openTickets, openRequests] = await Promise.all([
-      this.register.summary(),
-      this.consent.countActiveConsents(),
-      this.workflowJobs.countOpenByKind('breach'),
-      this.workflowJobs.countOpenByKind('grievance'),
-      this.workflowJobs.countOpenByKind('dprequest'),
-    ]);
+    const [inventory, activeConsents, openIncidents, openTickets, openRequests, retention] =
+      await Promise.all([
+        this.register.summary(),
+        this.consent.countActiveConsents(),
+        this.workflowJobs.countOpenByKind('breach'),
+        this.workflowJobs.countOpenByKind('grievance'),
+        this.workflowJobs.countOpenByKind('dprequest'),
+        this.retention.summary(),
+      ]);
 
     return {
       inventory,
@@ -36,6 +40,7 @@ export class DashboardService {
       breach: { openIncidents },
       grievance: { openTickets },
       dprequest: { openRequests },
+      retention,
     };
   }
 

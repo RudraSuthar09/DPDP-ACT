@@ -7,6 +7,7 @@
  */
 export * from './domain';
 export * from './seams';
+export * from './datasource';
 export * from './consent';
 export * from './consent-notices';
 export * from './dashboard';

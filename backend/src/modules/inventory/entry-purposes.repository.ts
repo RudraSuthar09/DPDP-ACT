@@ -32,6 +32,7 @@ export interface EntryPurposeVersionRow {
   legal_basis: LegalBasis;
   legal_basis_note: string | null;
   retention_period: string;
+  retention_months: number | null;
   created_at: Date;
   created_by: string | null;
 }
@@ -42,6 +43,10 @@ export interface EntryPurposeFields {
   legalBasis: LegalBasis;
   legalBasisNote: string | null;
   retentionPeriod: string;
+  /** Structured, computable retention period (months). Optional companion to the
+   *  free-text retentionPeriod — set it to make this purpose retention-trackable.
+   *  Optional so existing callers (sector templates, CSV import) need no change. */
+  retentionMonths?: number | null;
 }
 
 /** One row of a purpose list: lifecycle + its current (latest) version. */
@@ -57,6 +62,7 @@ export interface EntryPurposeListRow {
   legal_basis: LegalBasis;
   legal_basis_note: string | null;
   retention_period: string;
+  retention_months: number | null;
   version_created_at: Date;
 }
 
@@ -80,8 +86,8 @@ export class EntryPurposesRepository {
       const { rows: versionRows } = await client.query<EntryPurposeVersionRow>(
         `INSERT INTO inventory_entry_purpose_versions
            (purpose_id, version_number, purpose_name, description, legal_basis,
-            legal_basis_note, retention_period, created_by)
-         VALUES ($1, 1, $2, $3, $4, $5, $6, $7)
+            legal_basis_note, retention_period, retention_months, created_by)
+         VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
         [
           purpose.id,
@@ -90,6 +96,7 @@ export class EntryPurposesRepository {
           fields.legalBasis,
           fields.legalBasisNote,
           fields.retentionPeriod,
+          fields.retentionMonths ?? null,
           actorId,
         ],
       );
@@ -174,8 +181,8 @@ export class EntryPurposesRepository {
       const { rows: nextRows } = await client.query<EntryPurposeVersionRow>(
         `INSERT INTO inventory_entry_purpose_versions
            (purpose_id, version_number, purpose_name, description, legal_basis,
-            legal_basis_note, retention_period, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            legal_basis_note, retention_period, retention_months, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING *`,
         [
           purposeId,
@@ -185,6 +192,7 @@ export class EntryPurposesRepository {
           fields.legalBasis,
           fields.legalBasisNote,
           fields.retentionPeriod,
+          fields.retentionMonths ?? null,
           actorId,
         ],
       );

@@ -27,6 +27,12 @@ export interface DashboardSummary {
   dprequest: {
     openRequests: number;
   };
+  retention: {
+    /** Retention clocks whose (frozen) end is within the approaching window. */
+    approaching: number;
+    /** Retention clocks whose end has passed and are not yet reviewed. */
+    past: number;
+  };
 }
 
 /** One row of the dashboard's recent-activity feed — a trimmed, humanised

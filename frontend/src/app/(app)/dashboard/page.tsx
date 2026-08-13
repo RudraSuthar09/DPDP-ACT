@@ -21,6 +21,7 @@ interface DashboardSummary {
   breach: { openIncidents: number };
   grievance: { openTickets: number };
   dprequest: { openRequests: number };
+  retention: { approaching: number; past: number };
 }
 
 interface ActivityEntry {
@@ -170,6 +171,18 @@ export default function DashboardPage() {
           label="Open data-principal requests"
           value={summary?.dprequest.openRequests}
           loading={loadingSummary}
+        />
+        <StatTile
+          label="Approaching retention expiry"
+          value={summary?.retention.approaching}
+          loading={loadingSummary}
+          href="/retention?filter=approaching"
+        />
+        <StatTile
+          label="Past retention"
+          value={summary?.retention.past}
+          loading={loadingSummary}
+          href="/retention?filter=past"
         />
       </div>
 

@@ -108,12 +108,31 @@ Everything in this document derives from §1.2. These four invariants are the op
 
 | ID | Invariant | Engineering consequence |
 |---|---|---|
-| **I1** | The platform **never stores customer records** — only metadata, categories, events, tickets, logs. | Connectors are introspection-only, permanently. There is no code path that reads a customer row. |
+| **I1** | The platform **never persists customer data values** — only metadata, categories, events, tickets, logs. Data access is **two-mode, per data source**: **Mode A (metadata-only, the default)** reads no customer row; **Mode B (Gateway-connected — explicit opt-in, role-gated, tenant-scoped, audited)** may read a raw value live and show it to an authorized user, **transiently only, never persisted**. | The metadata/introspection path (`SchemaSource`) is introspection-only, permanently, and has no code path that reads a customer row. Mode-B raw values never reach central PostgreSQL, application logs, audit annotations, error messages, or any durable/temp store — and Mode B never routes through `SchemaSource`. Enabling Mode B on one source grants nothing about any other source. See §2.1. |
 | **I2** | Customer references are **pseudonymised and irreversible to the platform**. | The client's internal customer ID is HMAC'd with a per-tenant secret. The client can always re-derive it (they hold the ID). The platform can never reverse it. |
 | **I3** | **Tenant isolation is absolute.** | Enforced by the *database engine* (Postgres Row-Level Security), never by application code alone. A forgotten `WHERE` clause or a SQL injection still returns zero rows from other tenants. |
 | **I4** | **Everything stored is evidence.** | Append-only, hash-chained, versioned. Nothing is overwritten. Nothing is hard-deleted. Every write carries actor, timestamp, reason, before-state, after-state. |
 
 **Why I4 matters more than it looks:** a compliance product that cannot reconstruct *"what did this look like on the day of the incident?"* is not a compliance product. It is a form.
+
+### §2.1 — Data-access modes (Mode A / Mode B)
+
+I1 is not "the platform can never see a raw value" — it is "the platform never *persists* one." Access to a client's data is a property of each **individual data source**, not of the tenant, and every source is one of two modes:
+
+| | **Mode A — Metadata-only** | **Mode B — Gateway-connected** |
+|---|---|---|
+| **Default** | **Yes — every source starts here.** | No — explicit opt-in only. |
+| **Reads raw values?** | Never. Structure/descriptions only. | Yes — live, for an authorized operation. |
+| **How enabled** | (the default) | Per source, role-gated, tenant-scoped, audited. |
+| **Persistence of raw values** | N/A (none are read) | **Never** — not in central PostgreSQL, logs, audit annotations, error messages, temp layers, or any durable store. Transient in memory for the operation only. |
+| **Path** | `SchemaSource` (introspection-only, no `readRows()`) | A **separate Gateway capability** that never routes through `SchemaSource`. |
+
+Consequences that are load-bearing and must not be blurred:
+
+- **Per-source, not per-tenant.** A tenant may have *Source A → metadata_only* and *Source B → gateway_connected* simultaneously. Enabling Mode B on one source confers **no** access to any other source.
+- **The metadata/introspection path stays Mode A forever.** `SchemaSource` must never gain a raw-value read method (`readRows()` or any equivalent). Mode B is built *beside* it, never *through* it.
+- **Two existing mechanisms already embody the Mode-B discipline** and are the reference for anything new: **Tier 2** (`FR-DPR-05`) relays a client's values and forgets them (never persisted), and the **fulfilment record** (`dpr_fulfilments`) deliberately has no column that could hold a value. These remain unchanged; the Gateway is a *new transport* to the *same* rule, and Tier 2 stays as a supported, backward-compatible integration path.
+- **Fail closed.** Absent or `metadata_only` mode ⇒ any raw read is refused.
 
 ---
 
@@ -712,7 +731,7 @@ Build in the order your **deals** demand — not the order the diagram suggests.
 | **R3** | **Never write an ad-hoc INSERT** into consent, audit, or workflow tables. | Everything goes through the sink / runner / interceptor. **One exception, once, and the seam is gone.** |
 | **R4** | **Never build a connector before a paying customer names that specific database.** | |
 | **R5** | **Never skip the cross-tenant isolation suite** — even in Stage 0. | It is a few hundred lines of test code protecting the only promise you actually sell. |
-| **R6** | **Never store customer data "just temporarily."** | There is no such thing. The moment one row of patient data lands in your database, the product's premise — and its legal position — is dead. |
+| **R6** | **Never PERSIST customer data "just temporarily."** | There is no such thing as temporary durable storage. The moment one row of patient data lands in your database (or a temp table, cache, file, or log), the product's premise — and its legal position — is dead. This governs *persistence*: a Mode-B raw value held in memory for one authorized operation and never written down is transit, not storage (see I1 / §2.1). |
 
 ---
 

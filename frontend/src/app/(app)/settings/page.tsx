@@ -17,6 +17,9 @@ const TOUR_STATUS_TEXT: Record<string, string> = {
   skipped: "You skipped the tour, so it won't open on its own again. It's still here if you want it.",
 };
 
+const PLAN_LABEL: Record<string, string> = { saas: 'SaaS', enterprise: 'Enterprise' };
+const DEPLOYMENT_LABEL: Record<string, string> = { hosted: 'Hosted (by us)', client_server: 'Client server' };
+
 export default function SettingsPage() {
   const { user } = useAuth();
 
@@ -24,6 +27,33 @@ export default function SettingsPage() {
     <div>
       <h1>Settings</h1>
       <p className="muted">Your workspace preferences.</p>
+
+      {user && (
+        <div className="panel" style={{ marginTop: 16 }}>
+          <h2 style={{ marginTop: 0 }}>Workspace</h2>
+          <p className="muted" style={{ fontSize: '0.9rem', marginTop: 0 }}>
+            Read-only details about this organisation on the platform.
+          </p>
+          <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+            <div>
+              <div className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Organisation</div>
+              <div>{user.organisationName}</div>
+            </div>
+            <div>
+              <div className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Plan</div>
+              <div>
+                <span className="badge info">{PLAN_LABEL[user.plan] ?? user.plan}</span>
+              </div>
+            </div>
+            <div>
+              <div className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Deployment</div>
+              <div>
+                <span className="badge neutral">{DEPLOYMENT_LABEL[user.deploymentType] ?? user.deploymentType}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="panel" style={{ marginTop: 16 }} data-tour="settings-tour-panel">
         <h2 style={{ marginTop: 0 }}>Guided tour</h2>

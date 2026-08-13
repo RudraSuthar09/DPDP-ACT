@@ -15,6 +15,7 @@ export interface EntryPurpose {
   legalBasis: LegalBasis;
   legalBasisNote: string | null;
   retentionPeriod: string;
+  retentionMonths: number | null;
 }
 
 export const LEGAL_BASIS_OPTIONS: Array<{ value: LegalBasis; label: string }> = [
@@ -35,6 +36,7 @@ interface FormState {
   legalBasis: LegalBasis;
   legalBasisNote: string;
   retentionPeriod: string;
+  retentionMonths: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -43,6 +45,7 @@ const EMPTY_FORM: FormState = {
   legalBasis: 'consent',
   legalBasisNote: '',
   retentionPeriod: '',
+  retentionMonths: '',
 };
 
 /**
@@ -91,6 +94,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
       legalBasis: f.legalBasis,
       legalBasisNote: f.legalBasisNote.trim() || undefined,
       retentionPeriod: f.retentionPeriod.trim(),
+      retentionMonths: f.retentionMonths.trim() ? Number(f.retentionMonths.trim()) : undefined,
     };
   }
 
@@ -121,6 +125,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
       legalBasis: p.legalBasis,
       legalBasisNote: p.legalBasisNote ?? '',
       retentionPeriod: p.retentionPeriod,
+      retentionMonths: p.retentionMonths != null ? String(p.retentionMonths) : '',
     });
   }
 
@@ -224,7 +229,14 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
                       Basis note: {p.legalBasisNote}
                     </div>
                   )}
-                  <div style={{ fontSize: '0.85rem' }}>Retention: {p.retentionPeriod}</div>
+                  <div style={{ fontSize: '0.85rem' }}>
+                    Retention: {p.retentionPeriod}
+                    {p.retentionMonths != null && (
+                      <span className="badge info" style={{ marginLeft: 8 }}>
+                        tracked · {p.retentionMonths} mo
+                      </span>
+                    )}
+                  </div>
                 </div>
                 {canManage && (
                   <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
@@ -321,6 +333,19 @@ function PurposeForm({
         onChange={(e) => set('retentionPeriod', e.target.value)}
         placeholder="e.g. 3 years after account closure"
       />
+
+      <label>Retention period in months (optional — enables retention tracking)</label>
+      <input
+        type="number"
+        min={1}
+        value={form.retentionMonths}
+        onChange={(e) => set('retentionMonths', e.target.value)}
+        placeholder="e.g. 36"
+      />
+      <p className="muted" style={{ fontSize: '0.78rem', marginTop: 2 }}>
+        A computable duration alongside the description above. Set it to track when a subject&apos;s
+        data under this purpose reaches its retention expiry.
+      </p>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 12 }}>
         <button type="button" disabled={busy} onClick={onCancel}>

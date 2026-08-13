@@ -12,6 +12,8 @@ import { RequestStoreModule } from './modules/request/request-store.module';
 import { RequestDeadlineHandler } from './modules/request/request-deadline.handler';
 import { BreachStoreModule } from './modules/breach/breach-store.module';
 import { BreachDeadlineHandler } from './modules/breach/breach-deadline.handler';
+import { RetentionStoreModule } from './modules/consent/retention-store.module';
+import { RetentionDeadlineHandler } from './modules/consent/retention-deadline.handler';
 
 /**
  * Root module for the worker process — the second Stage 1 container.
@@ -64,12 +66,16 @@ import { BreachDeadlineHandler } from './modules/breach/breach-deadline.handler'
     // Same split, same reason: BreachModule would drag in IdentityModule and
     // boot-crash this process.
     BreachStoreModule,
+    // Retention tracking's worker-safe half — flags a record past-retention when
+    // its (frozen) clock runs out.
+    RetentionStoreModule,
   ],
   providers: [
     WorkflowWorker,
     WebhookDeliveryWorker,
     RequestDeadlineHandler,
     BreachDeadlineHandler,
+    RetentionDeadlineHandler,
     {
       // One token, many handlers. Nest has no Angular-style `multi: true`, so
       // the array is assembled here explicitly — which is arguably better: the
@@ -77,11 +83,12 @@ import { BreachDeadlineHandler } from './modules/breach/breach-deadline.handler'
       // literal in the process that fires them. Breach's escalating alerts
       // (FR-BRC-04) join by being injected and added to this array.
       provide: DEADLINE_HANDLERS,
-      useFactory: (requests: RequestDeadlineHandler, breaches: BreachDeadlineHandler) => [
-        requests,
-        breaches,
-      ],
-      inject: [RequestDeadlineHandler, BreachDeadlineHandler],
+      useFactory: (
+        requests: RequestDeadlineHandler,
+        breaches: BreachDeadlineHandler,
+        retention: RetentionDeadlineHandler,
+      ) => [requests, breaches, retention],
+      inject: [RequestDeadlineHandler, BreachDeadlineHandler, RetentionDeadlineHandler],
     },
   ],
 })

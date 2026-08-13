@@ -66,6 +66,17 @@ export class TenantDatabaseService implements OnModuleDestroy {
       );
     }
     this.pool = new Pool({ connectionString, max: 10 });
+    // node-postgres emits 'error' on the POOL (not just the query promise) when
+    // an IDLE client's connection is severed server-side — exactly what a
+    // managed-Postgres pooler (e.g. Supabase) does when it recycles idle
+    // connections. With no listener, Node treats that as an unhandled 'error'
+    // event and crashes the entire process — which is why the API would go
+    // down and stay down until someone noticed and restarted it. Logging it
+    // here lets the pool drop the dead client and hand out a fresh one on the
+    // next checkout instead of taking the whole app with it.
+    this.pool.on('error', (err) => {
+      this.logger.error(`Idle database connection error (pool recovers automatically): ${err.message}`);
+    });
     this.logger.log('Tenant database pool initialised (role: dpdp_app, RLS enforced)');
   }
 

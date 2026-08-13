@@ -170,4 +170,7 @@ export interface AuthenticatedUser {
    * one enum would just make the tour flash in and out on every page load.
    */
   productTourStatus: ProductTourStatus;
+  /** Descriptive org metadata (visibility only — see the org migration). */
+  plan: string;
+  deploymentType: string;
 }

@@ -62,6 +62,7 @@ export class EntryPurposesController {
         legalBasis: p.legal_basis,
         legalBasisNote: p.legal_basis_note,
         retentionPeriod: p.retention_period,
+        retentionMonths: p.retention_months,
       })),
     };
   }
@@ -123,6 +124,7 @@ function toVersionResponse(v: EntryPurposeVersionRow) {
     legalBasis: v.legal_basis,
     legalBasisNote: v.legal_basis_note,
     retentionPeriod: v.retention_period,
+    retentionMonths: v.retention_months,
     createdAt: v.created_at,
   };
 }
