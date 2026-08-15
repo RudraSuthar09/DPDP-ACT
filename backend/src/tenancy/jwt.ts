@@ -28,7 +28,7 @@ export const JWT_AUDIENCE = 'dpdp-api';
  * same reasoning is why `invite` cannot verify as anything else: it grants no
  * access on its own, and must never be accepted where a session is expected.
  */
-export type TokenType = 'access' | 'mfa_challenge' | 'invite';
+export type TokenType = 'access' | 'mfa_challenge' | 'invite' | 'gateway_device';
 
 /**
  * The claims Seam S1 requires from an authenticated token. `tenant_id` is the
@@ -94,6 +94,55 @@ export interface InviteJwtClaims {
   tenantId: string;
   email: string;
   role: string;
+}
+
+/**
+ * A `gateway_device` token's claims. This is how an ENROLLED Local Gateway
+ * authenticates its outbound control-plane calls (heartbeat/pair-redeem/session-
+ * refresh/deenroll) — the device is not a human, so this is NOT an access token
+ * and can never be one. `sub` is the device id; `tenant_id` binds the device to
+ * one tenant (read straight into the RLS GUC, same as any other token). `gw_actor`
+ * is the staff user who created the enrolment code, used as the audit actor for
+ * device-originated actions (a device has no users(id) row of its own).
+ *
+ * It carries NO private key, NO credential, NO customer value — a bearer JWT
+ * signed by the platform secret. Device REVOCATION is enforced by an in-database
+ * status check on every call (fail closed), not by this token, because a bearer
+ * JWT cannot itself be revoked before expiry.
+ */
+export interface GatewayDeviceJwtClaims {
+  deviceId: string;
+  tenantId: string;
+  actorUserId: string;
+}
+
+/** Verify a gateway_device token. Throws if invalid/expired/wrong type. */
+export function verifyGatewayDeviceJwt(token: string, secret: string): GatewayDeviceJwtClaims {
+  if (!secret) {
+    throw new Error('JWT secret is not configured');
+  }
+  const decoded = jwt.verify(token, secret, {
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+    algorithms: ['HS256'],
+  }) as JwtPayload;
+
+  if (decoded.typ !== 'gateway_device') {
+    throw new Error(`Expected a gateway_device token, got ${String(decoded.typ)}`);
+  }
+  const tenantId = decoded.tenant_id;
+  const actorUserId = decoded.gw_actor;
+  if (
+    typeof decoded.sub !== 'string' ||
+    !decoded.sub ||
+    typeof tenantId !== 'string' ||
+    !tenantId ||
+    typeof actorUserId !== 'string' ||
+    !actorUserId
+  ) {
+    throw new Error('gateway_device token is missing required claims');
+  }
+  return { deviceId: decoded.sub, tenantId, actorUserId };
 }
 
 /** Verify an invite token. Throws if invalid/expired/wrong type — the same

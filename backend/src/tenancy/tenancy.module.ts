@@ -4,6 +4,8 @@ import { TenantContextMiddleware } from './tenant-context.middleware';
 import { PublicApiKeyMiddleware } from './public-api-key.middleware';
 import { PortalTenantMiddleware } from './portal-tenant.middleware';
 import { FormTenantMiddleware } from './form-tenant.middleware';
+import { GatewayEnrollmentMiddleware } from './gateway-enrollment.middleware';
+import { GatewayDeviceMiddleware } from './gateway-device.middleware';
 import { TenantGuard } from './tenant.guard';
 import { PortalGuard } from './portal.guard';
 import { FormGuard } from './form.guard';
@@ -39,7 +41,17 @@ import { FormGuard } from './form.guard';
 export class TenancyModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
     consumer
-      .apply(TenantContextMiddleware, PublicApiKeyMiddleware, PortalTenantMiddleware, FormTenantMiddleware)
+      .apply(
+        TenantContextMiddleware,
+        PublicApiKeyMiddleware,
+        PortalTenantMiddleware,
+        FormTenantMiddleware,
+        // The Gateway control-plane edges: enrolment code, then device token.
+        // Both no-op outside their exact device-facing routes. Registered here so
+        // "what establishes tenant context, and in what order" stays in one file.
+        GatewayEnrollmentMiddleware,
+        GatewayDeviceMiddleware,
+      )
       .forRoutes('*');
   }
 }

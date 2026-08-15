@@ -20,5 +20,8 @@ import { DataSourceRepository } from './data-source.repository';
 @Module({
   controllers: [DataSourceController],
   providers: [DataSourceService, DataSourceRepository],
+  // Exported so the Gateway control plane (Phase 3C) can verify a source is
+  // active + gateway_connected THROUGH this service (R2 — never its own SQL).
+  exports: [DataSourceService],
 })
 export class DataSourceModule {}

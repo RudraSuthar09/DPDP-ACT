@@ -21,7 +21,10 @@ const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 const VIEWER = join(REPO_ROOT, 'frontend', 'src', 'app', '(app)', 'data-sources', '[id]', 'viewer', 'page.tsx');
 const PARSER = join(REPO_ROOT, 'frontend', 'src', 'lib', 'local-file.ts');
 const MASK = join(REPO_ROOT, 'frontend', 'src', 'lib', 'pii-mask.ts');
-const RAW_DATA_FILES = [VIEWER, PARSER, MASK];
+// The Phase-3D Gateway browser reads rows FROM the local Gateway (a configurable
+// address) — it must be held to the same no-persistence/no-telemetry boundary.
+const GATEWAY_PAGE = join(REPO_ROOT, 'frontend', 'src', 'app', '(app)', 'data-sources', '[id]', 'gateway', 'page.tsx');
+const RAW_DATA_FILES = [VIEWER, PARSER, MASK, GATEWAY_PAGE];
 
 /** Strip comments so the guard checks CODE, not the prose that explains it. */
 function codeOnly(src: string): string {

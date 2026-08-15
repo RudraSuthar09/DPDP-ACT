@@ -1,0 +1,31 @@
+{
+  "name": "@dpdp/agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DPDP Local Data Agent — Phase 3B skeleton. A separately-runnable localhost process that proves the Browser→Agent network boundary. NO customer data, NO connectors, NO persistence, NO Azure data plane.",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "jest --passWithNoTests",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@dpdp/shared": "workspace:*",
+    "mssql": "^11.0.1",
+    "mysql2": "^3.11.3",
+    "pg": "^8.13.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.13",
+    "@types/node": "^20.16.11",
+    "jest": "^29.7.0",
+    "rimraf": "^6.0.1",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.6.3"
+  }
+}

@@ -5,9 +5,11 @@ import type { Role } from '@dpdp/shared';
 import {
   JWT_AUDIENCE,
   JWT_ISSUER,
+  type GatewayDeviceJwtClaims,
   type InviteJwtClaims,
   type TenantJwtClaims,
   type TokenType,
+  verifyGatewayDeviceJwt,
   verifyInviteJwt,
   verifyTenantJwt,
 } from '../../tenancy/jwt';
@@ -41,12 +43,18 @@ export class TokenService {
   private readonly accessTtlSeconds: number;
   private readonly mfaChallengeTtlSeconds: number;
   private readonly inviteTtlSeconds: number;
+  private readonly gatewayDeviceTtlSeconds: number;
 
   constructor(config: ConfigService) {
     this.secret = config.get<string>('JWT_SECRET') ?? '';
     if (!this.secret) {
       throw new Error('JWT_SECRET is required — it signs the tenant claim Seam S1 depends on.');
     }
+    // How long an enrolled Gateway's device token is good for before it must
+    // refresh via a heartbeat. Long-ish (a server process), but device
+    // revocation is enforced by an in-DB status check on every call, not by
+    // this TTL. Default 30 days; tighten via GATEWAY_DEVICE_TOKEN_TTL_SECONDS.
+    this.gatewayDeviceTtlSeconds = Number(config.get('GATEWAY_DEVICE_TOKEN_TTL_SECONDS') ?? 30 * 24 * 60 * 60);
     // There is no revocation list in Stage 1, so this number IS the blast
     // radius of a leaked token, and how long a just-suspended user can still
     // act — the shorter the more secure. Set to a day by product decision, so
@@ -112,6 +120,35 @@ export class TokenService {
   /** Verify an invite token. Throws if invalid/expired/wrong type. */
   verifyInviteToken(token: string): InviteJwtClaims {
     return verifyInviteJwt(token, this.secret);
+  }
+
+  /**
+   * The credential an ENROLLED Local Gateway presents on its outbound control-
+   * plane calls. Signed by the platform secret (not the device's private key —
+   * the private key never leaves the Enterprise machine and the platform never
+   * sees it). `gw_actor` is the enrolling staff user, used as the audit actor.
+   */
+  mintGatewayDeviceToken(input: { deviceId: string; tenantId: string; actorUserId: string }): {
+    token: string;
+    expiresIn: number;
+  } {
+    const token = jwt.sign(
+      { tenant_id: input.tenantId, gw_actor: input.actorUserId, typ: 'gateway_device' },
+      this.secret,
+      {
+        subject: input.deviceId,
+        issuer: JWT_ISSUER,
+        audience: JWT_AUDIENCE,
+        algorithm: 'HS256',
+        expiresIn: this.gatewayDeviceTtlSeconds,
+      },
+    );
+    return { token, expiresIn: this.gatewayDeviceTtlSeconds };
+  }
+
+  /** Verify a gateway_device token. Throws if invalid/expired/wrong type. */
+  verifyGatewayDeviceToken(token: string): GatewayDeviceJwtClaims {
+    return verifyGatewayDeviceJwt(token, this.secret);
   }
 
   /**

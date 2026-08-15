@@ -199,6 +199,12 @@ export default function DataSourcesPage() {
                                 Open data viewer
                               </Link>
                             )}
+                          {/* Phase 3D: read via the Enterprise Gateway (files/DB, through the agent). */}
+                          {s.dataAccessMode === 'gateway_connected' && (
+                            <Link href={`/data-sources/${s.id}/gateway`} className="badge info" style={{ alignSelf: 'center' }}>
+                              Gateway browser
+                            </Link>
+                          )}
                           <button type="button" disabled={busyId === s.id} onClick={() => void onToggleMode(s)}>
                             {s.dataAccessMode === 'metadata_only' ? 'Enable Gateway' : 'Disable Gateway'}
                           </button>

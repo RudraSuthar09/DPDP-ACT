@@ -10,6 +10,7 @@ import type { Request } from 'express';
 import { isReadOnlyRole, type Role } from '@dpdp/shared';
 import { TenantContextService } from '../../../tenancy/tenant-context.service';
 import {
+  ALLOW_GATEWAY_DEVICE_KEY,
   ALLOW_PUBLIC_KEY_KEY,
   ALLOW_READ_ONLY_KEY,
   PUBLIC_FORM_KEY,
@@ -99,6 +100,12 @@ export class RolesGuard implements CanActivate {
       context.getHandler(),
       context.getClass(),
     ]);
+    // Distinct again: a device-facing Gateway control route, reached with a
+    // gateway_device token rather than a human role — see AllowGatewayDevice.
+    const allowGatewayDevice = this.reflector.getAllAndOverride<boolean | undefined>(
+      ALLOW_GATEWAY_DEVICE_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     if (
       isReadOnlyRole(ctx.role) &&
@@ -106,7 +113,8 @@ export class RolesGuard implements CanActivate {
       !allowReadOnly &&
       !allowPublicKey &&
       !publicPortal &&
-      !publicForm
+      !publicForm &&
+      !allowGatewayDevice
     ) {
       throw new ForbiddenException(`The ${ctx.role} role is read-only and cannot modify data.`);
     }

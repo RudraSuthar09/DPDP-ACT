@@ -6,6 +6,7 @@ export const ALLOW_READ_ONLY_KEY = 'dpdp:allow-read-only';
 export const ALLOW_PUBLIC_KEY_KEY = 'dpdp:allow-public-key';
 export const PUBLIC_PORTAL_KEY = 'dpdp:public-portal';
 export const PUBLIC_FORM_KEY = 'dpdp:public-form';
+export const ALLOW_GATEWAY_DEVICE_KEY = 'dpdp:allow-gateway-device';
 
 /**
  * Restrict a route to specific roles (FR-IDN-03).
@@ -80,3 +81,16 @@ export const PublicPortal = () => SetMetadata(PUBLIC_PORTAL_KEY, true);
  * marking cannot drift away from the reality of who can reach the route.
  */
 export const PublicForm = () => SetMetadata(PUBLIC_FORM_KEY, true);
+
+/**
+ * The Gateway-device sibling of @AllowPublicKey, for the same reason and with the
+ * same honesty caveat. A device-facing control-plane route (heartbeat, pair/
+ * redeem, session/refresh, deenroll) is authenticated by a `gateway_device`
+ * token, not a human role — its TenantContext carries role 'viewer' purely
+ * because a device has no human RBAC role to report, and 'viewer' is the value
+ * that satisfies the type. These routes DO mutate (a heartbeat, a session), so
+ * without this the read-only floor would reject them. Kept separate from
+ * @AllowPublicKey/@AllowReadOnly so "which routes are reached by an enrolled
+ * device rather than a logged-in human" stays its own greppable answer.
+ */
+export const AllowGatewayDevice = () => SetMetadata(ALLOW_GATEWAY_DEVICE_KEY, true);

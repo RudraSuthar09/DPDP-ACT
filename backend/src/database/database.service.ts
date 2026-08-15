@@ -37,6 +37,16 @@ export interface ConsentFormSlugResolution {
   title: string;
 }
 
+/** What the Gateway enrolment peephole returns — ids + timing only, never the
+ *  code. The caller checks expiry/consumption (like resolveConsentApiKey). */
+export interface GatewayEnrollmentResolution {
+  tenantId: string;
+  enrollmentId: string;
+  createdBy: string;
+  expiresAt: string;
+  consumedAt: string | null;
+}
+
 /**
  * The tenant-scoped database gateway. Every module that touches the database
  * does so through this service — there is deliberately NO generic `query()` that
@@ -288,6 +298,24 @@ export class TenantDatabaseService implements OnModuleDestroy {
     const { rows } = await this.pool.query<ConsentFormSlugResolution>(
       'SELECT tenant_id AS "tenantId", form_id AS "formId", title FROM app.resolve_consent_form_slug($1)',
       [slug.trim().toLowerCase()],
+    );
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The Gateway enrolment peephole: "which tenant does this one-time enrolment
+   * code belong to?" — the same chicken-and-egg as resolveLogin /
+   * resolveConsentApiKey (the answer IS the tenant, so it cannot be asked under
+   * one). Backed by app.gateway_enrollment_directory, an un-RLS'd shadow of
+   * gateway_enrollments that dpdp_app holds no privileges on; the exact code hash
+   * is the only thing that gets a row back. Expiry/consumption are checked by the
+   * caller, not filtered here.
+   */
+  async resolveGatewayEnrollment(codeHash: string): Promise<GatewayEnrollmentResolution | null> {
+    const { rows } = await this.pool.query<GatewayEnrollmentResolution>(
+      'SELECT tenant_id AS "tenantId", enrollment_id AS "enrollmentId", created_by AS "createdBy", ' +
+        'expires_at AS "expiresAt", consumed_at AS "consumedAt" FROM app.resolve_gateway_enrollment($1)',
+      [codeHash],
     );
     return rows[0] ?? null;
   }

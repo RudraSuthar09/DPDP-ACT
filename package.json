@@ -21,6 +21,8 @@
     "db:local:reset": "node scripts/local-db.mjs --reset",
     "dev:api": "pnpm --filter @dpdp/api dev",
     "dev:web": "pnpm --filter @dpdp/web dev",
+    "build:agent": "pnpm --filter @dpdp/agent build",
+    "start:agent": "pnpm --filter @dpdp/agent start",
     "smoke": "node scripts/smoke.mjs",
     "request:demo": "node scripts/request-substrate-demo.mjs",
     "migrate": "pnpm --filter @dpdp/api migrate",

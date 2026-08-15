@@ -21,6 +21,7 @@ import { AuditExportModule } from './modules/audit/audit-export.module';
 import { NotifyModule } from './modules/notify/notify.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DataSourceModule } from './modules/datasource/data-source.module';
+import { GatewayModule } from './modules/gateway/gateway.module';
 
 @Module({
   imports: [
@@ -52,6 +53,10 @@ import { DataSourceModule } from './modules/datasource/data-source.module';
     // Phase 1 of the Gateway line of work: metadata + per-source access mode
     // only (I1/§2.1). No Gateway, no connector, no raw-data path.
     DataSourceModule,
+    // Phase 3C: the Gateway CONTROL PLANE (enrolment/pairing/session/heartbeat/
+    // revocation). Ids, hashes and metadata only — still no connector, no raw
+    // read, no customer data (I1). Data plane is a separate, later capability.
+    GatewayModule,
   ],
 })
 export class AppModule {}
