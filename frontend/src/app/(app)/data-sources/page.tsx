@@ -6,8 +6,64 @@ import { apiFetch, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
 import type { DataSource, DataSourceKind } from '@dpdp/shared';
 import { classifyGatewayConnection, probeGatewayHealth, type GatewayConnectionState } from '../../../lib/gateway-connection';
+import { getHandle, isFileSystemAccessSupported, queryHandlePermission, removeHandle } from '../../../lib/local-source-handles';
 
 const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
+
+/**
+ * Phase — persistent SaaS local Excel/CSV source. This status is derived
+ * ENTIRELY from this browser's own IndexedDB + a live permission check — it is
+ * never stored centrally and never read from the backend, because whether a
+ * local file can be reopened is inherently specific to this device and this
+ * browser profile, not to the tenant. Each row checks its OWN data source id
+ * independently, so one source's handle can never be confused with another's.
+ */
+type LocalConnectionStatus = 'checking' | 'connected' | 'needs_reconnect' | 'not_connected' | 'unsupported';
+
+const LOCAL_STATUS_LABEL: Record<LocalConnectionStatus, string> = {
+  checking: 'Checking…',
+  connected: 'Connected',
+  needs_reconnect: 'Reconnect required',
+  not_connected: 'Not connected',
+  unsupported: 'Unsupported browser',
+};
+const LOCAL_STATUS_BADGE: Record<LocalConnectionStatus, string> = {
+  checking: 'neutral',
+  connected: 'success',
+  needs_reconnect: 'warning',
+  not_connected: 'neutral',
+  unsupported: 'neutral',
+};
+
+/** Local-file connection status for one Excel/CSV row, computed client-side
+ *  only. Not rendered at all for sources this feature doesn't apply to. */
+function LocalSourceStatus({ sourceId }: { sourceId: string }) {
+  const [status, setStatus] = useState<LocalConnectionStatus>('checking');
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!isFileSystemAccessSupported()) {
+      setStatus('unsupported');
+      return;
+    }
+    (async () => {
+      const record = await getHandle(sourceId);
+      if (cancelled) return;
+      if (!record) {
+        setStatus('not_connected');
+        return;
+      }
+      const permission = await queryHandlePermission(record.handle);
+      if (cancelled) return;
+      setStatus(permission === 'granted' ? 'connected' : 'needs_reconnect');
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceId]);
+
+  return <span className={`badge ${LOCAL_STATUS_BADGE[status]}`} style={{ marginLeft: 6 }}>{LOCAL_STATUS_LABEL[status]}</span>;
+}
 
 /** The JSON shape of GET/PATCH /gateway/devices* — mirrors the backend
  *  DeviceView (kept as a local type, same convention as other pages). */
@@ -360,6 +416,14 @@ export default function DataSourcesPage() {
     setError(null);
     try {
       await apiFetch(`/data-sources/${s.id}`, { method: 'DELETE', body: { reason: reason.trim() || undefined } });
+      // Best-effort local cleanup — this browser's saved handle (if any) is
+      // meaningless once the central source is gone. Must never block or fail
+      // the deletion itself.
+      try {
+        await removeHandle(s.id);
+      } catch {
+        /* best-effort only */
+      }
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not remove the data source.');
@@ -451,9 +515,12 @@ export default function DataSourcesPage() {
                           {/* Raw viewer offered ONLY for Gateway-connected sources. */}
                           {s.dataAccessMode === 'gateway_connected' &&
                             (s.sourceKind === 'excel' || s.sourceKind === 'csv') && (
-                              <Link href={`/data-sources/${s.id}/viewer`} className="badge info" style={{ alignSelf: 'center' }}>
-                                Open data viewer
-                              </Link>
+                              <>
+                                <Link href={`/data-sources/${s.id}/viewer`} className="badge info" style={{ alignSelf: 'center' }}>
+                                  Open data viewer
+                                </Link>
+                                <LocalSourceStatus sourceId={s.id} />
+                              </>
                             )}
                           {/* Phase 3D: read via the Enterprise Gateway (files/DB, through the agent). */}
                           {s.dataAccessMode === 'gateway_connected' && (

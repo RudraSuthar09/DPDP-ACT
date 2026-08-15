@@ -65,6 +65,13 @@ let browser;
 try {
   browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 950 } });
+  // This spec exercises the ORIGINAL plain <input type="file"> flow. Since the
+  // viewer now prefers window.showOpenFilePicker() when the browser supports
+  // it (the persistent-local-source feature — see local-source-handles.spec.mjs
+  // for that coverage), disable it here so #ds-file still renders as before.
+  await page.addInitScript(() => {
+    delete window.showOpenFilePicker;
+  });
 
   // capture EVERY request body + url, to prove nothing sensitive is transmitted
   const transmitted = [];
