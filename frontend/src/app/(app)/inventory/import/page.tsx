@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { apiFetch, ApiError } from '../../../../lib/api';
 import { PiiConfidenceBadge } from '../../../../components/PiiConfidenceBadge';
 import { LEGAL_BASIS_OPTIONS, type LegalBasis } from '../../../../components/PurposesPanel';
@@ -81,7 +82,26 @@ export default function ImportInventoryPage() {
       setError('That file is larger than 5 MB — split it or trim unused columns and try again.');
       return;
     }
-    const text = await file.text();
+    const isExcel = /\.xlsx?$/i.test(file.name);
+    let text: string;
+    if (isExcel) {
+      try {
+        const buf = await file.arrayBuffer();
+        const workbook = XLSX.read(buf, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = sheetName ? workbook.Sheets[sheetName] : undefined;
+        if (!sheet) {
+          setError('That Excel file has no sheets to import.');
+          return;
+        }
+        text = XLSX.utils.sheet_to_csv(sheet);
+      } catch {
+        setError('Could not read this file. Make sure it is a valid Excel file.');
+        return;
+      }
+    } else {
+      text = await file.text();
+    }
     setFileName(file.name);
     setTableName(deriveTableName(file.name));
     setCsvText(text);
@@ -206,7 +226,7 @@ export default function ImportInventoryPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv,text/csv"
+              accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
               style={{ display: 'none' }}
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -223,7 +243,7 @@ export default function ImportInventoryPage() {
               </p>
             ) : (
               <p style={{ margin: 0 }} className="muted">
-                Drag a CSV file here, or click to choose one.
+                Drag a CSV or Excel (.xlsx) file here, or click to choose one.
               </p>
             )}
           </div>

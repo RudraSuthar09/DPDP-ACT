@@ -12,10 +12,10 @@ import { parseCommitInput, parsePreviewInput } from './register-import.dto';
  * mapping, create register entries through the same versioned/audited path
  * the guided wizard uses — see RegisterImportService).
  *
- * "Excel" here means CSV text, matching what FileImportSchemaSource already
- * parses. True .xlsx binary parsing would need a new dependency and binary
- * upload handling — left for a follow-up; exporting to CSV from Excel is the
- * common workaround in the meantime.
+ * .xlsx files are converted to CSV text client-side (SheetJS, already used by
+ * the Mode-B local file viewer) before reaching this endpoint, so the wire
+ * contract here stays csvText-only — FileImportSchemaSource never needs to
+ * know it came from a spreadsheet.
  */
 @Controller('inventory/register/import')
 @UseGuards(TenantGuard)
