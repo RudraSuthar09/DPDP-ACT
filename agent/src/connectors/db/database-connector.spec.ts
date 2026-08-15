@@ -17,6 +17,7 @@ function fakeClient(cfg: {
   tablesRef: { value: string[][] };
   readColumns?: string[];
   readRows?: string[][];
+  fieldsRows?: string[][];
   throwErr?: Error;
   calls: Call[];
 }): DbClient {
@@ -24,6 +25,17 @@ function fakeClient(cfg: {
     async query(sql, params) {
       cfg.calls.push({ sql, params });
       if (cfg.throwErr) throw cfg.throwErr;
+      if (/information_schema\.columns|INFORMATION_SCHEMA\.COLUMNS/i.test(sql)) {
+        return {
+          columns: ['column_name', 'data_type', 'is_nullable'],
+          rows: cfg.fieldsRows ?? [
+            ['customer_name', 'text', 'YES'],
+            ['mobile', 'text', 'YES'],
+            ['email', 'text', 'YES'],
+            ['aadhaar_number', 'text', 'YES'],
+          ],
+        };
+      }
       if (/information_schema\.tables|INFORMATION_SCHEMA\.TABLES/i.test(sql)) {
         return { columns: ['schema', 'table'], rows: cfg.tablesRef.value };
       }
@@ -37,7 +49,14 @@ function fakeClient(cfg: {
 function make(dialectKind: DataSourceKind, over: Partial<Parameters<typeof fakeClient>[0]> = {}) {
   const calls: Call[] = [];
   const tablesRef = over.tablesRef ?? { value: [['public', 'customers'], ['public', 'orders']] };
-  const client = fakeClient({ tablesRef, calls, readColumns: over.readColumns, readRows: over.readRows, throwErr: over.throwErr });
+  const client = fakeClient({
+    tablesRef,
+    calls,
+    readColumns: over.readColumns,
+    readRows: over.readRows,
+    fieldsRows: over.fieldsRows,
+    throwErr: over.throwErr,
+  });
   const connector = new DatabaseConnector(dialectFor(dialectKind)!, () => client);
   return { connector, calls, tablesRef };
 }
@@ -67,6 +86,35 @@ describe.each(DIALECTS)('Phase 3E — %s connector', (_name, kind) => {
     expect(rows.rows.flat()).toContain('999988887777');
     const readCall = calls.find((c) => /SELECT \* FROM/i.test(c.sql))!;
     expect(readCall.params).toContain(50); // bound value, not concatenated
+  });
+
+  it('Phase 3G-1: listFields returns column NAMES/types only — never a customer row', async () => {
+    const { connector, calls } = make(kind, {
+      fieldsRows: [
+        ['customer_name', 'text', 'YES'],
+        ['aadhaar_number', 'text', 'YES'],
+        ['pan_number', 'text', 'NO'],
+      ],
+    });
+    const { handles } = await connector.discover();
+    const res = await connector.listFields(handles[0]!.handle);
+    expect(res.fields).toEqual([
+      { name: 'customer_name', type: 'text', nullable: true },
+      { name: 'aadhaar_number', type: 'text', nullable: true },
+      { name: 'pan_number', type: 'text', nullable: false },
+    ]);
+    // it queries information_schema.columns with the table PARAMETERIZED, not concatenated
+    const fieldsCall = calls.find((c) => /information_schema\.columns|INFORMATION_SCHEMA\.COLUMNS/i.test(c.sql))!;
+    expect(fieldsCall.params).toContain('customers');
+    expect(fieldsCall.sql).not.toContain('customers'); // the table name is bound, not inlined
+    // no customer VALUE anywhere in the response
+    expect(JSON.stringify(res)).not.toContain('999988887777');
+  });
+
+  it('listFields on an invalid/tampered handle fails closed', async () => {
+    const { connector } = make(kind);
+    await connector.discover();
+    await expect(connector.listFields('tampered-handle-xyz')).rejects.toMatchObject({ code: 'FILE_NOT_FOUND' });
   });
 
   it('enforces the row limit (a huge limit is clamped)', async () => {

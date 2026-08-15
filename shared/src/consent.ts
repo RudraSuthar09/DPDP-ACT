@@ -75,3 +75,49 @@ export interface ConsentStatusAsOf {
   occurredAt: string;
   recordedAt: string;
 }
+
+// ===========================================================================
+// Phase 3G-1 — Consent Form customer-data field CONFIGURATION (metadata only)
+// ===========================================================================
+//
+// A form can now contain, alongside its existing consent-purpose rows, fields
+// that are configured to eventually correspond to a column in the client's OWN
+// connected data source. These types describe the CONFIGURATION only — a column
+// NAME the client explicitly chose, never a submitted value. See the migration
+// header (1737003300000) for the full invariant.
+
+/**
+ * Where a customer-data field's submitted response is configured to go:
+ *   - 'consent_record'  — not a customer-data field at all (e.g. a T&C checkbox);
+ *     recorded only in the existing Consent Register, exactly as today.
+ *   - 'customer_field'  — mapped to an existing/new column in the connected source.
+ *   - 'both'            — recorded in the Consent Register AND mapped to a column.
+ */
+export const CONSENT_FIELD_DESTINATIONS = ['consent_record', 'customer_field', 'both'] as const;
+export type ConsentFieldDestination = (typeof CONSENT_FIELD_DESTINATIONS)[number];
+
+/** A form's customer-data field configuration — never a submitted value. */
+export interface ConsentFormCustomerField {
+  id: string;
+  formId: string;
+  label: string;
+  fieldType: string;
+  required: boolean;
+  destination: ConsentFieldDestination;
+  /** The EXISTING client column name, explicitly chosen. Null until confirmed. */
+  mappedColumn: string | null;
+  /** "Create new column" configuration — requested only, nothing created (3G-1). */
+  newColumnName: string | null;
+  newColumnType: string | null;
+  displayOrder: number;
+}
+
+export interface SaveConsentFormCustomerFieldInput {
+  label: string;
+  fieldType: string;
+  required: boolean;
+  destination: ConsentFieldDestination;
+  mappedColumn: string | null;
+  newColumnName: string | null;
+  newColumnType: string | null;
+}

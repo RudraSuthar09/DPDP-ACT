@@ -123,6 +123,39 @@ export function parseRevokeReason(body: unknown): { reason: string | null } {
   return { reason: optionalStringOrNull(obj, 'reason', { max: 1000 }) };
 }
 
+/**
+ * Phase 3G-2.5: the browser-facing Gateway endpoint — a plain http(s) URL, NOT
+ * a credential and NOT the security identity (that remains the enrolled device
+ * key/token, entirely unaffected by this value). `null` clears it. Rejects
+ * anything that isn't a clean http(s) URL, including embedded userinfo
+ * (`https://user:pass@host`), which would smuggle a credential into a field
+ * that must never carry one.
+ */
+export function parseSetEndpoint(body: unknown): { endpoint: string | null } {
+  const obj = asObject(body);
+  rejectSecretFields(obj);
+  const value = obj['endpoint'];
+  if (value === null) return { endpoint: null };
+  if (typeof value !== 'string') throw new BadRequestException('endpoint must be a string or null.');
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return { endpoint: null };
+  if (trimmed.length > 2048) throw new BadRequestException('endpoint is too long.');
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new BadRequestException('endpoint must be a valid URL, e.g. http://<gateway-host>:<port>.');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new BadRequestException('endpoint must use http:// or https://.');
+  }
+  if (url.username || url.password) {
+    throw new BadRequestException('endpoint must not contain a username/password.');
+  }
+  return { endpoint: trimmed };
+}
+
 // --- helpers (same shape as data-source.dto) --------------------------------
 
 function asObject(body: unknown): Record<string, unknown> {

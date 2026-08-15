@@ -267,7 +267,19 @@ describe('Phase 3A — Guard 8: data-plane read/search require source+session, n
     }
     // The data routes are exactly the bounded set.
     expect(Object.values(GATEWAY_DATA_ROUTES).sort()).toEqual(
-      ['/health', '/session/establish', '/source/discover', '/source/metadata', '/source/read', '/source/search'].sort(),
+      [
+        '/health',
+        '/session/establish',
+        '/source/discover',
+        '/source/fields',
+        '/source/metadata',
+        '/source/read',
+        '/source/search',
+        '/source/customer/resolve',
+        '/source/customer/write',
+        '/source/customer/create',
+        '/source/column/create',
+      ].sort(),
     );
   });
 });

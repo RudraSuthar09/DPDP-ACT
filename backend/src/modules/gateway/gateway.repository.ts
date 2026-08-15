@@ -18,6 +18,10 @@ export interface GatewayDeviceRow {
   agent_version: string;
   display_name: string;
   status: 'active' | 'revoked' | 'removed';
+  /** Phase 3G-2.5: the browser-facing http(s) URL to reach this already-
+   *  enrolled Gateway. Non-secret, not the security identity. Null until staff
+   *  explicitly configures it. */
+  endpoint: string | null;
   enrolled_by: string | null;
   enrolled_at: Date;
   last_heartbeat_at: Date | null;
@@ -63,7 +67,7 @@ export interface GatewaySessionRow {
 }
 
 const DEVICE_COLS =
-  'id, tenant_id, public_key, device_ref, platform, agent_version, display_name, status, ' +
+  'id, tenant_id, public_key, device_ref, platform, agent_version, display_name, status, endpoint, ' +
   'enrolled_by, enrolled_at, last_heartbeat_at, revoked_at, revoked_by, revoke_reason, updated_at';
 
 @Injectable()
@@ -153,6 +157,30 @@ export class GatewayRepository {
         `SELECT ${DEVICE_COLS} FROM gateway_devices ORDER BY enrolled_at DESC`,
       );
       return rows;
+    });
+  }
+
+  /** The tenant's one active Gateway (product decision: at most one), or null.
+   *  Backed by the DB's own partial unique index — this is a convenience read,
+   *  not the enforcement point. */
+  findActiveDevice(): Promise<GatewayDeviceRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<GatewayDeviceRow>(
+        `SELECT ${DEVICE_COLS} FROM gateway_devices WHERE status = 'active' LIMIT 1`,
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  /** Phase 3G-2.5: set/clear the browser-facing endpoint. Config only — never a
+   *  credential, never the security identity. */
+  setEndpoint(id: string, endpoint: string | null): Promise<GatewayDeviceRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<GatewayDeviceRow>(
+        `UPDATE gateway_devices SET endpoint = $2 WHERE id = $1 AND status = 'active' RETURNING ${DEVICE_COLS}`,
+        [id, endpoint],
+      );
+      return rows[0] ?? null;
     });
   }
 

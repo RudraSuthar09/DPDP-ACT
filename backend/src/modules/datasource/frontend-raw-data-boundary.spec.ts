@@ -102,4 +102,33 @@ describe('Phase 2 — raw customer data never leaves the browser', () => {
       expect(viewer.includes(bad)).toBe(false);
     }
   });
+
+  it('Phase 3G-2 — the gateway page\'s ONLY central (apiFetch) call is the metadata-only gateway-events audit', () => {
+    const page = codeOnly(readFileSync(GATEWAY_PAGE, 'utf8'));
+    // It calls the metadata endpoint...
+    expect(page).toContain('/gateway-events');
+    // ...and the apiFetch call body is built from `action`/`rowCount` only — the
+    // resolve/write/create/column-create calls that carry real values all go
+    // through `call()` (the GATEWAY, not apiFetch/the central backend).
+    const at = page.indexOf('apiFetch(`/data-sources/${sourceId}/gateway-events`');
+    expect(at).toBeGreaterThan(-1);
+    const bodyArg = page.slice(at, at + 200);
+    for (const bad of ['identityValue', 'fields', 'customerRef', 'fieldValues']) {
+      expect(bodyArg.includes(bad)).toBe(false);
+    }
+    expect(bodyArg).toContain('action');
+    expect(bodyArg).toContain('rowCount');
+  });
+
+  it('Phase 3G-2 — every customer resolve/write/create/column-create call goes through the Gateway (call()), never apiFetch', () => {
+    const page = codeOnly(readFileSync(GATEWAY_PAGE, 'utf8'));
+    for (const gatewayRoute of ['/source/customer/resolve', '/source/customer/write', '/source/customer/create', '/source/column/create']) {
+      const at = page.indexOf(gatewayRoute);
+      expect(at).toBeGreaterThan(-1);
+      // The call must be wrapped by call(...) (the Gateway helper), not apiFetch.
+      const before = page.slice(Math.max(0, at - 40), at);
+      expect(before).toContain('call(');
+      expect(before).not.toContain('apiFetch(');
+    }
+  });
 });

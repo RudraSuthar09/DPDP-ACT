@@ -3,7 +3,7 @@ import type { DataSource } from '@dpdp/shared';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
 import { DataSourceRepository, type DataSourceRow } from './data-source.repository';
-import type { CreateDataSourceInput, UpdateDataSourceInput } from './data-source.dto';
+import type { CreateDataSourceInput, GatewayCustomerEventAction, UpdateDataSourceInput } from './data-source.dto';
 
 /**
  * Managing data-source METADATA and its per-source access mode (I1/§2.1).
@@ -125,6 +125,60 @@ export class DataSourceService {
     return { authorized: true };
   }
 
+  /**
+   * Phase 3G-2: record a Gateway customer/column event — a POST-HOC, METADATA-
+   * ONLY fact. The actual operation (resolve/write/create/column-create)
+   * already ran entirely within the client environment, through the Gateway;
+   * this call never receives and cannot receive an identity value, a field
+   * value, or the database row itself (see parseGatewayEvent's forbidden-field
+   * list). `action` overrides the controller's default @Audited name so one
+   * route can record any of the fixed allowlisted actions correctly.
+   *
+   * FAIL CLOSED on the same terms as recordRawAccess: source must exist, be
+   * active, and be gateway_connected.
+   */
+  async recordGatewayEvent(id: string, action: GatewayCustomerEventAction, rowCount?: number): Promise<{ recorded: true }> {
+    const row = await this.repo.findOne(id);
+    if (!row || row.status !== 'active') {
+      throw new NotFoundException('Data source not found or has been removed.');
+    }
+    if (row.data_access_mode !== 'gateway_connected') {
+      throw new ForbiddenException('This data source is metadata-only. Enable Gateway-connected mode first.');
+    }
+    this.audit.annotate({
+      action,
+      targetType: 'data_source',
+      targetId: id,
+      reason: `Gateway event "${action}" for source "${row.name}".`,
+      afterState: rowCount !== undefined ? { rowCount } : undefined,
+    });
+    return { recorded: true };
+  }
+
+  /**
+   * Phase 3G-1: record which existing column identifies a customer in this
+   * source. Config ONLY — a column NAME, explicitly chosen by staff. This does
+   * NOT perform a lookup and NEVER touches a customer value; that is Phase 3G-2.
+   */
+  async setIdentityColumn(id: string, identityColumn: string | null): Promise<DataSource> {
+    const before = await this.repo.findOne(id);
+    if (!before || before.status !== 'active') {
+      throw new NotFoundException('Data source not found or has been removed.');
+    }
+    const row = await this.repo.setIdentityColumn(id, identityColumn);
+    if (!row) throw new NotFoundException('Data source not found or has been removed.');
+    this.audit.annotate({
+      targetType: 'data_source',
+      targetId: id,
+      reason: identityColumn
+        ? `Data source "${row.name}" customer identity column set to "${identityColumn}".`
+        : `Data source "${row.name}" customer identity column cleared.`,
+      beforeState: { identityColumn: before.identity_column },
+      afterState: { identityColumn },
+    });
+    return toResponse(row);
+  }
+
   async remove(id: string, reason: string | null): Promise<DataSource> {
     const row = await this.repo.tombstone(id, reason, this.tenantContext.getOrThrow().userId);
     if (!row) throw new NotFoundException('Data source not found or already removed.');
@@ -150,6 +204,7 @@ function toResponse(row: DataSourceRow): DataSource {
     dataAccessMode: row.data_access_mode,
     status: row.status,
     connectionHint: row.connection_hint,
+    identityColumn: row.identity_column,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     modeLastChangedAt: row.mode_last_changed_at ? row.mode_last_changed_at.toISOString() : null,

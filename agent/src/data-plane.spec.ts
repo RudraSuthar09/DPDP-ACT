@@ -106,6 +106,199 @@ describe('Phase 3D — DataPlane request handling', () => {
   });
 });
 
+describe('Phase 3G-2 — DataPlane customer routes: session/tenant/source binding', () => {
+  let dpDb: DataPlane;
+
+  const fakeControl: ControlPlaneClient = {
+    async redeemPairing() {
+      return { sessionToken: 'DB-SESSION-TOKEN', expiresAt: FUTURE };
+    },
+  };
+
+  // A minimal fake DB client so the data-plane routes (which must reach a real
+  // connector method, not just fail at the HTTP layer) actually exercise
+  // resolveCustomer/writeCustomerFields/createCustomer/createColumn end to end.
+  function fakeDbClient() {
+    return {
+      async query(sql: string) {
+        if (/table_constraints|TABLE_CONSTRAINTS|indisprimary/i.test(sql)) return { columns: ['column_name'], rows: [['id']] };
+        if (/information_schema\.columns|INFORMATION_SCHEMA\.COLUMNS/i.test(sql)) {
+          return { columns: ['column_name', 'data_type', 'is_nullable'], rows: [['email', 'text', 'YES'], ['mobile', 'text', 'YES']] };
+        }
+        if (/information_schema\.tables|INFORMATION_SCHEMA\.TABLES/i.test(sql)) {
+          return { columns: ['schema', 'table'], rows: [['public', 'customers']] };
+        }
+        if (/ALTER TABLE/i.test(sql)) return { columns: [], rows: [] };
+        if (/INSERT INTO/i.test(sql)) return { columns: [], rows: [] };
+        if (/UPDATE .* SET/i.test(sql)) return { columns: [], rows: [] };
+        if (/SELECT 1/i.test(sql)) return { columns: ['ok'], rows: [['1']] };
+        // resolveCustomerSql
+        return { columns: ['id'], rows: [['pkrow-1']] };
+      },
+      async close() {},
+    };
+  }
+
+  beforeAll(() => {
+    const registry = new ConnectorRegistry(
+      [
+        {
+          sourceId: 'db1',
+          kind: 'postgresql',
+          connection: { host: 'h', port: 1, user: 'ro', password: 'p', database: 'd' },
+          identityColumn: 'email',
+          allowCustomerCreate: true,
+          writableColumns: ['mobile'],
+          writeConnection: { host: 'h', port: 1, user: 'rw', password: 'p2', database: 'd' },
+        },
+      ],
+      () => fakeDbClient() as never,
+    );
+    dpDb = new DataPlane(registry, new SessionStore(), { tenantId: 'A', deviceId: 'D' }, fakeControl);
+  });
+
+  async function establishDb() {
+    const r = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/session/establish',
+      sessionToken: undefined,
+      body: { sourceId: 'db1', nonce: 'a-valid-nonce-value' },
+    });
+    expect(r.status).toBe(200);
+    return (r.json as { sessionToken: string }).sessionToken;
+  }
+  async function aHandle(token: string) {
+    const disc = await handleDataPlaneRequest(dpDb, { method: 'POST', path: '/source/discover', sessionToken: token, body: { sourceId: 'db1' } });
+    return (disc.json as { handles: { handle: string }[] }).handles[0]!.handle;
+  }
+
+  it('resolve → write happy path over the data plane', async () => {
+    const token = await establishDb();
+    const handle = await aHandle(token);
+    const resolve = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/source/customer/resolve',
+      sessionToken: token,
+      body: { sourceId: 'db1', handle, identityValue: 'rahul@example.com' },
+    });
+    expect(resolve.status).toBe(200);
+    const { customerRef } = resolve.json as { customerRef: string };
+    expect(customerRef).toBeTruthy();
+
+    const write = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/source/customer/write',
+      sessionToken: token,
+      body: { sourceId: 'db1', customerRef, fields: { mobile: '9876543210' } },
+    });
+    expect(write).toMatchObject({ status: 200, json: { success: true } });
+  });
+
+  it('no session token on any 3G-2 route fails 401', async () => {
+    for (const path of ['/source/customer/resolve', '/source/customer/write', '/source/customer/create', '/source/column/create']) {
+      const r = await handleDataPlaneRequest(dpDb, { method: 'POST', path, sessionToken: undefined, body: { sourceId: 'db1' } });
+      expect(r).toMatchObject({ status: 401, json: { error: 'INVALID_TOKEN' } });
+    }
+  });
+
+  it('source mismatch on a 3G-2 route fails 403', async () => {
+    const token = await establishDb();
+    const r = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/source/customer/resolve',
+      sessionToken: token,
+      body: { sourceId: 'some-other-source', handle: 'h', identityValue: 'x' },
+    });
+    expect(r).toMatchObject({ status: 403, json: { error: 'SOURCE_MISMATCH' } });
+  });
+
+  it('tenant mismatch on a 3G-2 route fails 403', async () => {
+    const otherStore = new SessionStore();
+    otherStore.put({ token: 'B-TOKEN', tenantId: 'B', sourceId: 'db1', deviceId: 'D', expiresAt: NOW + 60_000 });
+    const registry = new ConnectorRegistry(
+      [{ sourceId: 'db1', kind: 'postgresql', connection: { host: 'h', port: 1, user: 'ro', password: 'p', database: 'd' }, identityColumn: 'email' }],
+      () => fakeDbClient() as never,
+    );
+    const dpB = new DataPlane(registry, otherStore, { tenantId: 'A', deviceId: 'D' }, fakeControl);
+    const r = await handleDataPlaneRequest(dpB, {
+      method: 'POST',
+      path: '/source/customer/resolve',
+      sessionToken: 'B-TOKEN',
+      body: { sourceId: 'db1', handle: 'h', identityValue: 'x' },
+    });
+    expect(r).toMatchObject({ status: 403, json: { error: 'TENANT_MISMATCH' } });
+  });
+
+  it('an expired session on a 3G-2 route fails 401 SESSION_EXPIRED', async () => {
+    const store = new SessionStore();
+    store.put({ token: 'OLD', tenantId: 'A', sourceId: 'db1', deviceId: 'D', expiresAt: NOW - 1 });
+    const registry = new ConnectorRegistry(
+      [{ sourceId: 'db1', kind: 'postgresql', connection: { host: 'h', port: 1, user: 'ro', password: 'p', database: 'd' }, identityColumn: 'email' }],
+      () => fakeDbClient() as never,
+    );
+    const dpExp = new DataPlane(registry, store, { tenantId: 'A', deviceId: 'D' }, fakeControl);
+    const r = await handleDataPlaneRequest(dpExp, {
+      method: 'POST',
+      path: '/source/customer/resolve',
+      sessionToken: 'OLD',
+      body: { sourceId: 'db1', handle: 'h', identityValue: 'x' },
+    });
+    expect(r).toMatchObject({ status: 401, json: { error: 'SESSION_EXPIRED' } });
+  });
+
+  it('column creation with an unsupported/invalid type is rejected at the HTTP boundary (BAD_REQUEST)', async () => {
+    const token = await establishDb();
+    const handle = await aHandle(token);
+    const r = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/source/column/create',
+      sessionToken: token,
+      body: { sourceId: 'db1', handle, columnName: 'new_col', columnType: 'jsonb' }, // not in the allowlist
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('a "fields" body that is not a flat string map is rejected (no nested object/array/number smuggled)', async () => {
+    const token = await establishDb();
+    const handle = await aHandle(token);
+    const resolve = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/source/customer/resolve',
+      sessionToken: token,
+      body: { sourceId: 'db1', handle, identityValue: 'rahul@example.com' },
+    });
+    const { customerRef } = resolve.json as { customerRef: string };
+    for (const badFields of [{ mobile: 123 }, { mobile: { nested: true } }, { mobile: ['a'] }]) {
+      const r = await handleDataPlaneRequest(dpDb, {
+        method: 'POST',
+        path: '/source/customer/write',
+        sessionToken: token,
+        body: { sourceId: 'db1', customerRef, fields: badFields },
+      });
+      expect(r.status).toBe(400);
+    }
+  });
+
+  it('an unmapped column sent over the data plane is rejected end to end (403 COLUMN_NOT_MAPPED)', async () => {
+    const token = await establishDb();
+    const handle = await aHandle(token);
+    const resolve = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/source/customer/resolve',
+      sessionToken: token,
+      body: { sourceId: 'db1', handle, identityValue: 'rahul@example.com' },
+    });
+    const { customerRef } = resolve.json as { customerRef: string };
+    const r = await handleDataPlaneRequest(dpDb, {
+      method: 'POST',
+      path: '/source/customer/write',
+      sessionToken: token,
+      body: { sourceId: 'db1', customerRef, fields: { email: 'new@example.com' } }, // email is NOT writable
+    });
+    expect(r).toMatchObject({ status: 403, json: { error: 'COLUMN_NOT_MAPPED' } });
+  });
+});
+
 describe('Phase 3D — RAW-DATA BOUNDARY guard (connectors + data plane)', () => {
   const dir = __dirname;
   const CONNECTOR_FILES = [

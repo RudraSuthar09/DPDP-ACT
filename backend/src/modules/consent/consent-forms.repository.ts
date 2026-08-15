@@ -9,9 +9,26 @@ export interface ConsentFormRow {
   name: string;
   description: string | null;
   is_active: boolean;
+  /** Phase 3G-1: the client data source this form may map customer-data fields
+   *  into. NULL for ordinary SaaS/consent-only forms — unchanged behaviour. */
+  source_id: string | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
+}
+
+export interface CustomerFieldRow {
+  id: string;
+  form_id: string;
+  label: string;
+  field_type: string;
+  required: boolean;
+  destination: 'consent_record' | 'customer_field' | 'both';
+  mapped_column: string | null;
+  new_column_name: string | null;
+  new_column_type: string | null;
+  display_order: number;
+  status: 'active' | 'removed';
 }
 
 export interface FormRow {
@@ -142,6 +159,123 @@ export class ConsentFormsRepository {
         [formId],
       );
       return rows[0]!.next;
+    });
+  }
+
+  /** Phase 3G-1: associate/clear the form's data source. Config only. */
+  setFormSource(formId: string, sourceId: string | null): Promise<ConsentFormRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<ConsentFormRow>(
+        `UPDATE consent_forms SET source_id = $2, updated_at = now() WHERE id = $1 RETURNING *`,
+        [formId, sourceId],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  // --- Phase 3G-1: customer-data field configuration -------------------------
+
+  listCustomerFields(formId: string): Promise<CustomerFieldRow[]> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<CustomerFieldRow>(
+        `SELECT id, form_id, label, field_type, required, destination, mapped_column,
+                new_column_name, new_column_type, display_order, status
+           FROM consent_form_customer_fields
+          WHERE form_id = $1 AND status = 'active'
+          ORDER BY display_order, label`,
+        [formId],
+      );
+      return rows;
+    });
+  }
+
+  nextCustomerFieldDisplayOrder(formId: string): Promise<number> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<{ next: number }>(
+        `SELECT COALESCE(MAX(display_order), -1) + 1 AS next FROM consent_form_customer_fields WHERE form_id = $1 AND status = 'active'`,
+        [formId],
+      );
+      return rows[0]!.next;
+    });
+  }
+
+  addCustomerField(input: {
+    formId: string;
+    label: string;
+    fieldType: string;
+    required: boolean;
+    destination: 'consent_record' | 'customer_field' | 'both';
+    mappedColumn: string | null;
+    newColumnName: string | null;
+    newColumnType: string | null;
+    displayOrder: number;
+  }): Promise<CustomerFieldRow> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<CustomerFieldRow>(
+        `INSERT INTO consent_form_customer_fields
+           (form_id, label, field_type, required, destination, mapped_column, new_column_name, new_column_type, display_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id, form_id, label, field_type, required, destination, mapped_column,
+                   new_column_name, new_column_type, display_order, status`,
+        [
+          input.formId,
+          input.label,
+          input.fieldType,
+          input.required,
+          input.destination,
+          input.mappedColumn,
+          input.newColumnName,
+          input.newColumnType,
+          input.displayOrder,
+        ],
+      );
+      return rows[0]!;
+    });
+  }
+
+  updateCustomerField(
+    fieldId: string,
+    input: {
+      label: string;
+      fieldType: string;
+      required: boolean;
+      destination: 'consent_record' | 'customer_field' | 'both';
+      mappedColumn: string | null;
+      newColumnName: string | null;
+      newColumnType: string | null;
+    },
+  ): Promise<CustomerFieldRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<CustomerFieldRow>(
+        `UPDATE consent_form_customer_fields
+            SET label = $2, field_type = $3, required = $4, destination = $5,
+                mapped_column = $6, new_column_name = $7, new_column_type = $8, updated_at = now()
+          WHERE id = $1 AND status = 'active'
+          RETURNING id, form_id, label, field_type, required, destination, mapped_column,
+                    new_column_name, new_column_type, display_order, status`,
+        [
+          fieldId,
+          input.label,
+          input.fieldType,
+          input.required,
+          input.destination,
+          input.mappedColumn,
+          input.newColumnName,
+          input.newColumnType,
+        ],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  /** Soft-removed (I4-consistent) — never a hard delete. */
+  removeCustomerField(fieldId: string): Promise<boolean> {
+    return this.db.withTenant(async (client) => {
+      const { rowCount } = await client.query(
+        `UPDATE consent_form_customer_fields SET status = 'removed', updated_at = now() WHERE id = $1 AND status = 'active'`,
+        [fieldId],
+      );
+      return (rowCount ?? 0) > 0;
     });
   }
 

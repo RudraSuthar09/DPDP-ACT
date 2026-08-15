@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Req,
   UnauthorizedException,
@@ -23,6 +24,7 @@ import {
   parseRedeemPairing,
   parseRefreshSession,
   parseRevokeReason,
+  parseSetEndpoint,
 } from './gateway.dto';
 
 const MANAGE = ['owner', 'dpo', 'compliance_officer'] as const;
@@ -84,6 +86,32 @@ export class GatewayController {
   async revokeDevice(@Param('id') id: string, @Body() body: unknown) {
     const { reason } = parseRevokeReason(body);
     return this.gateway.revokeDevice(id, reason);
+  }
+
+  /**
+   * Phase 3G-2.5: the tenant's one active Gateway (or null) — what the browser
+   * loads on every visit to "reconnect" without re-pairing. A plain metadata
+   * read; the browser separately calls the returned endpoint's own /health.
+   */
+  @Get('devices/active')
+  @UseGuards(TenantGuard)
+  @Roles(...MANAGE)
+  async getActiveDevice() {
+    return { device: await this.gateway.getActiveDevice() };
+  }
+
+  /**
+   * Phase 3G-2.5: set/clear the browser-facing endpoint for the active,
+   * already-enrolled Gateway. Config only (a URL) — never a credential, never
+   * the security identity (unaffected: still the device key + token).
+   */
+  @Patch('devices/:id/endpoint')
+  @UseGuards(TenantGuard)
+  @Roles(...MANAGE)
+  @Audited('gateway.device.endpoint_set')
+  async setEndpoint(@Param('id') id: string, @Body() body: unknown) {
+    const { endpoint } = parseSetEndpoint(body);
+    return this.gateway.setEndpoint(id, endpoint);
   }
 
   // --- device-facing -------------------------------------------------------

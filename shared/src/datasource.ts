@@ -44,6 +44,13 @@ export interface DataSource {
   status: DataSourceStatus;
   /** Non-secret human identifier only (never a credential/connection secret). */
   connectionHint: string | null;
+  /**
+   * Phase 3G-1: the client-chosen COLUMN NAME that identifies a customer in this
+   * source (e.g. 'email', 'customer_id') — never a value, never inferred/assumed.
+   * NULL until a human explicitly configures it. Reusable by any DPDP module that
+   * later needs "which existing customer is this" (Consent/Grievance/DSR/Breach).
+   */
+  identityColumn: string | null;
   createdAt: string;
   updatedAt: string;
   modeLastChangedAt: string | null;

@@ -5,6 +5,8 @@ import { Audited } from '../audit/audited.decorator';
 import { DataSourceService } from './data-source.service';
 import {
   parseCreateDataSource,
+  parseGatewayEvent,
+  parseIdentityColumn,
   parseModeToggle,
   parseRawAccess,
   parseTombstoneReason,
@@ -80,6 +82,37 @@ export class DataSourceController {
   async recordRawAccess(@Param('id') id: string, @Body() body: unknown) {
     const { rowCount } = parseRawAccess(body);
     return this.sources.recordRawAccess(id, rowCount);
+  }
+
+  /**
+   * Phase 3G-1: explicit customer-identity column configuration. Records which
+   * EXISTING column the client says identifies a customer — a column NAME, never
+   * a value, never assumed. Does NOT perform a lookup (that is Phase 3G-2).
+   */
+  @Patch(':id/identity-column')
+  @Roles(...MANAGE)
+  @Audited('datasource.source.identity_column_set')
+  async setIdentityColumn(@Param('id') id: string, @Body() body: unknown) {
+    const { identityColumn } = parseIdentityColumn(body);
+    return this.sources.setIdentityColumn(id, identityColumn);
+  }
+
+  /**
+   * Phase 3G-2: record a Gateway customer/column event — METADATA ONLY, a
+   * post-hoc fact ("this happened"). The actual customer resolve/write/create
+   * or column-create operation runs entirely between the browser and the
+   * Gateway, over the local/LAN Gateway connection; it never touches this
+   * server. `@Audited` names the fallback action — the service always
+   * overrides it with the caller's allowlisted `action` (parseGatewayEvent
+   * rejects anything else), so the hash-chain entry gets the precise name.
+   */
+  @Post(':id/gateway-events')
+  @Roles(...MANAGE)
+  @Audited('gateway.customer_field.event')
+  @HttpCode(HttpStatus.OK)
+  async recordGatewayEvent(@Param('id') id: string, @Body() body: unknown) {
+    const { action, rowCount } = parseGatewayEvent(body);
+    return this.sources.recordGatewayEvent(id, action, rowCount);
   }
 
   /** Soft-delete (tombstone) — there is no hard delete (I4). */

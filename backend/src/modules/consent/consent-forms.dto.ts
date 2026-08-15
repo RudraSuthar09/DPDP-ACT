@@ -1,4 +1,29 @@
 import { BadRequestException } from '@nestjs/common';
+import { CONSENT_FIELD_DESTINATIONS, type ConsentFieldDestination } from '@dpdp/shared';
+
+/** Column TYPES a "create new column" request may declare (3G-1: config only —
+ *  nothing is created yet; this is the allowlist the eventual 3G-2 ALTER will
+ *  also enforce). Kept small and generic — never a business-meaning type like
+ *  "aadhaar" or "pan". */
+const NEW_COLUMN_TYPES = ['text', 'integer', 'boolean', 'timestamp', 'date'] as const;
+
+/**
+ * A strict, conservative column-identifier validator (letters/digits/underscore,
+ * starting with a letter/underscore, ≤63 chars). Deliberately duplicated from
+ * data-source.dto.ts rather than imported (R2 — modules stay independent; this
+ * is six lines, not a shared table) — both copies exist purely so a
+ * client-supplied "this is a column name" string is shape-checked at the edge,
+ * never to construct SQL here.
+ */
+function parseColumnIdentifier(value: string, field: string): string {
+  const trimmed = value.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(trimmed)) {
+    throw new BadRequestException(
+      `${field} must be a valid column identifier (letters, digits, underscore; starting with a letter or underscore).`,
+    );
+  }
+  return trimmed;
+}
 
 /** Request parsing for the new-UX consent forms — hand-written and total. */
 
@@ -107,6 +132,69 @@ function parseAnswers(obj: Record<string, unknown>): FormAnswerInput[] {
     }
     return { consentPurposeId, granted: ao['granted'] as boolean };
   });
+}
+
+// --- Phase 3G-1: customer-data field configuration --------------------------
+
+export interface SaveCustomerFieldDtoInput {
+  label: string;
+  fieldType: string;
+  required: boolean;
+  destination: ConsentFieldDestination;
+  mappedColumn: string | null;
+  newColumnName: string | null;
+  newColumnType: string | null;
+}
+
+/**
+ * Parses a customer-data field save. The mapping is EXPLICIT-or-absent by
+ * construction: `mappedColumn`/`newColumnName` are only ever set to what the
+ * caller sent, never derived, never defaulted from the label. A
+ * `destination: 'consent_record'` field is rejected if it carries a mapping —
+ * the DB CHECK constraint enforces the same rule, this just fails fast with a
+ * clear message. `mappedColumn` and a `newColumnName` may not both be present
+ * (a field is either mapped to an existing column or configured to create one).
+ */
+export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput {
+  const obj = asObject(body);
+  const destinationRaw = obj['destination'];
+  if (typeof destinationRaw !== 'string' || !(CONSENT_FIELD_DESTINATIONS as readonly string[]).includes(destinationRaw)) {
+    throw new BadRequestException(`destination must be one of: ${CONSENT_FIELD_DESTINATIONS.join(', ')}.`);
+  }
+  const destination = destinationRaw as ConsentFieldDestination;
+
+  const mappedColumn = optionalStringOrNull(obj, 'mappedColumn', { max: 63 });
+  const newColumnName = optionalStringOrNull(obj, 'newColumnName', { max: 63 });
+  const newColumnType = optionalStringOrNull(obj, 'newColumnType', { max: 32 });
+
+  if (destination === 'consent_record' && (mappedColumn || newColumnName)) {
+    throw new BadRequestException('A field stored in the Consent Record cannot also carry a column mapping.');
+  }
+  if (mappedColumn && newColumnName) {
+    throw new BadRequestException('Choose either an existing column or "create new column" — not both.');
+  }
+  if (newColumnName && !newColumnType) {
+    throw new BadRequestException('newColumnType is required when newColumnName is set.');
+  }
+  if (newColumnType && !(NEW_COLUMN_TYPES as readonly string[]).includes(newColumnType)) {
+    throw new BadRequestException(`newColumnType must be one of: ${NEW_COLUMN_TYPES.join(', ')}.`);
+  }
+
+  return {
+    label: requireString(obj, 'label', { min: 1, max: 200 }),
+    fieldType: requireString(obj, 'fieldType', { min: 1, max: 64 }),
+    required: Boolean(obj['required']),
+    destination,
+    mappedColumn: mappedColumn ? parseColumnIdentifier(mappedColumn, 'mappedColumn') : null,
+    newColumnName: newColumnName ? parseColumnIdentifier(newColumnName, 'newColumnName') : null,
+    newColumnType,
+  };
+}
+
+/** The body for associating a form with a data source: `{ sourceId: string|null }`. */
+export function parseSetFormSource(body: unknown): { sourceId: string | null } {
+  const obj = asObject(body);
+  return { sourceId: optionalUuidOrNull(obj, 'sourceId') };
 }
 
 function asObject(body: unknown): Record<string, unknown> {

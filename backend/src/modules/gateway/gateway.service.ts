@@ -85,6 +85,17 @@ export class GatewayService {
     const enrolment = await this.repo.findEnrollment(enrollmentId);
     assertOk(evaluateEnrollmentCode(enrolment, new Date()));
 
+    // Product decision: ONE tenant -> ONE active Enterprise Gateway. A friendly
+    // app-level check before the DB's own partial unique index (the real
+    // backstop) ever gets a chance to reject it. Replacing a Gateway is an
+    // EXPLICIT client action — revoke the old device first, never silent swap.
+    const existingActive = await this.repo.findActiveDevice();
+    if (existingActive) {
+      throw new ForbiddenException(
+        'An active Enterprise Gateway is already connected for this tenant. Revoke it before enrolling another.',
+      );
+    }
+
     const device = await this.repo.createDevice({
       publicKey: input.publicKey,
       deviceRef: input.deviceRef,
@@ -250,6 +261,29 @@ export class GatewayService {
     return (await this.repo.listDevices()).map(toDeviceView);
   }
 
+  /** The tenant's one active Gateway (or null) — the "reconnect on login" read. */
+  async getActiveDevice(): Promise<DeviceView | null> {
+    const row = await this.repo.findActiveDevice();
+    return row ? toDeviceView(row) : null;
+  }
+
+  /**
+   * Phase 3G-2.5: set/clear the browser-facing endpoint for an already-enrolled,
+   * active device. Config only (a URL) — never touches the device's security
+   * identity (public key / device token), which is entirely unaffected.
+   */
+  async setEndpoint(deviceId: string, endpoint: string | null): Promise<DeviceView> {
+    const row = await this.repo.setEndpoint(deviceId, endpoint);
+    if (!row) throw new NotFoundException('Gateway device not found or not active.');
+    this.audit.annotate({
+      targetType: 'gateway_device',
+      targetId: deviceId,
+      reason: endpoint ? `Gateway endpoint set to "${endpoint}".` : 'Gateway endpoint cleared.',
+      afterState: { endpoint },
+    });
+    return toDeviceView(row);
+  }
+
   async revokeDevice(deviceId: string, reason: string | null): Promise<DeviceView> {
     const ctx = this.tenantContext.getOrThrow();
     const row = await this.repo.revokeDevice(deviceId, ctx.userId, reason);
@@ -274,6 +308,9 @@ export interface DeviceView {
   agentVersion: string;
   displayName: string;
   status: string;
+  /** Phase 3G-2.5: the browser-facing URL to reach this Gateway. Null until
+   *  staff explicitly configures it. Never the security identity. */
+  endpoint: string | null;
   enrolledAt: string;
   lastHeartbeatAt: string | null;
 }
@@ -285,6 +322,7 @@ function toDeviceView(row: GatewayDeviceRow): DeviceView {
     agentVersion: row.agent_version,
     displayName: row.display_name,
     status: row.status,
+    endpoint: row.endpoint,
     enrolledAt: row.enrolled_at.toISOString(),
     lastHeartbeatAt: row.last_heartbeat_at ? row.last_heartbeat_at.toISOString() : null,
   };

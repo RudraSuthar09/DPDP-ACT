@@ -17,6 +17,20 @@ export interface GatewaySourceConfig {
   kind: DataSourceKind;
   roots?: string[];
   connection?: DbConnection;
+  /**
+   * Phase 3G-2: customer resolve/write/create configuration — entirely
+   * agent-local, set by the operator, never sent by the browser and never
+   * fetched from the central platform.
+   */
+  identityColumn?: string;
+  allowCustomerCreate?: boolean;
+  /** The explicit allowlist of columns writeCustomerFields/createCustomer may
+   *  touch. Nothing outside this list is ever written, regardless of what a
+   *  request asks for. */
+  writableColumns?: string[];
+  /** A SEPARATE, privileged credential for writes/schema changes. Absent means
+   *  every write/create/column-create operation fails closed. */
+  writeConnection?: DbConnection;
 }
 
 const FILE_KINDS = new Set<DataSourceKind>(['csv', 'excel', 'filesystem']);
@@ -60,7 +74,14 @@ function createConnector(cfg: GatewaySourceConfig, dbClientFactory: DbClientFact
     const dialect = dialectFor(cfg.kind);
     if (!dialect || !cfg.connection) throw new ConnectorError('SOURCE_NOT_AUTHORIZED');
     const conn = cfg.connection;
-    return new DatabaseConnector(dialect, () => dbClientFactory(cfg.kind, conn));
+    const writeConn = cfg.writeConnection;
+    return new DatabaseConnector(dialect, () => dbClientFactory(cfg.kind, conn), {
+      identityColumn: cfg.identityColumn,
+      allowCustomerCreate: cfg.allowCustomerCreate,
+      writableColumns: cfg.writableColumns,
+      // A SEPARATE credential — never falls back to the read-only connection.
+      makeWriteClient: writeConn ? () => dbClientFactory(cfg.kind, writeConn) : undefined,
+    });
   }
   // Oracle / MongoDB / ERP / CRM etc. are not implemented — fail closed. Adding
   // one is a new dialect + client here; the browser and central platform never change.
@@ -90,16 +111,27 @@ export function loadSourceConfig(env: NodeJS.ProcessEnv = process.env): GatewayS
     // DB connection settings live locally, in this config, only. Never logged,
     // never sent to the browser or Azure.
     if (e.connection && typeof e.connection === 'object') {
-      const c = e.connection as Record<string, unknown>;
-      cfg.connection = {
-        host: String(c.host ?? ''),
-        port: Number(c.port ?? 0),
-        user: String(c.user ?? ''),
-        password: String(c.password ?? ''),
-        database: String(c.database ?? ''),
-        ...(c.ssl !== undefined ? { ssl: Boolean(c.ssl) } : {}),
-      };
+      cfg.connection = parseConnection(e.connection as Record<string, unknown>);
+    }
+    // Phase 3G-2: identity/writable-column/creation config + the SEPARATE
+    // privileged write credential — all agent-local, all optional.
+    if (typeof e.identityColumn === 'string') cfg.identityColumn = e.identityColumn;
+    if (e.allowCustomerCreate !== undefined) cfg.allowCustomerCreate = Boolean(e.allowCustomerCreate);
+    if (Array.isArray(e.writableColumns)) cfg.writableColumns = e.writableColumns.map(String);
+    if (e.writeConnection && typeof e.writeConnection === 'object') {
+      cfg.writeConnection = parseConnection(e.writeConnection as Record<string, unknown>);
     }
     return cfg;
   });
+}
+
+function parseConnection(c: Record<string, unknown>): DbConnection {
+  return {
+    host: String(c.host ?? ''),
+    port: Number(c.port ?? 0),
+    user: String(c.user ?? ''),
+    password: String(c.password ?? ''),
+    database: String(c.database ?? ''),
+    ...(c.ssl !== undefined ? { ssl: Boolean(c.ssl) } : {}),
+  };
 }

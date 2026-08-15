@@ -329,6 +329,23 @@ export const GATEWAY_DATA_ROUTES = {
   sourceSearch: '/source/search',
   sourceRead: '/source/read',
   sourceMetadata: '/source/metadata',
+  /** Phase 3G-1: list the FIELDS (columns/headers) of one resource — structure
+   *  only, same class as discover()/metadata(), never a row. This is what lets
+   *  the Consent Form Builder show "which existing columns can I map to?"
+   *  without ever reading a customer value. */
+  sourceFields: '/source/fields',
+  /**
+   * Phase 3G-2: customer resolution + controlled write/create + controlled
+   * column creation. Every one of these is a STRUCTURED operation — never
+   * arbitrary SQL, never a browser-supplied path/table/column the Gateway
+   * "just trusts". The Gateway re-validates identity-column config, the
+   * writable-column allowlist, and (for column creation) a strict identifier +
+   * type allowlist, on every call. See the DataConnector methods below.
+   */
+  customerResolve: '/source/customer/resolve',
+  customerWrite: '/source/customer/write',
+  customerCreate: '/source/customer/create',
+  columnCreate: '/source/column/create',
 } as const;
 export type GatewayDataRoute =
   (typeof GATEWAY_DATA_ROUTES)[keyof typeof GATEWAY_DATA_ROUTES];
@@ -467,6 +484,108 @@ export interface GatewaySourceMetadataResponse {
   estimatedRowCount: number | null;
 }
 
+/**
+ * One field (column/header) of a resource — STRUCTURE ONLY, never a value.
+ * `type` is a best-effort, connector-reported label (e.g. 'text', 'integer',
+ * 'timestamp') — this is NOT a schema-inference engine; it is whatever the
+ * source itself reports (information_schema for databases, "always text" for a
+ * CSV/XLSX header). Nothing here carries business meaning (no "this looks like
+ * an Aadhaar column") — that judgement is made by a human in the Consent Form
+ * Builder, explicitly, never inferred by the platform.
+ */
+export interface FieldDescriptor {
+  name: string;
+  type: string;
+  nullable: boolean;
+}
+
+export interface GatewaySourceFieldsRequest {
+  sourceId: string;
+  handle: string;
+}
+export interface GatewaySourceFieldsResponse {
+  fields: FieldDescriptor[];
+}
+
+// ===========================================================================
+// Phase 3G-2 — customer resolution, controlled write/create, controlled
+// column creation. Every shape below carries EITHER metadata (a column NAME,
+// an opaque ref) OR exactly one bounded set of caller-supplied VALUES destined
+// only for the data plane (never a control-plane/central request). None of
+// these types is ever sent to Azure — see gateway.controller.ts (backend),
+// which only ever receives a post-hoc {action, rowCount} audit fact.
+// ===========================================================================
+
+/**
+ * Resolve a customer by the source's configured identity column. The browser
+ * supplies ONLY the value to match — never the column name (the Gateway uses
+ * its own configured identity column; the browser cannot choose one).
+ */
+export interface GatewayResolveCustomerRequest {
+  sourceId: string;
+  handle: string;
+  identityValue: string;
+}
+export interface GatewayResolveCustomerResponse {
+  exists: boolean;
+  /** Opaque, Gateway-issued. Never the database primary key, never a value. */
+  customerRef: string | null;
+}
+
+/**
+ * Update an EXISTING customer's explicitly-mapped fields. `fields` is a flat
+ * {columnName: value} map; the Gateway accepts a key ONLY if that column is in
+ * its own configured writable-column allowlist for this source — an arbitrary
+ * column name is rejected (COLUMN_NOT_MAPPED), never "just updated".
+ */
+export interface GatewayWriteCustomerFieldsRequest {
+  sourceId: string;
+  handle: string;
+  customerRef: string;
+  fields: Record<string, string>;
+}
+export interface GatewayWriteCustomerFieldsResponse {
+  success: true;
+}
+
+/**
+ * Create a customer ONLY when the source explicitly allows it. Same
+ * writable-column enforcement as write; if the identity already exists, this
+ * returns the EXISTING reference rather than creating a duplicate.
+ */
+export interface GatewayCreateCustomerRequest {
+  sourceId: string;
+  handle: string;
+  identityValue: string;
+  fields: Record<string, string>;
+}
+export interface GatewayCreateCustomerResponse {
+  created: boolean;
+  exists: boolean;
+  customerRef: string | null;
+}
+
+/** The only column types "create new column" may request — a small, explicit
+ *  allowlist, never an arbitrary SQL type string. */
+export const NEW_CUSTOMER_COLUMN_TYPES = ['text', 'integer', 'boolean', 'date', 'datetime'] as const;
+export type NewCustomerColumnType = (typeof NEW_CUSTOMER_COLUMN_TYPES)[number];
+
+/**
+ * The CONTROLLED "create new column" operation (what Phase 3G-1 only recorded
+ * as a request). A structured operation — not arbitrary SQL — gated on a
+ * separate, optional, privileged write credential; absent that credential this
+ * fails closed (WRITE_NOT_CONFIGURED). Unsupported for file sources.
+ */
+export interface GatewayCreateColumnRequest {
+  sourceId: string;
+  handle: string;
+  columnName: string;
+  columnType: NewCustomerColumnType;
+}
+export interface GatewayCreateColumnResponse {
+  created: true;
+}
+
 // ===========================================================================
 // §8  Connector interface (agent-side). SEPARATE from SchemaSource (S4).
 // ===========================================================================
@@ -481,7 +600,15 @@ export const GATEWAY_CONNECTOR_CAPABILITIES = [
   'search',
   'read',
   'metadata',
+  'listFields',
   'healthCheck',
+  // Phase 3G-2 — structured, always-enforced-at-call-time. A connector
+  // advertising these still fails closed per-call (unconfigured identity
+  // column, unmapped column, disabled creation, missing write credential).
+  'resolveCustomer',
+  'writeCustomerFields',
+  'createCustomer',
+  'createColumn',
 ] as const;
 export type GatewayConnectorCapability =
   (typeof GATEWAY_CONNECTOR_CAPABILITIES)[number];
@@ -512,6 +639,39 @@ export interface DataConnector {
   search(term: string, opts?: GatewayReadOptions): Promise<GatewaySourceSearchResponse>;
   read(handle: string, opts?: GatewayReadOptions): Promise<GatewaySourceReadResponse>;
   metadata(handle: string): Promise<GatewaySourceMetadataResponse>;
+  /** Phase 3G-1: the fields (columns/headers) of one resource — structure only,
+   *  never a row. Backs the Consent Form Builder's "map to an existing column"
+   *  picker. */
+  listFields(handle: string): Promise<GatewaySourceFieldsResponse>;
+  /**
+   * Phase 3G-2: resolve an existing customer by the connector's OWN configured
+   * identity column. Returns an opaque ref — never the row, never the primary
+   * key. Fails closed (IDENTITY_NOT_CONFIGURED) if no identity column is set.
+   */
+  resolveCustomer(handle: string, identityValue: string): Promise<GatewayResolveCustomerResponse>;
+  /**
+   * Phase 3G-2: update an existing customer's EXPLICITLY MAPPED fields only.
+   * Any key not in the connector's writable-column allowlist is rejected
+   * (COLUMN_NOT_MAPPED) — the browser cannot make an arbitrary column writable
+   * by simply naming it. Requires a privileged write credential to be
+   * configured; fails closed (WRITE_NOT_CONFIGURED) otherwise.
+   */
+  writeCustomerFields(customerRef: string, fields: Record<string, string>): Promise<GatewayWriteCustomerFieldsResponse>;
+  /**
+   * Phase 3G-2: create a customer ONLY when explicitly allowed for this
+   * source (CUSTOMER_CREATION_DISABLED otherwise). Same writable-column
+   * enforcement as writeCustomerFields; never creates a duplicate — an
+   * existing identity match is returned instead of inserting a new row.
+   */
+  createCustomer(handle: string, identityValue: string, fields: Record<string, string>): Promise<GatewayCreateCustomerResponse>;
+  /**
+   * Phase 3G-2: the CONTROLLED "create new column" operation — a structured
+   * ALTER, never arbitrary SQL. Strict identifier validation, a small type
+   * allowlist (NEW_CUSTOMER_COLUMN_TYPES), and the separate privileged write
+   * credential are all enforced here, every call. Unsupported for file sources
+   * (UNSUPPORTED_SOURCE) — a CSV/XLSX column must be added externally.
+   */
+  createColumn(handle: string, columnName: string, columnType: NewCustomerColumnType): Promise<GatewayCreateColumnResponse>;
   healthCheck(): Promise<GatewayHealthResponse>;
 }
 
@@ -598,6 +758,25 @@ export const GATEWAY_ERROR_CODES = [
   'UNSUPPORTED_SOURCE',
   'RATE_LIMITED',
   'TIMEOUT',
+  // Phase 3G-2: customer resolution/write/create + controlled column creation.
+  /** No privileged write credential is configured for this source — writes,
+   *  customer creation, and column creation all fail closed with this code. */
+  'WRITE_NOT_CONFIGURED',
+  /** The caller named a column that is not in this source's explicit writable-
+   *  column allowlist (or it sent no fields at all). Never "the column doesn't
+   *  exist" — that distinction is not leaked. */
+  'COLUMN_NOT_MAPPED',
+  /** An opaque customerRef does not resolve to a known, still-authorized row. */
+  'CUSTOMER_NOT_FOUND',
+  /** Customer creation was attempted but this source does not allow it. */
+  'CUSTOMER_CREATION_DISABLED',
+  /** "Create new column" was attempted for a column name that already exists. */
+  'COLUMN_ALREADY_EXISTS',
+  /** No identity column is configured for this source — resolution/creation
+   *  cannot run without one. */
+  'IDENTITY_NOT_CONFIGURED',
+  /** A caller-supplied identifier (column name) failed strict validation. */
+  'INVALID_IDENTIFIER',
 ] as const;
 export type GatewayErrorCode = (typeof GATEWAY_ERROR_CODES)[number];
 
@@ -627,6 +806,15 @@ export const GATEWAY_AUDIT_ACTIONS = [
   'gateway.source.searched',
   'gateway.raw_access.viewed',
   'gateway.raw_access.failed',
+  // Phase 3G-2: customer resolution/write/create + controlled column creation.
+  // Recorded by the CENTRAL backend as a post-hoc, metadata-only fact — the
+  // Gateway operation itself already completed entirely within the client
+  // environment; these actions never carry an identity value or a field value.
+  'gateway.customer.resolved',
+  'gateway.customer.updated',
+  'gateway.customer.created',
+  'gateway.customer.write_failed',
+  'gateway.column.created',
 ] as const;
 export type GatewayAuditAction = (typeof GATEWAY_AUDIT_ACTIONS)[number];
 

@@ -5,8 +5,261 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
 import type { DataSource, DataSourceKind } from '@dpdp/shared';
+import { classifyGatewayConnection, probeGatewayHealth, type GatewayConnectionState } from '../../../lib/gateway-connection';
 
 const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
+
+/** The JSON shape of GET/PATCH /gateway/devices* — mirrors the backend
+ *  DeviceView (kept as a local type, same convention as other pages). */
+interface GatewayDevice {
+  id: string;
+  platform: string;
+  agentVersion: string;
+  displayName: string;
+  status: string;
+  endpoint: string | null;
+  enrolledAt: string;
+  lastHeartbeatAt: string | null;
+}
+
+const STATE_LABEL: Record<GatewayConnectionState, string> = {
+  not_configured: 'Not connected',
+  no_endpoint: 'Endpoint not configured',
+  connected: 'Connected',
+  offline: 'Offline',
+  invalid: 'Invalid configuration',
+};
+const STATE_BADGE: Record<GatewayConnectionState, string> = {
+  not_configured: 'neutral',
+  no_endpoint: 'warning',
+  connected: 'success',
+  offline: 'denied',
+  invalid: 'denied',
+};
+
+/**
+ * Phase 3G-2.5 — the persistent Enterprise Gateway connection. The CENTRAL
+ * database (GET /gateway/devices/active) is the source of truth for "which
+ * Gateway is configured for this tenant" — never localStorage/sessionStorage
+ * alone, so the connection survives a refresh, a new login, or a different
+ * browser. The endpoint is a plain, non-secret URL the client explicitly sets;
+ * security still depends entirely on the existing Phase-3C device/session
+ * mechanism, untouched here. Reachability is checked directly against the
+ * Gateway's own /health — never through the central backend, and never in a
+ * way that can crash the page (every fetch is wrapped and classified).
+ */
+function EnterpriseGatewayPanel() {
+  const { user } = useAuth();
+  const canManage = !!user && MANAGE_ROLES.has(user.role);
+
+  const [device, setDevice] = useState<GatewayDevice | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [state, setState] = useState<GatewayConnectionState>('not_configured');
+  const [probing, setProbing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [enrollCode, setEnrollCode] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [endpointInput, setEndpointInput] = useState('');
+
+  const loadDevice = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const res = await apiFetch<{ device: GatewayDevice | null }>('/gateway/devices/active');
+      setDevice(res.device);
+      setEndpointInput(res.device?.endpoint ?? '');
+      return res.device;
+    } catch (err) {
+      // A failure to reach the CENTRAL backend must never blank the page —
+      // report it and let the rest of Data Sources still render.
+      setLoadError(err instanceof ApiError ? err.message : 'Could not load the Gateway configuration.');
+      return null;
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  const probe = useCallback(async (current: GatewayDevice | null) => {
+    if (!current || current.status !== 'active' || !current.endpoint) {
+      setState(classifyGatewayConnection(current, null));
+      return;
+    }
+    setProbing(true);
+    try {
+      const result = await probeGatewayHealth(current.endpoint);
+      setState(classifyGatewayConnection(current, result));
+    } finally {
+      setProbing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDevice().then((d) => void probe(d));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function onGenerateCode() {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch<{ code: string; codePrefix: string; expiresAt: string }>('/gateway/enrollments', {
+        method: 'POST',
+        body: {},
+      });
+      setEnrollCode({ code: res.code, expiresAt: res.expiresAt });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not create an enrolment code.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRefreshAfterEnroll() {
+    setBusy(true);
+    setError(null);
+    try {
+      const d = await loadDevice();
+      if (d) setEnrollCode(null);
+      await probe(d);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onSaveEndpoint() {
+    if (!device) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await apiFetch<GatewayDevice>(`/gateway/devices/${device.id}/endpoint`, {
+        method: 'PATCH',
+        body: { endpoint: endpointInput.trim() || null },
+      });
+      setDevice(updated);
+      await probe(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save the Gateway endpoint.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRevoke() {
+    if (!device) return;
+    if (!window.confirm(`Revoke this Enterprise Gateway ("${device.displayName}")? You will need to enrol a new one to reconnect.`)) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/gateway/devices/${device.id}/revoke`, { method: 'POST', body: {} });
+      setDevice(null);
+      setEndpointInput('');
+      setState('not_configured');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not revoke the Gateway.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!loaded) return null; // brief — avoids a state flash, never a blank page beyond this
+
+  return (
+    <div className="panel" style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0 }}>Enterprise Gateway</h2>
+        <span className={`badge ${STATE_BADGE[state]}`}>{STATE_LABEL[state]}</span>
+        {probing && <span className="muted" style={{ fontSize: '0.8rem' }}>checking…</span>}
+      </div>
+
+      {loadError && (
+        <div className="notice" style={{ marginTop: 10 }}>
+          Could not reach DPDP&apos;s server to load your Gateway configuration ({loadError}). Data
+          Sources below may be incomplete until this is retried.{' '}
+          <button type="button" onClick={() => void loadDevice()}>Retry</button>
+        </div>
+      )}
+      {error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
+
+      {!device && !loadError && (
+        <div style={{ marginTop: 10 }}>
+          <p className="muted" style={{ fontSize: '0.85rem' }}>
+            Connect a local/Enterprise Gateway once — it stays connected across logins, refreshes, and
+            sessions. Your customer files/databases never leave your environment; only Gateway
+            configuration (not your data) is stored here.
+          </p>
+          {canManage && (
+            <>
+              {!enrollCode ? (
+                <button className="primary" type="button" onClick={() => void onGenerateCode()} disabled={busy}>
+                  {busy ? 'Working…' : 'Connect Enterprise Gateway'}
+                </button>
+              ) : (
+                <div className="panel" style={{ marginTop: 8 }}>
+                  <p style={{ marginTop: 0 }}>
+                    Enrolment code (shown once): <span className="mono badge neutral">{enrollCode.code}</span>
+                  </p>
+                  <p className="muted" style={{ fontSize: '0.8rem' }}>
+                    Configure this code in your Gateway installation (it expires{' '}
+                    {new Date(enrollCode.expiresAt).toLocaleTimeString()}). Once the Gateway has enrolled,
+                    click Refresh.
+                  </p>
+                  <button type="button" onClick={() => void onRefreshAfterEnroll()} disabled={busy}>
+                    {busy ? 'Checking…' : 'Refresh'}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {device && (
+        <div style={{ marginTop: 10 }}>
+          <p className="muted" style={{ fontSize: '0.85rem' }}>
+            <strong>{device.displayName}</strong> · {device.platform} · agent {device.agentVersion}
+          </p>
+
+          {state === 'offline' && (
+            <div className="notice">
+              Gateway unreachable at the configured endpoint. Start the local Gateway to access connected
+              data sources, then retry.
+            </div>
+          )}
+          {state === 'invalid' && (
+            <div className="notice">The configured endpoint responded, but not as a DPDP Gateway. Check the address.</div>
+          )}
+
+          {canManage && (
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 8 }}>
+              <div style={{ flex: '1 1 320px' }}>
+                <label htmlFor="gw-endpoint">Gateway endpoint</label>
+                <input
+                  id="gw-endpoint"
+                  value={endpointInput}
+                  onChange={(e) => setEndpointInput(e.target.value)}
+                  placeholder="e.g. http://192.168.1.50:7071"
+                  disabled={busy}
+                />
+              </div>
+              <button type="button" onClick={() => void onSaveEndpoint()} disabled={busy || endpointInput.trim() === (device.endpoint ?? '')}>
+                Save endpoint
+              </button>
+              <button type="button" onClick={() => void probe(device)} disabled={busy || probing || !device.endpoint}>
+                Retry
+              </button>
+              <button type="button" onClick={() => void onRevoke()} disabled={busy}>
+                Revoke Gateway
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const KIND_OPTIONS: Array<{ value: DataSourceKind; label: string }> = [
   { value: 'excel', label: 'Excel' },
@@ -118,6 +371,9 @@ export default function DataSourcesPage() {
   return (
     <div>
       <h1>Data Sources</h1>
+
+      <EnterpriseGatewayPanel />
+
       <p className="muted">
         The systems and files your compliance work draws on. Each source has an <strong>access
         mode</strong>: <em>Metadata-only</em> (the default — structure and descriptions, never a

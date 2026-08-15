@@ -10,6 +10,9 @@ export interface DataSourceRow {
   data_access_mode: DataAccessMode;
   status: 'active' | 'tombstoned';
   connection_hint: string | null;
+  /** Phase 3G-1: the client-chosen COLUMN NAME that identifies a customer in
+   *  this source. Never a value; NULL until explicitly configured. */
+  identity_column: string | null;
   gateway_binding_ref: string | null;
   mode_last_changed_at: Date | null;
   mode_last_changed_by: string | null;
@@ -100,6 +103,23 @@ export class DataSourceRepository {
           WHERE id = $1 AND status = 'active'
           RETURNING *`,
         [id, mode, actorId],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  /**
+   * Phase 3G-1: record the client-chosen identity column. Config only — no
+   * lookup, no customer value ever touches this method. NULL clears it.
+   */
+  setIdentityColumn(id: string, identityColumn: string | null): Promise<DataSourceRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<DataSourceRow>(
+        `UPDATE data_sources
+            SET identity_column = $2
+          WHERE id = $1 AND status = 'active'
+          RETURNING *`,
+        [id, identityColumn],
       );
       return rows[0] ?? null;
     });

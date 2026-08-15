@@ -117,7 +117,17 @@ describe('Phase 1 — data sources are metadata/config only; raw access fails cl
     // metadata-only AUDIT (it takes a row count and returns { authorized }); it
     // reads no data — see its signature and the DTO (parseRawAccess), which
     // refuses any file/rows/values field.
-    expect(methodNames.sort()).toEqual(['create', 'get', 'list', 'recordRawAccess', 'remove', 'setMode', 'update']);
+    expect(methodNames.sort()).toEqual([
+      'create',
+      'get',
+      'list',
+      'recordGatewayEvent',
+      'recordRawAccess',
+      'remove',
+      'setIdentityColumn',
+      'setMode',
+      'update',
+    ]);
   });
 
   it('the repository exposes no method that could read source data', () => {

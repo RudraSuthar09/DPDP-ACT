@@ -5,9 +5,16 @@ import { EntryPurposesService } from '../inventory/entry-purposes.service';
 import { ConsentService } from './consent.service';
 import { ConsentNoticesService } from './consent-notices.service';
 import { SubjectRefHasher } from './subject-ref';
-import { ConsentFormsRepository, type FormRow } from './consent-forms.repository';
+import { ConsentFormsRepository, type CustomerFieldRow, type FormRow } from './consent-forms.repository';
 import { ConsentInventoryLinkRepository } from './consent-inventory-link.repository';
-import type { AddRowInput, LinkSubmissionInput, SaveFormInput, UpdateRowInput, WidgetSubmissionInput } from './consent-forms.dto';
+import type {
+  AddRowInput,
+  LinkSubmissionInput,
+  SaveCustomerFieldDtoInput,
+  SaveFormInput,
+  UpdateRowInput,
+  WidgetSubmissionInput,
+} from './consent-forms.dto';
 
 const EN = 'en';
 
@@ -98,14 +105,80 @@ export class ConsentFormsService {
     const form = await this.repo.getForm(formId);
     if (!form) throw new NotFoundException('Consent form not found.');
     const rows = await this.repo.listRows(formId, false);
+    const customerFields = await this.repo.listCustomerFields(formId);
     return {
       id: form.id,
       name: form.name,
       description: form.description,
       slug: form.slug,
       isActive: form.is_active,
+      /** Phase 3G-1: the data source this form may map fields into. NULL for an
+       *  ordinary consent-only form — existing forms are unaffected. */
+      sourceId: form.source_id,
       rows: rows.map(toRowResponse),
+      customerFields: customerFields.map(toCustomerFieldResponse),
     };
+  }
+
+  /** Phase 3G-1: explicitly associate (or clear) this form's data source. A form
+   *  is never auto-associated — only set when a client chooses to. */
+  async setFormSource(formId: string, sourceId: string | null) {
+    const form = await this.repo.setFormSource(formId, sourceId);
+    if (!form) throw new NotFoundException('Consent form not found.');
+    this.audit.annotate({
+      targetType: 'consent_form',
+      targetId: formId,
+      reason: sourceId ? `Consent form associated with data source ${sourceId}.` : 'Consent form data source association cleared.',
+      afterState: { sourceId },
+    });
+    return this.getForm(formId);
+  }
+
+  // --- Phase 3G-1: customer-data field configuration --------------------------
+  //
+  // A customer-data field is CONFIGURATION ONLY: label/type/required + an
+  // explicit destination + (if mapped) the EXISTING column NAME the client
+  // chose, or (if "create new column") the requested name/type. Nothing here
+  // reads, writes, or stores a submitted VALUE, and nothing here talks to the
+  // Gateway — mapping is a pure metadata decision a human makes in the builder.
+
+  async addCustomerField(formId: string, input: SaveCustomerFieldDtoInput) {
+    const form = await this.repo.getForm(formId);
+    if (!form) throw new NotFoundException('Consent form not found.');
+    const displayOrder = await this.repo.nextCustomerFieldDisplayOrder(formId);
+    const field = await this.repo.addCustomerField({ formId, displayOrder, ...input });
+    this.audit.annotate({
+      targetType: 'consent_form_customer_field',
+      targetId: field.id,
+      reason: `Customer-data field "${input.label}" added (destination: ${input.destination}).`,
+      // Metadata only: destination + column NAME (schema metadata, never a value).
+      afterState: { destination: input.destination, mappedColumn: input.mappedColumn, newColumnName: input.newColumnName },
+    });
+    return this.getForm(formId);
+  }
+
+  async updateCustomerField(formId: string, fieldId: string, input: SaveCustomerFieldDtoInput) {
+    const field = await this.repo.updateCustomerField(fieldId, input);
+    if (!field) throw new NotFoundException('Customer-data field not found.');
+    this.audit.annotate({
+      targetType: 'consent_form_customer_field',
+      targetId: fieldId,
+      reason: `Customer-data field "${input.label}" edited (destination: ${input.destination}).`,
+      afterState: { destination: input.destination, mappedColumn: input.mappedColumn, newColumnName: input.newColumnName },
+    });
+    return this.getForm(formId);
+  }
+
+  async removeCustomerField(formId: string, fieldId: string) {
+    const removed = await this.repo.removeCustomerField(fieldId);
+    if (!removed) throw new NotFoundException('Customer-data field not found or already removed.');
+    this.audit.annotate({
+      targetType: 'consent_form_customer_field',
+      targetId: fieldId,
+      reason: 'Customer-data field removed from a form.',
+      afterState: { status: 'removed' },
+    });
+    return this.getForm(formId);
   }
 
   // --- staff: rows -----------------------------------------------------------
@@ -354,6 +427,21 @@ function toRowResponse(r: FormRow) {
     inventoryEntryCategory: r.inventory_entry_category,
     active: r.active,
     displayOrder: r.display_order,
+  };
+}
+
+function toCustomerFieldResponse(f: CustomerFieldRow) {
+  return {
+    id: f.id,
+    formId: f.form_id,
+    label: f.label,
+    fieldType: f.field_type,
+    required: f.required,
+    destination: f.destination,
+    mappedColumn: f.mapped_column,
+    newColumnName: f.new_column_name,
+    newColumnType: f.new_column_type,
+    displayOrder: f.display_order,
   };
 }
 

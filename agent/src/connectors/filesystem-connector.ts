@@ -6,13 +6,19 @@ import {
   GATEWAY_READ_MAX_LIMIT,
   type DataConnector,
   type DataSourceKind,
+  type GatewayCreateColumnResponse,
+  type GatewayCreateCustomerResponse,
   type GatewayErrorCode,
   type GatewayHealthResponse,
   type GatewayReadOptions,
+  type GatewayResolveCustomerResponse,
   type GatewaySourceDiscoverResponse,
+  type GatewaySourceFieldsResponse,
   type GatewaySourceMetadataResponse,
   type GatewaySourceReadResponse,
   type GatewaySourceSearchResponse,
+  type GatewayWriteCustomerFieldsResponse,
+  type NewCustomerColumnType,
   type ResourceHandle,
 } from '@dpdp/shared';
 import { AGENT_VERSION } from '../version';
@@ -153,6 +159,19 @@ export class FilesystemConnector implements DataConnector {
     return { resourceKind: 'file', sizeBytes: size, estimatedRowCount: null };
   }
 
+  /**
+   * Phase 3G-1: the header row only — STRUCTURE, never a data row. `maxRows: 0`
+   * makes the parser return an empty `rows` array; only `headers` is read. A
+   * CSV/XLSX header carries no declared type, so every field reports 'text' —
+   * this is a header list, not a schema-inference engine.
+   */
+  async listFields(handle: string): Promise<GatewaySourceFieldsResponse> {
+    const real = this.resolve(handle);
+    const buffer = readFileSync(real);
+    const parsed = extname(real).toLowerCase() === '.xlsx' ? parseXlsx(buffer, 0) : parseCsv(buffer, 0);
+    return { fields: parsed.headers.map((name) => ({ name, type: 'text', nullable: true })) };
+  }
+
   async read(handle: string, opts: GatewayReadOptions = {}): Promise<GatewaySourceReadResponse> {
     const real = this.resolve(handle);
     const size = statSync(real).size;
@@ -171,6 +190,33 @@ export class FilesystemConnector implements DataConnector {
       nextCursor: more ? String(start + limit) : null,
       truncated: parsed.truncated || more,
     };
+  }
+
+  // ===========================================================================
+  // Phase 3G-2 — customer resolution, controlled write/create, column creation.
+  //
+  // Unsupported for CSV/XLSX in this phase: none of these can be safely
+  // performed on a flat file without a full rewrite of it, which is out of
+  // scope here (see the createColumn requirement: "do NOT attempt to modify
+  // the file schema automatically... clearly tell the client the column must
+  // be added externally"). Every one fails closed with the same honest code,
+  // rather than silently rewriting a customer's file.
+  // ===========================================================================
+
+  async resolveCustomer(_handle: string, _identityValue: string): Promise<GatewayResolveCustomerResponse> {
+    throw new ConnectorError('UNSUPPORTED_SOURCE');
+  }
+
+  async writeCustomerFields(_customerRef: string, _fields: Record<string, string>): Promise<GatewayWriteCustomerFieldsResponse> {
+    throw new ConnectorError('UNSUPPORTED_SOURCE');
+  }
+
+  async createCustomer(_handle: string, _identityValue: string, _fields: Record<string, string>): Promise<GatewayCreateCustomerResponse> {
+    throw new ConnectorError('UNSUPPORTED_SOURCE');
+  }
+
+  async createColumn(_handle: string, _columnName: string, _columnType: NewCustomerColumnType): Promise<GatewayCreateColumnResponse> {
+    throw new ConnectorError('UNSUPPORTED_SOURCE');
   }
 }
 

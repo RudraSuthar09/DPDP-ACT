@@ -1,5 +1,22 @@
 import { BadRequestException } from '@nestjs/common';
-import { DATA_SOURCE_KINDS, type DataSourceKind } from '@dpdp/shared';
+import { DATA_SOURCE_KINDS, type DataSourceKind, type GatewayAuditAction } from '@dpdp/shared';
+
+/**
+ * Phase 3G-2: the ONLY Gateway audit actions this central endpoint may record —
+ * a strict allowlist, not the full GatewayAuditAction union (which also
+ * includes session/source actions this endpoint has nothing to do with). Every
+ * one of these is a POST-HOC, metadata-only fact: the actual Gateway operation
+ * (customer resolve/write/create, column create) already completed entirely
+ * within the client environment before the browser ever calls this.
+ */
+const GATEWAY_CUSTOMER_EVENT_ACTIONS = [
+  'gateway.customer.resolved',
+  'gateway.customer.updated',
+  'gateway.customer.created',
+  'gateway.customer.write_failed',
+  'gateway.column.created',
+] as const satisfies readonly GatewayAuditAction[];
+export type GatewayCustomerEventAction = (typeof GATEWAY_CUSTOMER_EVENT_ACTIONS)[number];
 
 /**
  * Request parsing for /data-sources — hand-written and total (same style as the
@@ -69,6 +86,37 @@ export function parseTombstoneReason(body: unknown): { reason: string | null } {
 }
 
 /**
+ * Phase 3G-1: the identity-column config body: `{ identityColumn: string|null }`.
+ * A column NAME only — validated as a plausible identifier, never treated as
+ * (and never triggering) a lookup. null clears the configuration.
+ */
+export function parseIdentityColumn(body: unknown): { identityColumn: string | null } {
+  const obj = asObject(body);
+  const value = obj['identityColumn'];
+  if (value === null) return { identityColumn: null };
+  if (typeof value !== 'string') throw new BadRequestException('identityColumn must be a string or null.');
+  return { identityColumn: parseColumnIdentifier(value, 'identityColumn') };
+}
+
+/**
+ * A strict, conservative column-identifier validator: letters/digits/underscore,
+ * must start with a letter or underscore, 1-63 chars (Postgres identifier limit).
+ * Used everywhere a client-supplied "this is a column name" string is accepted
+ * (identity column, mapped column, new-column name) — never for a value, never
+ * for SQL construction here (the Gateway re-validates and quote-escapes on the
+ * connector side; this is the edge-level shape check).
+ */
+export function parseColumnIdentifier(value: string, field: string): string {
+  const trimmed = value.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(trimmed)) {
+    throw new BadRequestException(
+      `${field} must be a valid column identifier (letters, digits, underscore; starting with a letter or underscore).`,
+    );
+  }
+  return trimmed;
+}
+
+/**
  * The raw-access AUDIT body. This endpoint records that a Mode-B raw view
  * happened, for accountability — it takes METADATA ONLY. The only field is a
  * row COUNT (a number, already considered safe under the audit policy — same
@@ -91,6 +139,38 @@ export function parseRawAccess(body: unknown): { rowCount: number } {
     }
   }
   return { rowCount };
+}
+
+/**
+ * Phase 3G-2: record a Gateway customer/column event centrally — METADATA
+ * ONLY. `action` must be one of the fixed allowlist above (never an arbitrary
+ * string the caller invents); `rowCount` is an optional non-negative integer.
+ * Explicitly refuses anything that looks like an identity value, a field
+ * value, or a customer reference — this endpoint's entire job is to record
+ * that something happened, never what the value was.
+ */
+export function parseGatewayEvent(body: unknown): { action: GatewayCustomerEventAction; rowCount?: number } {
+  const obj = asObject(body);
+  const action = obj['action'];
+  if (typeof action !== 'string' || !(GATEWAY_CUSTOMER_EVENT_ACTIONS as readonly string[]).includes(action)) {
+    throw new BadRequestException(`action must be one of: ${GATEWAY_CUSTOMER_EVENT_ACTIONS.join(', ')}.`);
+  }
+  for (const forbidden of ['identityValue', 'fields', 'customerRef', 'value', 'values', 'row', 'rows', 'columnValue']) {
+    if (forbidden in obj) {
+      throw new BadRequestException(
+        `The Gateway event endpoint accepts metadata only (action, rowCount). It must never receive "${forbidden}".`,
+      );
+    }
+  }
+  let rowCount: number | undefined;
+  if (obj['rowCount'] !== undefined) {
+    const value = obj['rowCount'];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+      throw new BadRequestException('rowCount must be a non-negative integer.');
+    }
+    rowCount = value;
+  }
+  return { action: action as GatewayCustomerEventAction, rowCount };
 }
 
 // --- helpers ---------------------------------------------------------------

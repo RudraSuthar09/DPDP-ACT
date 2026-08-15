@@ -131,6 +131,32 @@ describe('Phase 3D — FilesystemConnector (CSV + XLSX + folder)', () => {
     }
   });
 
+  describe('Phase 3G-1 — listFields (header-only field discovery, no data rows)', () => {
+    it('CSV: returns the header row as field names, and NO data row/value', async () => {
+      const c = connector();
+      const { handles } = await c.discover();
+      const csv = handles.find((h) => h.descriptor.label === 'customers.csv')!;
+      const res = await c.listFields(csv.handle);
+      expect(res.fields.map((f) => f.name)).toEqual(['Name', 'Aadhaar', 'Email']);
+      expect(res.fields.every((f) => f.type === 'text' && f.nullable === true)).toBe(true);
+      // the sentinel customer VALUE must never appear in field discovery output
+      expect(JSON.stringify(res)).not.toContain(SENTINEL);
+    });
+
+    it('XLSX: returns the header row only', async () => {
+      const c = connector();
+      const { handles } = await c.discover();
+      const xlsx = handles.find((h) => h.descriptor.label === 'data.xlsx')!;
+      const res = await c.listFields(xlsx.handle);
+      expect(res.fields.map((f) => f.name)).toEqual(['Name', 'PAN']);
+      expect(JSON.stringify(res)).not.toContain('ABCDE1234F'); // no PAN value leaked
+    });
+
+    it('an invalid handle fails closed', async () => {
+      await expect(connector().listFields('bogus-handle')).rejects.toMatchObject({ code: 'FILE_NOT_FOUND' });
+    });
+  });
+
   it('healthCheck passes for a reachable root', async () => {
     expect(await connector().healthCheck()).toMatchObject({ status: 'ok' });
   });

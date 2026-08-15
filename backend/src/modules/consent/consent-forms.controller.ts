@@ -6,7 +6,9 @@ import { ConsentFormsService } from './consent-forms.service';
 import {
   parseActiveFlag,
   parseAddRowInput,
+  parseSaveCustomerField,
   parseSaveFormInput,
+  parseSetFormSource,
   parseUpdateRowInput,
 } from './consent-forms.dto';
 
@@ -53,6 +55,39 @@ export class ConsentFormsController {
   @Audited('consent.form.active_toggled')
   async setActive(@Param('id') id: string, @Body() body: unknown) {
     return this.forms.setActive(id, parseActiveFlag(body, 'isActive'));
+  }
+
+  /** Phase 3G-1: explicitly associate (or clear, with sourceId: null) this
+   *  form's data source. Never automatic. */
+  @Patch(':id/source')
+  @Roles(...MANAGE)
+  @Audited('consent.form.source_set')
+  async setSource(@Param('id') id: string, @Body() body: unknown) {
+    return this.forms.setFormSource(id, parseSetFormSource(body).sourceId);
+  }
+
+  // --- customer-data fields (Phase 3G-1: configuration only) -----------------
+
+  @Post(':id/customer-fields')
+  @Roles(...MANAGE)
+  @Audited('consent.form.customer_field_added')
+  @HttpCode(HttpStatus.CREATED)
+  async addCustomerField(@Param('id') id: string, @Body() body: unknown) {
+    return this.forms.addCustomerField(id, parseSaveCustomerField(body));
+  }
+
+  @Put(':id/customer-fields/:fieldId')
+  @Roles(...MANAGE)
+  @Audited('consent.form.customer_field_updated')
+  async updateCustomerField(@Param('id') id: string, @Param('fieldId') fieldId: string, @Body() body: unknown) {
+    return this.forms.updateCustomerField(id, fieldId, parseSaveCustomerField(body));
+  }
+
+  @Delete(':id/customer-fields/:fieldId')
+  @Roles(...MANAGE)
+  @Audited('consent.form.customer_field_removed')
+  async removeCustomerField(@Param('id') id: string, @Param('fieldId') fieldId: string) {
+    return this.forms.removeCustomerField(id, fieldId);
   }
 
   // --- rows ------------------------------------------------------------------
