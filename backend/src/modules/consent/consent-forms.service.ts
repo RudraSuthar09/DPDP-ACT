@@ -62,13 +62,17 @@ export class ConsentFormsService {
   }
 
   async updateForm(formId: string, input: SaveFormInput) {
-    const form = await this.repo.updateForm(formId, { name: input.name, description: input.description });
+    const form = await this.repo.updateForm(formId, {
+      name: input.name,
+      description: input.description,
+      noticeText: input.noticeText,
+    });
     if (!form) throw new NotFoundException('Consent form not found.');
     this.audit.annotate({
       targetType: 'consent_form',
       targetId: formId,
-      reason: `Consent form renamed to "${input.name}".`,
-      afterState: { name: input.name },
+      reason: `Consent form "${input.name}" updated.`,
+      afterState: { name: input.name, hasNoticeText: !!input.noticeText },
     });
     return this.getForm(formId);
   }
@@ -110,6 +114,7 @@ export class ConsentFormsService {
       id: form.id,
       name: form.name,
       description: form.description,
+      noticeText: form.notice_text,
       slug: form.slug,
       isActive: form.is_active,
       /** Phase 3G-1: the data source this form may map fields into. NULL for an
@@ -298,6 +303,7 @@ export class ConsentFormsService {
       formId: form.id,
       name: form.name,
       description: form.description,
+      noticeText: form.notice_text,
       rows: rows.map(toPublicRow),
     }));
   }
@@ -313,7 +319,7 @@ export class ConsentFormsService {
     if (rows.length === 0) {
       throw new NotFoundException('This form has no active rows.');
     }
-    return { formId: form.id, name: form.name, description: form.description, rows: rows.map(toPublicRow) };
+    return { formId: form.id, name: form.name, description: form.description, noticeText: form.notice_text, rows: rows.map(toPublicRow) };
   }
 
   async submitWidget(formId: string, input: WidgetSubmissionInput) {

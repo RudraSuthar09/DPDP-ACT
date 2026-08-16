@@ -5,6 +5,7 @@ import { Audited } from '../audit/audited.decorator';
 import { DataSourceService } from './data-source.service';
 import {
   parseCreateDataSource,
+  parseCustomerWriteConfig,
   parseGatewayEvent,
   parseIdentityColumn,
   parseModeToggle,
@@ -95,6 +96,22 @@ export class DataSourceController {
   async setIdentityColumn(@Param('id') id: string, @Body() body: unknown) {
     const { identityColumn } = parseIdentityColumn(body);
     return this.sources.setIdentityColumn(id, identityColumn);
+  }
+
+  /**
+   * Phase 3H-1: the CENTRAL customer-write configuration — whether creation is
+   * allowed and which column NAMES are writable. Column names only, never
+   * values; never auto-populated from discovered columns. This is the
+   * platform's own source of truth, consulted by staff-assisted flows before
+   * even attempting a write — the Gateway agent's own local config remains a
+   * separate, independently-enforced check (defence in depth).
+   */
+  @Patch(':id/customer-write-config')
+  @Roles(...MANAGE)
+  @Audited('datasource.source.customer_write_config_set')
+  async setCustomerWriteConfig(@Param('id') id: string, @Body() body: unknown) {
+    const { allowCustomerCreate, writableColumns } = parseCustomerWriteConfig(body);
+    return this.sources.setCustomerWriteConfig(id, allowCustomerCreate, writableColumns);
   }
 
   /**

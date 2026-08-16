@@ -124,6 +124,7 @@ describe('Phase 1 — data sources are metadata/config only; raw access fails cl
       'recordGatewayEvent',
       'recordRawAccess',
       'remove',
+      'setCustomerWriteConfig',
       'setIdentityColumn',
       'setMode',
       'update',

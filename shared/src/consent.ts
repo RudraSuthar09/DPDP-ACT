@@ -96,6 +96,26 @@ export interface ConsentStatusAsOf {
 export const CONSENT_FIELD_DESTINATIONS = ['consent_record', 'customer_field', 'both'] as const;
 export type ConsentFieldDestination = (typeof CONSENT_FIELD_DESTINATIONS)[number];
 
+/**
+ * Form field types the builder offers. Purely a label/presentation concept —
+ * choosing one never infers a database column or a meaning (I1/no-inference).
+ *
+ * `document_upload` and `signature` are real field types a client can add to a
+ * form, but there is currently NO supported destination for their actual
+ * VALUE anywhere in this platform — no central file/blob storage exists (by
+ * design, I1/R6), and the Gateway's controlled write contract carries only
+ * short string values, never binary. See CONSENT_FIELD_TYPES_WITHOUT_STORAGE:
+ * the DTO layer enforces that these two types can only ever be configured
+ * with `destination: 'consent_record'` (i.e. not persisted to a customer
+ * column) until a future, separately-approved storage adapter exists — at
+ * which point loosening this is a DTO change, not a migration.
+ */
+export const CONSENT_FORM_FIELD_TYPES = ['text', 'number', 'date', 'document_upload', 'signature', 'checkbox'] as const;
+export type ConsentFormFieldType = (typeof CONSENT_FORM_FIELD_TYPES)[number];
+
+/** Field types with no supported customer-column storage destination (yet). */
+export const CONSENT_FIELD_TYPES_WITHOUT_STORAGE = ['document_upload', 'signature'] as const satisfies readonly ConsentFormFieldType[];
+
 /** A form's customer-data field configuration — never a submitted value. */
 export interface ConsentFormCustomerField {
   id: string;

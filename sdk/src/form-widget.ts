@@ -32,6 +32,9 @@ interface ActiveForm {
   formId: string;
   name: string;
   description: string | null;
+  /** Client-authored Notice/Terms & Conditions, shown once above the form's
+   *  consent items. Plain text the client wrote — never generated here. */
+  noticeText: string | null;
   rows: PublicRow[];
 }
 
@@ -105,6 +108,13 @@ export class DPDPConsentForms {
       const d = document.createElement('p');
       d.textContent = form.description;
       wrap.appendChild(d);
+    }
+    if (form.noticeText) {
+      const notice = document.createElement('p');
+      notice.setAttribute('data-dpdp-notice', 'true');
+      notice.style.whiteSpace = 'pre-wrap';
+      notice.textContent = form.noticeText;
+      wrap.appendChild(notice);
     }
 
     const formEl = document.createElement('form');

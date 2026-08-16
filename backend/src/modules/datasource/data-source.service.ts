@@ -179,6 +179,35 @@ export class DataSourceService {
     return toResponse(row);
   }
 
+  /**
+   * Phase 3H-1: record the CENTRAL customer-write configuration — whether
+   * creation is allowed and which column NAMES are writable. Config ONLY: a
+   * boolean and a list of names, explicitly chosen by staff. This does not
+   * perform a write and never touches a customer value. The Gateway agent's
+   * own local config is separate and still independently enforced — this is
+   * defence in depth, not a replacement.
+   */
+  async setCustomerWriteConfig(
+    id: string,
+    allowCustomerCreate: boolean,
+    writableColumns: readonly string[],
+  ): Promise<DataSource> {
+    const before = await this.repo.findOne(id);
+    if (!before || before.status !== 'active') {
+      throw new NotFoundException('Data source not found or has been removed.');
+    }
+    const row = await this.repo.setCustomerWriteConfig(id, allowCustomerCreate, writableColumns);
+    if (!row) throw new NotFoundException('Data source not found or has been removed.');
+    this.audit.annotate({
+      targetType: 'data_source',
+      targetId: id,
+      reason: `Data source "${row.name}" customer-write config set (allowCustomerCreate=${allowCustomerCreate}, writableColumns=${writableColumns.length}).`,
+      beforeState: { allowCustomerCreate: before.allow_customer_create, writableColumns: before.writable_columns },
+      afterState: { allowCustomerCreate, writableColumns },
+    });
+    return toResponse(row);
+  }
+
   async remove(id: string, reason: string | null): Promise<DataSource> {
     const row = await this.repo.tombstone(id, reason, this.tenantContext.getOrThrow().userId);
     if (!row) throw new NotFoundException('Data source not found or already removed.');
@@ -205,6 +234,8 @@ function toResponse(row: DataSourceRow): DataSource {
     status: row.status,
     connectionHint: row.connection_hint,
     identityColumn: row.identity_column,
+    allowCustomerCreate: row.allow_customer_create,
+    writableColumns: row.writable_columns,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     modeLastChangedAt: row.mode_last_changed_at ? row.mode_last_changed_at.toISOString() : null,

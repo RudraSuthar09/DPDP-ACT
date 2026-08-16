@@ -51,6 +51,20 @@ export interface DataSource {
    * later needs "which existing customer is this" (Consent/Grievance/DSR/Breach).
    */
   identityColumn: string | null;
+  /**
+   * Phase 3H-1: whether DPDP-mediated flows may create a new customer record
+   * in this source when identity resolution finds no match. Defaults false
+   * (fail closed). The Gateway agent's own local config is a SEPARATE,
+   * independently-enforced check — this is the central source of truth
+   * consulted before even attempting a write.
+   */
+  allowCustomerCreate: boolean;
+  /**
+   * Phase 3H-1: the explicit, client-chosen allowlist of column NAMES (never
+   * values) DPDP-mediated flows may write. Empty until a human explicitly adds
+   * one — never auto-populated from discovered columns/suggestions.
+   */
+  writableColumns: string[];
   createdAt: string;
   updatedAt: string;
   modeLastChangedAt: string | null;

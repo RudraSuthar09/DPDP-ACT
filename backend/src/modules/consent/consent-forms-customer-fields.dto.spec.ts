@@ -8,7 +8,10 @@ import { parseSaveCustomerField, parseSetFormSource } from './consent-forms.dto'
  * here executes SQL — this is a pure request-shape validator.
  */
 describe('Phase 3G-1 — parseSaveCustomerField: explicit mapping only, no auto-mapping', () => {
-  const base = { label: 'Aadhaar Card', fieldType: 'document_upload', required: true };
+  // fieldType is 'text' here deliberately — these tests are about MAPPING
+  // semantics (existing/new column, destination honesty), not about field-type
+  // storage restrictions, which have their own describe block below.
+  const base = { label: 'Aadhaar Card', fieldType: 'text', required: true };
 
   it('a client explicitly selecting an EXISTING column is stored as given', () => {
     const out = parseSaveCustomerField({
@@ -127,6 +130,97 @@ describe('Phase 3G-1 — parseSaveCustomerField: explicit mapping only, no auto-
     });
     expect(out.destination).toBe('both');
     expect(out.mappedColumn).toBe('aadhaar_number');
+  });
+});
+
+describe('Phase 3 (Consent Form Builder Unification) — fieldType allowlist + document_upload/signature storage restriction', () => {
+  it('accepts every type in the allowlist', () => {
+    for (const fieldType of ['text', 'number', 'date', 'document_upload', 'signature', 'checkbox']) {
+      const out = parseSaveCustomerField({
+        label: 'A field',
+        fieldType,
+        required: false,
+        destination: 'consent_record',
+        mappedColumn: null,
+        newColumnName: null,
+        newColumnType: null,
+      });
+      expect(out.fieldType).toBe(fieldType);
+    }
+  });
+
+  it('rejects a fieldType outside the allowlist', () => {
+    expect(() =>
+      parseSaveCustomerField({
+        label: 'A field',
+        fieldType: 'not_a_real_type',
+        required: false,
+        destination: 'consent_record',
+        mappedColumn: null,
+        newColumnName: null,
+        newColumnType: null,
+      }),
+    ).toThrow(BadRequestException);
+  });
+
+  it.each(['document_upload', 'signature'])(
+    '%s cannot be mapped to an existing customer column — no supported storage destination yet',
+    (fieldType) => {
+      expect(() =>
+        parseSaveCustomerField({
+          label: 'Aadhaar Document',
+          fieldType,
+          required: false,
+          destination: 'customer_field',
+          mappedColumn: 'aadhaar_document',
+          newColumnName: null,
+          newColumnType: null,
+        }),
+      ).toThrow(BadRequestException);
+    },
+  );
+
+  it.each(['document_upload', 'signature'])('%s cannot be configured with destination "both" either', (fieldType) => {
+    expect(() =>
+      parseSaveCustomerField({
+        label: 'Signature',
+        fieldType,
+        required: false,
+        destination: 'both',
+        mappedColumn: 'signature_data',
+        newColumnName: null,
+        newColumnType: null,
+      }),
+    ).toThrow(BadRequestException);
+  });
+
+  it.each(['document_upload', 'signature'])('%s IS allowed as consent-only (destination: consent_record)', (fieldType) => {
+    const out = parseSaveCustomerField({
+      label: 'Aadhaar Document',
+      fieldType,
+      required: false,
+      destination: 'consent_record',
+      mappedColumn: null,
+      newColumnName: null,
+      newColumnType: null,
+    });
+    expect(out.fieldType).toBe(fieldType);
+    expect(out.destination).toBe('consent_record');
+  });
+
+  it('ordinary text/number/date fields are UNAFFECTED by the storage restriction', () => {
+    for (const fieldType of ['text', 'number', 'date']) {
+      const out = parseSaveCustomerField({
+        label: 'Mobile Number',
+        fieldType,
+        required: false,
+        destination: 'customer_field',
+        mappedColumn: 'mobile',
+        newColumnName: null,
+        newColumnType: null,
+      });
+      expect(out.mappedColumn).toBe('mobile');
+    }
   });
 });
 

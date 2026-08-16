@@ -8,6 +8,9 @@ export interface ConsentFormRow {
   slug: string | null;
   name: string;
   description: string | null;
+  /** Phase 3 (Consent Form Builder Unification): client-authored Notice/Terms
+   *  text, shown once above the form. NULL until the client adds one. */
+  notice_text: string | null;
   is_active: boolean;
   /** Phase 3G-1: the client data source this form may map customer-data fields
    *  into. NULL for ordinary SaaS/consent-only forms — unchanged behaviour. */
@@ -96,11 +99,14 @@ export class ConsentFormsRepository {
     });
   }
 
-  updateForm(formId: string, input: { name: string; description: string | null }): Promise<ConsentFormRow | null> {
+  updateForm(
+    formId: string,
+    input: { name: string; description: string | null; noticeText: string | null },
+  ): Promise<ConsentFormRow | null> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<ConsentFormRow>(
-        `UPDATE consent_forms SET name = $2, description = $3, updated_at = now() WHERE id = $1 RETURNING *`,
-        [formId, input.name, input.description],
+        `UPDATE consent_forms SET name = $2, description = $3, notice_text = $4, updated_at = now() WHERE id = $1 RETURNING *`,
+        [formId, input.name, input.description, input.noticeText],
       );
       return rows[0] ?? null;
     });

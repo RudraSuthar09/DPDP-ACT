@@ -11,6 +11,9 @@ interface PublicFormDefinition {
   formId: string;
   name: string;
   description: string | null;
+  /** Client-authored Notice/Terms & Conditions, shown once above the form's
+   *  consent items. Plain text the client wrote — never generated here. */
+  noticeText: string | null;
   rows: PublicFormRow[];
 }
 
@@ -35,6 +38,7 @@ export default async function FormPortalPage({ params }: { params: Promise<{ slu
         <div className="portal-kicker">Consent form</div>
         <h1>{def.name}</h1>
         {def.description && <p className="muted">{def.description}</p>}
+        {def.noticeText && <p style={{ whiteSpace: 'pre-wrap' }}>{def.noticeText}</p>}
         <FormIntake slug={slug} rows={def.rows} />
       </div>
     </div>

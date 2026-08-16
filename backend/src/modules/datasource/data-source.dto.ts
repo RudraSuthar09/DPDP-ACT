@@ -99,6 +99,37 @@ export function parseIdentityColumn(body: unknown): { identityColumn: string | n
 }
 
 /**
+ * Phase 3H-1: the customer-write config body:
+ * `{ allowCustomerCreate: boolean, writableColumns: string[] }`. Column NAMES
+ * only, never values — validated as identifiers, deduplicated, capped. This is
+ * the CENTRAL configuration surface (identity_column's sibling); the Gateway
+ * agent's own local config is separate and still independently enforced.
+ */
+export function parseCustomerWriteConfig(body: unknown): { allowCustomerCreate: boolean; writableColumns: string[] } {
+  const obj = asObject(body);
+  const allowCustomerCreate = obj['allowCustomerCreate'];
+  if (typeof allowCustomerCreate !== 'boolean') {
+    throw new BadRequestException('allowCustomerCreate must be a boolean.');
+  }
+  const raw = obj['writableColumns'];
+  if (!Array.isArray(raw)) {
+    throw new BadRequestException('writableColumns must be an array of column names.');
+  }
+  if (raw.length > 50) {
+    throw new BadRequestException('writableColumns supports at most 50 columns.');
+  }
+  const seen = new Set<string>();
+  const writableColumns = raw.map((c) => {
+    if (typeof c !== 'string') throw new BadRequestException('writableColumns must contain only strings.');
+    const id = parseColumnIdentifier(c, 'writableColumns[]');
+    if (seen.has(id)) throw new BadRequestException(`writableColumns contains a duplicate: "${id}".`);
+    seen.add(id);
+    return id;
+  });
+  return { allowCustomerCreate, writableColumns };
+}
+
+/**
  * A strict, conservative column-identifier validator: letters/digits/underscore,
  * must start with a letter or underscore, 1-63 chars (Postgres identifier limit).
  * Used everywhere a client-supplied "this is a column name" string is accepted

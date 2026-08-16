@@ -13,6 +13,12 @@ export interface DataSourceRow {
   /** Phase 3G-1: the client-chosen COLUMN NAME that identifies a customer in
    *  this source. Never a value; NULL until explicitly configured. */
   identity_column: string | null;
+  /** Phase 3H-1: whether DPDP-mediated flows may create a new customer record
+   *  in this source. Defaults false (fail closed). */
+  allow_customer_create: boolean;
+  /** Phase 3H-1: the explicit, client-chosen allowlist of column NAMES DPDP-
+   *  mediated flows may write. Never values. Empty by default. */
+  writable_columns: string[];
   gateway_binding_ref: string | null;
   mode_last_changed_at: Date | null;
   mode_last_changed_by: string | null;
@@ -120,6 +126,28 @@ export class DataSourceRepository {
           WHERE id = $1 AND status = 'active'
           RETURNING *`,
         [id, identityColumn],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  /**
+   * Phase 3H-1: record the client-chosen customer-write configuration —
+   * whether creation is allowed and which column NAMES (never values) are
+   * writable. Config only, same discipline as setIdentityColumn.
+   */
+  setCustomerWriteConfig(
+    id: string,
+    allowCustomerCreate: boolean,
+    writableColumns: readonly string[],
+  ): Promise<DataSourceRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<DataSourceRow>(
+        `UPDATE data_sources
+            SET allow_customer_create = $2, writable_columns = $3
+          WHERE id = $1 AND status = 'active'
+          RETURNING *`,
+        [id, allowCustomerCreate, writableColumns],
       );
       return rows[0] ?? null;
     });

@@ -1,5 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
-import { CONSENT_FIELD_DESTINATIONS, type ConsentFieldDestination } from '@dpdp/shared';
+import {
+  CONSENT_FIELD_DESTINATIONS,
+  CONSENT_FIELD_TYPES_WITHOUT_STORAGE,
+  CONSENT_FORM_FIELD_TYPES,
+  type ConsentFieldDestination,
+} from '@dpdp/shared';
 
 /** Column TYPES a "create new column" request may declare (3G-1: config only —
  *  nothing is created yet; this is the allowlist the eventual 3G-2 ALTER will
@@ -30,6 +35,9 @@ function parseColumnIdentifier(value: string, field: string): string {
 export interface SaveFormInput {
   name: string;
   description: string | null;
+  /** Client-authored Notice/Terms & Conditions, shown once above the form.
+   *  Plain content the client owns — never generated here. */
+  noticeText: string | null;
 }
 
 export interface AddRowInput {
@@ -67,6 +75,7 @@ export function parseSaveFormInput(body: unknown): SaveFormInput {
   return {
     name: requireString(obj, 'name', { min: 2, max: 200 }),
     description: optionalStringOrNull(obj, 'description', { max: 2000 }),
+    noticeText: optionalStringOrNull(obj, 'noticeText', { max: 20000 }),
   };
 }
 
@@ -154,6 +163,15 @@ export interface SaveCustomerFieldDtoInput {
  * the DB CHECK constraint enforces the same rule, this just fails fast with a
  * clear message. `mappedColumn` and a `newColumnName` may not both be present
  * (a field is either mapped to an existing column or configured to create one).
+ *
+ * `fieldType` must be one of CONSENT_FORM_FIELD_TYPES. For `document_upload`/
+ * `signature` — real field types with no supported customer-column storage
+ * destination anywhere in this platform today (no central file/blob storage
+ * exists, and the Gateway's write contract is string-only) — `destination`
+ * is rejected unless it is `consent_record` (i.e. not persisted to a customer
+ * column). This is enforced here, not just hidden in the UI, so it cannot be
+ * bypassed by a direct API call. Loosening this later (once a real storage
+ * adapter is approved) is a change to this function, not a migration.
  */
 export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput {
   const obj = asObject(body);
@@ -162,6 +180,16 @@ export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput
     throw new BadRequestException(`destination must be one of: ${CONSENT_FIELD_DESTINATIONS.join(', ')}.`);
   }
   const destination = destinationRaw as ConsentFieldDestination;
+
+  const fieldType = requireString(obj, 'fieldType', { min: 1, max: 64 });
+  if (!(CONSENT_FORM_FIELD_TYPES as readonly string[]).includes(fieldType)) {
+    throw new BadRequestException(`fieldType must be one of: ${CONSENT_FORM_FIELD_TYPES.join(', ')}.`);
+  }
+  if ((CONSENT_FIELD_TYPES_WITHOUT_STORAGE as readonly string[]).includes(fieldType) && destination !== 'consent_record') {
+    throw new BadRequestException(
+      `"${fieldType}" has no supported customer-record storage destination yet — it can only be added as consent-only (not mapped to a customer field).`,
+    );
+  }
 
   const mappedColumn = optionalStringOrNull(obj, 'mappedColumn', { max: 63 });
   const newColumnName = optionalStringOrNull(obj, 'newColumnName', { max: 63 });
@@ -182,7 +210,7 @@ export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput
 
   return {
     label: requireString(obj, 'label', { min: 1, max: 200 }),
-    fieldType: requireString(obj, 'fieldType', { min: 1, max: 64 }),
+    fieldType,
     required: Boolean(obj['required']),
     destination,
     mappedColumn: mappedColumn ? parseColumnIdentifier(mappedColumn, 'mappedColumn') : null,
