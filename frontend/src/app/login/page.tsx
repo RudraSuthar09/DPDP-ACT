@@ -19,14 +19,21 @@ import { MfaEnroll } from '../../components/MfaEnroll';
  * shared with /accept-invite — both flows end the same way: a brand-new
  * account proving its authenticator works for the first time.
  */
-type Step = 'login' | 'register' | 'enroll' | 'verify';
+type Step = 'login' | 'register' | 'license' | 'enroll' | 'verify';
 
 interface LoginResult {
   outcome: 'mfa_required' | 'mfa_enrolment_required';
   challengeToken: string;
 }
+interface IssuedLicense {
+  plan: 'saas' | 'enterprise';
+  deploymentType: 'hosted' | 'client_server';
+  licenseKeyPrefix: string;
+  licenseKey: string;
+}
 interface RegisterResult {
   mfaEnrolmentToken: string;
+  license: IssuedLicense;
 }
 interface Session {
   accessToken: string;
@@ -45,10 +52,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [orgName, setOrgName] = useState('');
   const [ownerName, setOwnerName] = useState('');
+  const [plan, setPlan] = useState<'saas' | 'enterprise'>('saas');
   const [code, setCode] = useState('');
 
   // carried between steps
   const [challengeToken, setChallengeToken] = useState('');
+  const [issuedLicense, setIssuedLicense] = useState<IssuedLicense | null>(null);
 
   const canLogin = email.trim().length > 0 && password.length > 0;
   const canRegister =
@@ -90,10 +99,14 @@ export default function LoginPage() {
       const res = await apiFetch<RegisterResult>('/auth/register', {
         method: 'POST',
         auth: false,
-        body: { organisationName: orgName, ownerName, ownerEmail: email, password },
+        body: { organisationName: orgName, ownerName, ownerEmail: email, password, plan },
       });
       setChallengeToken(res.mfaEnrolmentToken);
-      setStep('enroll');
+      setIssuedLicense(res.license);
+      // Show the license key BEFORE MFA enrolment — it is returned exactly
+      // once, here, and never retrievable again (only its hash/prefix are
+      // persisted). This is the key that activates DPDP's first installation.
+      setStep('license');
     } catch (err) {
       fail(err);
     } finally {
@@ -178,6 +191,15 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
               />
+              <label>Plan</label>
+              <select value={plan} onChange={(e) => setPlan(e.target.value as 'saas' | 'enterprise')}>
+                <option value="saas">SaaS</option>
+                <option value="enterprise">Enterprise</option>
+              </select>
+              <p className="muted" style={{ fontSize: '0.8rem', marginTop: 4 }}>
+                A unique license for this organisation is issued automatically — you&apos;ll use it to
+                activate DPDP on this computer.
+              </p>
               {error && <div className="error">{error}</div>}
               <div style={{ marginTop: 16 }}>
                 <button className="primary" type="submit" disabled={busy || !canRegister}>
@@ -197,6 +219,35 @@ export default function LoginPage() {
                 Back to sign in
               </a>
             </p>
+          </>
+        )}
+
+        {step === 'license' && issuedLicense && (
+          <>
+            <h2>Your license</h2>
+            <p className="notice">
+              Shown once — it is not stored anywhere you can retrieve it again. Save it now; you&apos;ll
+              enter it on DPDP&apos;s activation screen the first time you open this installation.
+            </p>
+            <p className="muted" style={{ marginBottom: 4 }}>
+              Plan: <strong>{issuedLicense.plan === 'enterprise' ? 'Enterprise' : 'SaaS'}</strong>{' '}
+              &middot; Deployment type: <strong>{issuedLicense.deploymentType}</strong>
+            </p>
+            <label>License key</label>
+            <div className="mono panel" style={{ padding: 12, wordBreak: 'break-all' }}>
+              {issuedLicense.licenseKey}
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <button
+                className="primary"
+                onClick={() => {
+                  setIssuedLicense(null);
+                  setStep('enroll');
+                }}
+              >
+                I&apos;ve saved it — continue to MFA setup
+              </button>
+            </div>
           </>
         )}
 

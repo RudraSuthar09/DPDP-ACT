@@ -25,6 +25,7 @@ import {
   parseRefreshSession,
   parseRevokeReason,
   parseSetEndpoint,
+  parseSetInstallation,
 } from './gateway.dto';
 
 const MANAGE = ['owner', 'dpo', 'compliance_officer'] as const;
@@ -112,6 +113,22 @@ export class GatewayController {
   async setEndpoint(@Param('id') id: string, @Body() body: unknown) {
     const { endpoint } = parseSetEndpoint(body);
     return this.gateway.setEndpoint(id, endpoint);
+  }
+
+  /**
+   * Locked architecture §5/§11: link (or clear) the Installation this already-
+   * enrolled Gateway runs inside. Config only — the device's security identity
+   * (public key / device token) is entirely unaffected. Linking to a
+   * `client_server` (Enterprise) installation is capability-gated inside
+   * GatewayService (data-dependent on the target installation).
+   */
+  @Patch('devices/:id/installation')
+  @UseGuards(TenantGuard)
+  @Roles(...MANAGE)
+  @Audited('gateway.device.installation_set')
+  async setInstallation(@Param('id') id: string, @Body() body: unknown) {
+    const { installationId } = parseSetInstallation(body);
+    return this.gateway.setInstallation(id, installationId);
   }
 
   // --- device-facing -------------------------------------------------------

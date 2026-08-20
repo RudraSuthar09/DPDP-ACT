@@ -1,0 +1,29 @@
+node_modules
+**/node_modules
+.pnpm-store
+.git
+.github
+.turbo
+.localdb
+dist
+**/dist
+.next
+**/.next
+coverage
+**/coverage
+# TypeScript incremental/composite build cache. For shared/frontend's
+# composite tsconfigs this lands OUTSIDE dist/ (next to tsconfig.json, e.g.
+# shared/tsconfig.tsbuildinfo) — gitignored already (*.tsbuildinfo), but NOT
+# previously dockerignored. If present on the host, `COPY shared shared`
+# would carry it into the image; tsc then trusts the stale cache, believes
+# its (deleted-by-the-image-not-existing) dist is already up to date, and
+# emits NOTHING — the exact root cause of "Cannot find module '@dpdp/shared'"
+# during `docker compose build backend`. Must never enter a build context.
+*.tsbuildinfo
+**/*.tsbuildinfo
+*.log
+.env
+.env.*
+!.env.example
+.vscode
+.idea

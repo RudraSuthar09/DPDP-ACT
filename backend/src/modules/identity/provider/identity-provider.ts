@@ -69,6 +69,22 @@ export interface RegisterOrganisationInput {
   ownerEmail: string;
   ownerName: string;
   password: string;
+  plan: 'saas' | 'enterprise';
+}
+
+/**
+ * The organisation's own initial license, issued automatically at
+ * registration (locked architecture — every organisation gets its own
+ * license, never a shared global SaaS/Enterprise license). Reuses
+ * LicensingService.issueForTenant, the same issuance path a staff member's
+ * later POST /licenses call goes through — not a second implementation.
+ */
+export interface IssuedRegistrationLicense {
+  plan: 'saas' | 'enterprise';
+  deploymentType: 'hosted' | 'client_server';
+  licenseKeyPrefix: string;
+  /** Shown exactly once, in this response — never persisted, never logged. */
+  licenseKey: string;
 }
 
 export interface RegisteredOrganisation {
@@ -78,6 +94,8 @@ export interface RegisteredOrganisation {
   ownerUserId: string;
   /** Proof of FR-IDN-01's "all five module areas" — returned so the caller can see it. */
   modules: ModuleArea[];
+  /** The license this organisation must use to activate its first DPDP installation. */
+  license: IssuedRegistrationLicense;
   /**
    * The workspace exists but has no session yet: the Owner must enrol MFA before
    * the platform will issue one. This token is the only thing that gets them there.

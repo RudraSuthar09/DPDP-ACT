@@ -31,15 +31,23 @@ export interface RegisterOrganisationBody {
   ownerEmail: string;
   ownerName: string;
   password: string;
+  /** Optional, defaults to 'saas' — an omitted value never breaks an existing
+   *  caller (e.g. the e2e scripts) that predates this field. */
+  plan: 'saas' | 'enterprise';
 }
 
 export function parseRegisterOrganisation(body: unknown): RegisterOrganisationBody {
   const input = asObject(body);
+  const planRaw = input['plan'];
+  if (planRaw !== undefined && planRaw !== 'saas' && planRaw !== 'enterprise') {
+    throw new BadRequestException("plan must be 'saas' or 'enterprise'.");
+  }
   return {
     organisationName: requireString(input, 'organisationName', { min: 2, max: 200 }),
     ownerEmail: requireEmail(input, 'ownerEmail'),
     ownerName: requireString(input, 'ownerName', { min: 1, max: 200 }),
     password: requirePassword(input, 'password'),
+    plan: planRaw === 'enterprise' ? 'enterprise' : 'saas',
   };
 }
 

@@ -37,8 +37,18 @@ export function makeFixture(marker: string): TenantFixture {
   };
 }
 
-/** All tenant-scoped tables the suite seeds and probes. */
-export const TENANT_TABLES = ['organisations', 'inventory_categories', 'consent_purposes'] as const;
+/**
+ * All tenant-scoped tables the suite seeds and probes. `installations` added
+ * for the locked-architecture foundation phase — trivially seedable (no FK
+ * beyond tenant_id, which is auto-defaulted). `licenses` is deliberately NOT
+ * here: it has a hard NOT NULL FK to `users.id` (created_by) that this
+ * minimal-fixture harness has no user to satisfy; its RLS enabled/forced/
+ * policy shape is still covered automatically by rls-preconditions.isolation-
+ * spec.ts (which auto-discovers every tenant_id table), and its cross-tenant
+ * behaviour is covered by scripts/deployment-topologies-e2e.mjs, which
+ * creates real users through the real HTTP registration flow.
+ */
+export const TENANT_TABLES = ['organisations', 'inventory_categories', 'consent_purposes', 'installations'] as const;
 
 export function getAppPool(): Pool {
   const connectionString = process.env.APP_DATABASE_URL;
@@ -95,6 +105,11 @@ export async function seedTenant(pool: Pool, t: TenantFixture): Promise<void> {
         name,
       ]);
     }
+    await client.query(
+      `INSERT INTO installations (tenant_id, plan, deployment_type, version)
+       VALUES ($1, 'enterprise', 'client_server', '1.0.0-test')`,
+      [t.id],
+    );
   });
 }
 

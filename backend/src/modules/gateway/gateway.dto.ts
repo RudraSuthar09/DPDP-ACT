@@ -156,6 +156,19 @@ export function parseSetEndpoint(body: unknown): { endpoint: string | null } {
   return { endpoint: trimmed };
 }
 
+/**
+ * Locked architecture §5/§11: link (or clear) the browser-facing Gateway's
+ * Installation. `installationId: null` clears the link — same null-clears
+ * convention as parseSetEndpoint.
+ */
+export function parseSetInstallation(body: unknown): { installationId: string | null } {
+  const obj = asObject(body);
+  rejectSecretFields(obj);
+  const value = obj['installationId'];
+  if (value === null || value === undefined) return { installationId: null };
+  return { installationId: requireUuid(obj, 'installationId') };
+}
+
 // --- helpers (same shape as data-source.dto) --------------------------------
 
 function asObject(body: unknown): Record<string, unknown> {

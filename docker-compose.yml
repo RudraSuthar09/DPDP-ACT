@@ -1,0 +1,141 @@
+# DPDP Platform — local development Docker Compose (locked architecture §13/§14).
+#
+# Default profile (no --profile flag): backend + worker + frontend + agent,
+# all pointed at whatever DATABASE_URL/APP_DATABASE_URL is in `.env` — today
+# that is the hosted Supabase dev instance (see .env's POSTGRES_HOST). This is
+# deliberate: dev already works against Supabase, and this Compose file does
+# not blindly replace that with a container (per §14's own guidance).
+#
+# Optional `local-db` profile: a real local Postgres 16 container, for fully
+# offline/CI-style development. Enabling it does NOT automatically rewire
+# backend/worker — see docs/environment-variables.md for how to point
+# DATABASE_URL/APP_DATABASE_URL at it (the roles it needs are created
+# idempotently by the existing bootstrap migration, same as
+# scripts/local-db.mjs's embedded-postgres path).
+#
+# No Kubernetes here (§13) and no cloud-provider-specific config (§17) — this
+# is plain Compose so it stays portable to ECS/App Runner/Container Apps/AKS
+# later without rewriting anything here.
+#
+# Secrets: nothing is hardcoded in this file. backend/worker read `.env`
+# (gitignored, never committed) via `env_file` — they're the services that
+# actually need APP_DATABASE_URL/JWT_SECRET/etc. `frontend` and `agent` get
+# only the specific, non-secret variables they each need, listed explicitly
+# below (least privilege — see each service's own comment). The optional
+# `postgres` service requires POSTGRES_PASSWORD from `.env` and refuses to
+# start without it, rather than falling back to a value written here.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: dpdp-backend:local
+    container_name: dpdp-backend
+    env_file: .env
+    environment:
+      NODE_ENV: development
+    ports:
+      - '${API_PORT:-3001}:3001'
+    networks:
+      - dpdp-net
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: dpdp-backend:local
+    container_name: dpdp-worker
+    command: ['node', 'dist/worker.js']
+    env_file: .env
+    environment:
+      NODE_ENV: development
+    # No ports: the worker has no HTTP listener (pg-boss job consumer only)
+    # and no HEALTHCHECK for the same reason (the image's HEALTHCHECK probes
+    # an HTTP port the worker never opens).
+    healthcheck:
+      disable: true
+    networks:
+      - dpdp-net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    image: dpdp-frontend:local
+    container_name: dpdp-frontend
+    # No env_file here, deliberately: the frontend is a static Next.js server
+    # with no legitimate use for anything in .env at runtime (its one real
+    # config value, NEXT_PUBLIC_API_URL, is baked in at BUILD time via the
+    # arg above). Least privilege — it never sees APP_DATABASE_URL, JWT_SECRET,
+    # or any other backend secret.
+    environment:
+      NODE_ENV: production
+    ports:
+      - '${WEB_PORT:-3000}:3000'
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - dpdp-net
+    restart: unless-stopped
+
+  # The Gateway/Agent process (locked architecture §5). Runs as a SEPARATE
+  # process here too — never merged into the backend container — matching
+  # how it already runs outside Docker. GATEWAY_BIND_HOST is explicitly set
+  # to 0.0.0.0 so other containers/the host browser can reach it; the agent
+  # itself detects this and logs its existing non-loopback warning (nothing
+  # about that behavior changes for Docker).
+  agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    image: dpdp-agent:local
+    container_name: dpdp-agent
+    environment:
+      GATEWAY_BIND_HOST: 0.0.0.0
+      GATEWAY_BIND_PORT: ${GATEWAY_BIND_PORT:-7071}
+      GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-http://localhost:3000}
+      GATEWAY_CONTROL_PLANE_URL: ${GATEWAY_CONTROL_PLANE_URL:-}
+    ports:
+      - '${GATEWAY_BIND_PORT:-7071}:7071'
+    networks:
+      - dpdp-net
+    restart: unless-stopped
+
+  # Optional local Postgres — enable with: docker compose --profile local-db up postgres
+  postgres:
+    image: postgres:16
+    container_name: dpdp-postgres
+    profiles: ['local-db']
+    environment:
+      # USER/DB are names, not credentials — a harmless default is fine.
+      # PASSWORD is a real credential: no literal fallback lives in this file.
+      # Compose fails fast with a clear error if .env doesn't set it, rather
+      # than silently starting Postgres with a password baked into this repo.
+      POSTGRES_USER: ${POSTGRES_USER:-dpdp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env before using the local-db profile}
+      POSTGRES_DB: ${POSTGRES_DB:-dpdp}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - dpdp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-dpdp} -d ${POSTGRES_DB:-dpdp}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dpdp-net
+    restart: unless-stopped
+
+networks:
+  dpdp-net:
+    driver: bridge
+
+volumes:
+  dpdp_pgdata:

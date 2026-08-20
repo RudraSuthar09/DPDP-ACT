@@ -55,6 +55,18 @@ export class UsersRepository {
    * migration). The id is minted by the caller and bound as the GUC before this
    * runs, so even this very first insert is subject to the same RLS policy as
    * everything else — there is no privileged provisioning path.
+   *
+   * Deliberately does NOT accept/set plan or deployment_type. Those columns
+   * default to saas/hosted and stay "descriptive... visibility only" (see the
+   * org-plan-deployment-type migration) — CapabilityService.resolve() falls
+   * back to them ONLY when a tenant holds no active license at all. If this
+   * insert set them to the organisation's CHOSEN plan (e.g. 'enterprise'),
+   * that fallback would silently keep granting Enterprise capabilities even
+   * after the organisation's real, per-tenant license expires or is revoked
+   * — exactly what expiry/revocation enforcement must prevent. The chosen
+   * plan is fully captured by the real license issued alongside this (see
+   * LocalIdentityProvider.registerOrganisation) — that is the only thing
+   * allowed to grant an entitlement.
    */
   async insertOrganisation(client: PoolClient, tenantId: string, name: string): Promise<void> {
     await client.query('INSERT INTO organisations (id, tenant_id, name) VALUES ($1, $1, $2)', [

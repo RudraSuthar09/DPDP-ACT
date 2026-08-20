@@ -1,0 +1,13 @@
+{
+  "name": "@dpdp/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DPDP Platform -- a thin Windows desktop shell around the existing DPDP frontend/backend. No business logic lives here: it starts the existing Docker runtime via the existing installer scripts, waits for health, and opens a window pointed at the existing frontend (localhost:3000). Authentication, licensing, capability, tenancy, Gateway -- all of it stays exactly where it already is.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

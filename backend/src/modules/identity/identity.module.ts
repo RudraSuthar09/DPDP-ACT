@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { LicensingModule } from '../licensing/licensing.module';
 import { AuthController } from './auth.controller';
 import { UsersController } from './users.controller';
 import { IdentityService } from './identity.service';
@@ -30,6 +31,7 @@ import { AesGcmSecretCipher, SECRET_CIPHER } from './crypto/secret-cipher';
 // TenancyModule and DatabaseModule are @Global — TenantContextService and
 // TenantDatabaseService inject without an explicit import.
 @Module({
+  imports: [LicensingModule],
   controllers: [AuthController, UsersController],
   providers: [
     IdentityService,

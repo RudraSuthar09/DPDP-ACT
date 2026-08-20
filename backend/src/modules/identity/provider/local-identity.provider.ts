@@ -12,6 +12,7 @@ import type { PoolClient } from 'pg';
 import type { Role } from '@dpdp/shared';
 import { TenantDatabaseService } from '../../../database/database.service';
 import { AuditContextService } from '../../audit/audit-context.service';
+import { LicensingService } from '../../licensing/licensing.service';
 import { PASSWORD_HASHER, makeDummyHash, type PasswordHasher } from '../crypto/password-hasher';
 import { SECRET_CIPHER, type SecretCipher } from '../crypto/secret-cipher';
 import { base32Encode } from '../crypto/base32';
@@ -63,6 +64,11 @@ export class LocalIdentityProvider implements IdentityProvider {
     private readonly audit: AuditContextService,
     @Inject(PASSWORD_HASHER) private readonly hasher: PasswordHasher,
     @Inject(SECRET_CIPHER) private readonly cipher: SecretCipher,
+    // Every organisation gets its own license, issued automatically at
+    // registration — never a shared global SaaS/Enterprise license (locked
+    // architecture §9). Reuses LicensingService.issueForTenant, the same
+    // hash-only-persistence issuance path POST /licenses goes through later.
+    private readonly licensing: LicensingService,
     config: ConfigService,
   ) {
     this.issuer = config.get<string>('MFA_ISSUER') ?? 'DPDP Platform';
@@ -79,44 +85,73 @@ export class LocalIdentityProvider implements IdentityProvider {
     // no "create the tenant as owner, then switch" path to get wrong.
     const tenantId = randomUUID();
 
+    // Enterprise is always client_server, SaaS is always hosted — the same
+    // pairing used everywhere else in this codebase (licensing-policy.ts,
+    // the deployment-topologies e2e suite). Registration asks only for the
+    // plan; the deployment type it implies is not a separate choice.
+    const deploymentType: 'hosted' | 'client_server' = input.plan === 'enterprise' ? 'client_server' : 'hosted';
+
     try {
-      const { ownerUserId, modules } = await this.db.withTenantId(tenantId, async (client) => {
-        await this.users.insertOrganisation(client, tenantId, input.organisationName.trim());
+      const { ownerUserId, modules, issuedLicense, licenseKey } = await this.db.withTenantId(
+        tenantId,
+        async (client) => {
+          await this.users.insertOrganisation(client, tenantId, input.organisationName.trim());
 
-        // The registrant is always the Owner. Nothing else would make sense: an
-        // org with no Owner cannot invite anyone (FR-IDN-05) and is a dead
-        // workspace. Every other role arrives by invitation from this one.
-        const owner = await this.users.insertUser(client, {
-          tenantId,
-          email: input.ownerEmail,
-          fullName: input.ownerName,
-          passwordHash,
-          role: 'owner' satisfies Role,
-        });
+          // The registrant is always the Owner. Nothing else would make sense: an
+          // org with no Owner cannot invite anyone (FR-IDN-05) and is a dead
+          // workspace. Every other role arrives by invitation from this one.
+          const owner = await this.users.insertUser(client, {
+            tenantId,
+            email: input.ownerEmail,
+            fullName: input.ownerName,
+            passwordHash,
+            role: 'owner' satisfies Role,
+          });
 
-        const provisioned = await this.users.provisionWorkspaceModules(client, tenantId);
+          const provisioned = await this.users.provisionWorkspaceModules(client, tenantId);
 
-        // The first entry in this tenant's chain, appended by the interceptor
-        // inside this same transaction. Note actorId: the Owner did not exist
-        // when the request arrived, so the request context cannot name the
-        // actor — only this code can, and only now.
-        this.audit.annotate({
-          actorId: owner.id,
-          targetType: 'organisation',
-          targetId: tenantId,
-          reason: 'Organisation self-registration',
-          // No before-state: nothing existed. That absence IS the fact.
-          beforeState: null,
-          afterState: {
-            organisationName: input.organisationName.trim(),
-            ownerEmail: owner.email,
-            ownerRole: owner.role,
+          // Every organisation gets its OWN unique license, issued here, not a
+          // shared global SaaS/Enterprise license (locked architecture §9).
+          // Joins this SAME transaction (LicensingService.issueForTenant ->
+          // TenantDatabaseService.withTenantId reuses the open unit-of-work
+          // for this tenantId) — org, Owner, and license are one atomic write.
+          const issued = await this.licensing.issueForTenant(tenantId, owner.id, {
+            plan: input.plan,
+            deploymentType,
+          });
+
+          // The first entry in this tenant's chain, appended by the interceptor
+          // inside this same transaction. Note actorId: the Owner did not exist
+          // when the request arrived, so the request context cannot name the
+          // actor — only this code can, and only now. ONE annotate() call per
+          // request (the interceptor writes one audit row) — the license facts
+          // are folded into this same entry's afterState, never the raw key.
+          this.audit.annotate({
+            actorId: owner.id,
+            targetType: 'organisation',
+            targetId: tenantId,
+            reason: 'Organisation self-registration',
+            // No before-state: nothing existed. That absence IS the fact.
+            beforeState: null,
+            afterState: {
+              organisationName: input.organisationName.trim(),
+              ownerEmail: owner.email,
+              ownerRole: owner.role,
+              modules: provisioned,
+              licensePlan: issued.license.plan,
+              licenseDeploymentType: issued.license.deploymentType,
+              licenseKeyPrefix: issued.license.licenseKeyPrefix,
+            },
+          });
+
+          return {
+            ownerUserId: owner.id,
             modules: provisioned,
-          },
-        });
-
-        return { ownerUserId: owner.id, modules: provisioned };
-      });
+            issuedLicense: issued.license,
+            licenseKey: issued.licenseKey,
+          };
+        },
+      );
 
       this.logger.log(`Provisioned tenant ${tenantId} with ${modules.length} module areas`);
 
@@ -125,6 +160,13 @@ export class LocalIdentityProvider implements IdentityProvider {
         organisationName: input.organisationName.trim(),
         ownerUserId,
         modules,
+        license: {
+          plan: issuedLicense.plan,
+          deploymentType: issuedLicense.deploymentType,
+          licenseKeyPrefix: issuedLicense.licenseKeyPrefix,
+          // Shown exactly once, in this response — never persisted, never logged.
+          licenseKey,
+        },
         // NOT a session. Registration ends with MFA still un-enrolled, and the
         // only thing this token opens is the enrolment endpoints (FR-IDN-02).
         mfaEnrolmentToken: this.tokens.mintMfaChallengeToken({

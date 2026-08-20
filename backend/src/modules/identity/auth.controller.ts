@@ -73,6 +73,11 @@ export class AuthController {
       // Returned so the caller can SEE the workspace is complete (FR-IDN-01),
       // rather than taking our word for it.
       modules: result.modules,
+      // This organisation's own license — shown ONCE, here, at issuance. Use
+      // it to activate DPDP's first installation (POST /installations); it is
+      // never retrievable again after this response (only its hash/prefix
+      // are persisted).
+      license: result.license,
       mfaEnrolmentToken: result.mfaEnrolmentToken,
       nextStep: 'Enrol MFA with POST /auth/mfa/enroll before you can sign in.',
     };

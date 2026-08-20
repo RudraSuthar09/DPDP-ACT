@@ -22,6 +22,10 @@ export interface GatewayDeviceRow {
    *  enrolled Gateway. Non-secret, not the security identity. Null until staff
    *  explicitly configures it. */
   endpoint: string | null;
+  /** Optional link to the Installation this device runs inside (locked
+   *  architecture §5/§11). Null for devices enrolled before installations
+   *  existed, or never explicitly linked. */
+  installation_id: string | null;
   enrolled_by: string | null;
   enrolled_at: Date;
   last_heartbeat_at: Date | null;
@@ -68,7 +72,7 @@ export interface GatewaySessionRow {
 
 const DEVICE_COLS =
   'id, tenant_id, public_key, device_ref, platform, agent_version, display_name, status, endpoint, ' +
-  'enrolled_by, enrolled_at, last_heartbeat_at, revoked_at, revoked_by, revoke_reason, updated_at';
+  'installation_id, enrolled_by, enrolled_at, last_heartbeat_at, revoked_at, revoked_by, revoke_reason, updated_at';
 
 @Injectable()
 export class GatewayRepository {
@@ -179,6 +183,19 @@ export class GatewayRepository {
       const { rows } = await client.query<GatewayDeviceRow>(
         `UPDATE gateway_devices SET endpoint = $2 WHERE id = $1 AND status = 'active' RETURNING ${DEVICE_COLS}`,
         [id, endpoint],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  /** Link (or clear, with null) an already-enrolled device to an Installation
+   *  (locked architecture §5/§11). Config only — never touches the device's
+   *  security identity. */
+  setInstallation(id: string, installationId: string | null): Promise<GatewayDeviceRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<GatewayDeviceRow>(
+        `UPDATE gateway_devices SET installation_id = $2 WHERE id = $1 AND status = 'active' RETURNING ${DEVICE_COLS}`,
+        [id, installationId],
       );
       return rows[0] ?? null;
     });

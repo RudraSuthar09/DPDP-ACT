@@ -2,7 +2,9 @@
 
 import Link from 'next/link';
 import { TakeTheTourButton } from '../../../components/ProductTour';
+import { ActivationPanel } from '../../../components/ActivationGate';
 import { useAuth } from '../../../lib/auth';
+import { useCapabilities } from '../../../lib/capabilities';
 
 /**
  * Settings index. Exists because the guided tour needed a permanent, findable
@@ -22,6 +24,13 @@ const DEPLOYMENT_LABEL: Record<string, string> = { hosted: 'Hosted (by us)', cli
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const { capabilities, refresh: refreshCapabilities } = useCapabilities();
+
+  // Live once /capabilities resolves; falls back to the user profile's own
+  // plan/deploymentType (same values, org-level default) while loading so
+  // this panel never flashes empty — see lib/capabilities.ts.
+  const plan = capabilities?.plan ?? user?.plan;
+  const deploymentType = capabilities?.deploymentType ?? user?.deploymentType;
 
   return (
     <div>
@@ -42,17 +51,35 @@ export default function SettingsPage() {
             <div>
               <div className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Plan</div>
               <div>
-                <span className="badge info">{PLAN_LABEL[user.plan] ?? user.plan}</span>
+                <span className="badge info">{plan ? (PLAN_LABEL[plan] ?? plan) : '—'}</span>
               </div>
             </div>
             <div>
               <div className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Deployment</div>
               <div>
-                <span className="badge neutral">{DEPLOYMENT_LABEL[user.deploymentType] ?? user.deploymentType}</span>
+                <span className="badge neutral">{deploymentType ? (DEPLOYMENT_LABEL[deploymentType] ?? deploymentType) : '—'}</span>
               </div>
             </div>
           </div>
+          {capabilities && (
+            <div style={{ marginTop: 12 }}>
+              <div className="muted" style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Capabilities</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                {Object.entries(capabilities.features)
+                  .filter(([, enabled]) => enabled)
+                  .map(([key]) => (
+                    <span key={key} className="badge neutral" style={{ fontSize: '0.75rem' }}>
+                      {key}
+                    </span>
+                  ))}
+              </div>
+            </div>
+          )}
         </div>
+      )}
+
+      {user && (user.role === 'owner' || user.role === 'dpo' || user.role === 'compliance_officer') && (
+        <ActivationPanel onActivated={refreshCapabilities} />
       )}
 
       <div className="panel" style={{ marginTop: 16 }} data-tour="settings-tour-panel">

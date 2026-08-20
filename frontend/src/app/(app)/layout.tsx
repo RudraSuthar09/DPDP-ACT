@@ -2,12 +2,25 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../../lib/auth';
+import { apiFetch, ApiError } from '../../lib/api';
 import { MODULE_NAV, OVERVIEW_NAV, PLATFORM_NAV, type NavItem } from '../../lib/nav';
 import { TakeTheTourButton, TourProvider } from '../../components/ProductTour';
 import { ToastProvider } from '../../components/Toast';
 import { NAV_ICONS } from '../../components/NavIcons';
+import { ActivationGate } from '../../components/ActivationGate';
+
+/**
+ * Customer installation package phase: a fresh installer-provisioned local
+ * instance has no active installation yet, and must show the first-run
+ * activation screen before anything else — see installer/runtime's
+ * NEXT_PUBLIC_REQUIRE_ACTIVATION=true. Opt-in and off by default, so every
+ * existing hosted/dev/demo tenant (none of which have ever had a license)
+ * is completely unaffected — this only activates for the installer's own
+ * built frontend image variant.
+ */
+const REQUIRE_ACTIVATION = process.env.NEXT_PUBLIC_REQUIRE_ACTIVATION === 'true';
 
 /**
  * The authenticated, tenant-aware shell. Every page under (app) renders inside
@@ -19,6 +32,30 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const { user, loading, connectionError, signOut } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+
+  // Fresh-install activation gate (opt-in, see REQUIRE_ACTIVATION above).
+  // `null` = not yet checked, `true`/`false` = the real answer from the
+  // backend. A 403 (a non-owner/manager role, which cannot even see this
+  // route) is treated as "not blocking" — only the roles that can register
+  // an installation are ever gated by it.
+  const [needsActivation, setNeedsActivation] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!REQUIRE_ACTIVATION || !user) return;
+    let cancelled = false;
+    apiFetch<{ installation: { id: string } | null }>('/installations/active')
+      .then((data) => {
+        if (!cancelled) setNeedsActivation(data.installation === null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 403) setNeedsActivation(false);
+        else setNeedsActivation(false); // fail open — never block on a transient check failure
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   // A connectionError means the API could not be REACHED — nothing about the
   // session itself was rejected. That is never a reason to sign someone out;
@@ -37,6 +74,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
   if (!user) return null; // redirecting
+
+  if (REQUIRE_ACTIVATION && needsActivation) {
+    return <ActivationGate onActivated={() => setNeedsActivation(false)} />;
+  }
 
   function onSignOut() {
     signOut();

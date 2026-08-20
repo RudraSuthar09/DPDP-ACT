@@ -14,8 +14,11 @@ import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
 import { TokenService } from '../identity/token.service';
 import { DataSourceService } from '../datasource/data-source.service';
+import { InstallationService } from '../installation/installation.service';
+import { CapabilityService } from '../capability/capability.service';
 import { GatewayRepository, type GatewayDeviceRow } from './gateway.repository';
 import { parseEnrollDevice } from './gateway.dto';
+import { resolveGatewayProfile, type GatewayProfile } from './gateway-profile';
 import {
   evaluateDeviceStatus,
   evaluateEnrollmentCode,
@@ -42,6 +45,8 @@ export class GatewayService {
     private readonly audit: AuditContextService,
     private readonly tokens: TokenService,
     private readonly sources: DataSourceService,
+    private readonly installations: InstallationService,
+    private readonly capability: CapabilityService,
     config: ConfigService,
   ) {
     this.enrollmentTtlSeconds = Number(config.get('GATEWAY_ENROLLMENT_CODE_TTL_SECONDS') ?? 900);
@@ -130,6 +135,13 @@ export class GatewayService {
     const device = await this.repo.findDevice(deviceId);
     assertOk(evaluateDeviceStatus(device));
     await this.repo.touchHeartbeat(deviceId, agentVersion);
+    // Locked architecture §12: a linked Installation's heartbeat/version is
+    // metadata derived from its Gateway's — never a second, divergent signal.
+    // Best-effort: a missing/decommissioned installation must never fail the
+    // device's own heartbeat response.
+    if (device!.installation_id) {
+      await this.installations.touchHeartbeat(device!.installation_id, agentVersion).catch(() => undefined);
+    }
     this.audit.annotate({
       targetType: 'gateway_device',
       targetId: deviceId,
@@ -264,7 +276,37 @@ export class GatewayService {
   /** The tenant's one active Gateway (or null) — the "reconnect on login" read. */
   async getActiveDevice(): Promise<DeviceView | null> {
     const row = await this.repo.findActiveDevice();
-    return row ? toDeviceView(row) : null;
+    if (!row) return null;
+    return this.withProfile(row);
+  }
+
+  /**
+   * Locked architecture §5/§11: link (or clear) this device's Installation —
+   * a common Gateway Core operation, not a second implementation. Linking to
+   * a `client_server`-flavoured (Enterprise) installation requires the
+   * tenant currently hold the `enterpriseGateway` capability; linking to a
+   * `hosted`-flavoured (SaaS) one, or clearing the link, does not — the
+   * check is data-dependent on the TARGET installation, so it runs here
+   * rather than as a static route decorator (CapabilityGuard is for the
+   * static case only; this is CapabilityService.assertCapability's direct-
+   * call path).
+   */
+  async setInstallation(deviceId: string, installationId: string | null): Promise<DeviceView> {
+    if (installationId) {
+      const installation = await this.installations.getById(installationId);
+      if (installation.deploymentType === 'client_server') {
+        await this.capability.assertCapability('enterpriseGateway');
+      }
+    }
+    const row = await this.repo.setInstallation(deviceId, installationId);
+    if (!row) throw new NotFoundException('Gateway device not found or not active.');
+    this.audit.annotate({
+      targetType: 'gateway_device',
+      targetId: deviceId,
+      reason: installationId ? `Gateway device linked to installation ${installationId}.` : 'Gateway device unlinked from its installation.',
+      afterState: { installationId },
+    });
+    return this.withProfile(row);
   }
 
   /**
@@ -298,6 +340,17 @@ export class GatewayService {
     });
     return toDeviceView(row);
   }
+
+  /** Resolve the device's Gateway profile from its linked installation, if
+   *  any (single extra lookup — used only where a caller needs one device's
+   *  full view, never in the plain listDevices() read). */
+  private async withProfile(row: GatewayDeviceRow): Promise<DeviceView> {
+    const view = toDeviceView(row);
+    if (!row.installation_id) return view;
+    const installation = await this.installations.getById(row.installation_id).catch(() => null);
+    if (!installation) return view;
+    return { ...view, profile: resolveGatewayProfile(installation.deploymentType) };
+  }
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -311,6 +364,13 @@ export interface DeviceView {
   /** Phase 3G-2.5: the browser-facing URL to reach this Gateway. Null until
    *  staff explicitly configures it. Never the security identity. */
   endpoint: string | null;
+  /** Locked architecture §5/§11: the Installation this device is linked to,
+   *  or null. */
+  installationId: string | null;
+  /** Derived from the linked installation's deploymentType — SaaS Gateway vs
+   *  Enterprise Gateway PROFILE of the one Gateway Core, never a second
+   *  implementation. Null until a device is linked to an installation. */
+  profile: GatewayProfile | null;
   enrolledAt: string;
   lastHeartbeatAt: string | null;
 }
@@ -323,6 +383,8 @@ function toDeviceView(row: GatewayDeviceRow): DeviceView {
     displayName: row.display_name,
     status: row.status,
     endpoint: row.endpoint,
+    installationId: row.installation_id,
+    profile: null,
     enrolledAt: row.enrolled_at.toISOString(),
     lastHeartbeatAt: row.last_heartbeat_at ? row.last_heartbeat_at.toISOString() : null,
   };

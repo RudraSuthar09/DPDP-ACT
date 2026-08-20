@@ -22,6 +22,9 @@ import { NotifyModule } from './modules/notify/notify.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DataSourceModule } from './modules/datasource/data-source.module';
 import { GatewayModule } from './modules/gateway/gateway.module';
+import { LicensingModule } from './modules/licensing/licensing.module';
+import { CapabilityModule } from './modules/capability/capability.module';
+import { InstallationModule } from './modules/installation/installation.module';
 
 @Module({
   imports: [
@@ -53,6 +56,13 @@ import { GatewayModule } from './modules/gateway/gateway.module';
     // Phase 1 of the Gateway line of work: metadata + per-source access mode
     // only (I1/§2.1). No Gateway, no connector, no raw-data path.
     DataSourceModule,
+    // Locked-architecture foundation phase: licensing -> capability model ->
+    // installation registration, in dependency order (each imports only the
+    // one before it, through its service export — R2). GatewayModule (below)
+    // additively depends on both Installation and Capability.
+    LicensingModule,
+    CapabilityModule,
+    InstallationModule,
     // Phase 3C: the Gateway CONTROL PLANE (enrolment/pairing/session/heartbeat/
     // revocation). Ids, hashes and metadata only — still no connector, no raw
     // read, no customer data (I1). Data plane is a separate, later capability.
