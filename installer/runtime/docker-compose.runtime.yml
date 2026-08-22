@@ -59,6 +59,10 @@ services:
     image: dpdp-frontend:installer
     environment:
       NODE_ENV: production
+      # Server-rendered public pages (forms/[slug], portal/[slug]) run INSIDE
+      # this container — "localhost:3001" there means this container, not
+      # the backend's. See frontend/src/lib/api.ts's SERVER_API_URL.
+      INTERNAL_API_URL: http://backend:3001
     ports:
       - '${WEB_PORT:-3000}:3000'
     depends_on:
@@ -73,6 +77,41 @@ services:
       GATEWAY_BIND_HOST: 0.0.0.0
       GATEWAY_BIND_PORT: ${GATEWAY_BIND_PORT:-7071}
       GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-http://localhost:3000}
+      # The backend's CONTAINER-NETWORK address (dpdp-net) — agent and
+      # backend are separate containers here too, never localhost.
+      GATEWAY_CONTROL_PLANE_URL: ${GATEWAY_CONTROL_PLANE_URL:-http://backend:3001}
+      # Where the agent persists its enrollment device credential between
+      # restarts — backed by the named volume below, so it survives
+      # `docker compose down` + `up` but not `down -v` (which correctly
+      # forces re-enrollment). See agent/src/enrollment.ts.
+      GATEWAY_STATE_DIR: /app/state
+      # The one-time enrollment code — ONLY needed on the run that first
+      # enrolls this Gateway. Never written to config\.env or baked into any
+      # image; start.ps1's -GatewayEnrollmentCode sets it as a transient
+      # process env var for the one `docker compose up` call that needs it.
+      GATEWAY_ENROLLMENT_CODE: ${GATEWAY_ENROLLMENT_CODE:-}
+      GATEWAY_DISPLAY_NAME: ${GATEWAY_DISPLAY_NAME:-DPDP Gateway}
+      GATEWAY_HEARTBEAT_INTERVAL_SECONDS: ${GATEWAY_HEARTBEAT_INTERVAL_SECONDS:-60}
+      # Storage Data-Plane: same mechanism as GATEWAY_SOURCES, applied to
+      # storage roots (see the repo-root docker-compose.yml's matching
+      # comment and docs/environment-variables.md). Left empty until an
+      # Enterprise storage root is configured in DPDP and its id is known —
+      # set as a transient env var for the one `docker compose up` call that
+      # needs it, same as GATEWAY_ENROLLMENT_CODE:
+      #   $env:GATEWAY_STORAGE_ROOTS = '[{"storageRootId":"<uuid-from-DPDP-UI>","rootPath":"/client-storage"}]'
+      GATEWAY_STORAGE_ROOTS: ${GATEWAY_STORAGE_ROOTS:-}
+    volumes:
+      - gateway_state:/app/state
+      # A REAL host directory, bound to the FIXED container path
+      # /client-storage — never a Docker volume, so the customer's own files
+      # stay visible/manageable on their own machine. Defaults to a folder
+      # under the install root (auto-created by Docker if missing) so a
+      # fresh install never fails just because Enterprise storage hasn't
+      # been configured yet; override GATEWAY_STORAGE_HOST_DIR in
+      # config\.env to point at wherever the customer wants it (e.g. a
+      # dedicated data drive) — never the install root itself, never an
+      # arbitrary existing folder with unrelated files in it.
+      - ${GATEWAY_STORAGE_HOST_DIR:-../data/gateway-storage}:/client-storage
     ports:
       - '${GATEWAY_BIND_PORT:-7071}:7071'
     networks: [dpdp-net]
@@ -81,3 +120,11 @@ services:
 networks:
   dpdp-net:
     driver: bridge
+
+volumes:
+  # The Gateway/Agent's persisted enrollment device credential. Deliberately
+  # the only volume this runtime declares — there is still no local Postgres
+  # (see the header comment above); this is a local bearer credential, not a
+  # database. `docker compose down` (no -v) preserves it across reinstalls/
+  # restarts; `down -v` removes it and correctly forces re-enrollment.
+  gateway_state:

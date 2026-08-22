@@ -17,9 +17,39 @@ interface FileSystemHandle {
   isSameEntry(other: FileSystemHandle): Promise<boolean>;
 }
 
+interface FileSystemCreateWritableOptions {
+  keepExistingData?: boolean;
+}
+
+/** The subset needed to write one small JSON file (Central DPDP Storage's
+ *  consent.json dual-write) — never a general streaming/append API. */
+interface FileSystemWritableFileStream {
+  write(data: string | BufferSource | Blob): Promise<void>;
+  close(): Promise<void>;
+}
+
 interface FileSystemFileHandle extends FileSystemHandle {
   readonly kind: 'file';
   getFile(): Promise<File>;
+  createWritable(options?: FileSystemCreateWritableOptions): Promise<FileSystemWritableFileStream>;
+}
+
+interface FileSystemGetFileOptions {
+  create?: boolean;
+}
+
+interface FileSystemGetDirectoryOptions {
+  create?: boolean;
+}
+
+/** The subset local-storage-provider.ts calls: create/lookup a subdirectory or
+ *  file, and enumerate DIRECT children (folders only are consumed today —
+ *  files have kind:'file' and are filtered out at most call sites). */
+interface FileSystemDirectoryHandle extends FileSystemHandle {
+  readonly kind: 'directory';
+  getDirectoryHandle(name: string, options?: FileSystemGetDirectoryOptions): Promise<FileSystemDirectoryHandle>;
+  getFileHandle(name: string, options?: FileSystemGetFileOptions): Promise<FileSystemFileHandle>;
+  values(): AsyncIterableIterator<FileSystemDirectoryHandle | FileSystemFileHandle>;
 }
 
 interface OpenFilePickerOptions {
@@ -31,6 +61,11 @@ interface OpenFilePickerOptions {
   }>;
 }
 
+interface DirectoryPickerOptions {
+  mode?: 'read' | 'readwrite';
+}
+
 interface Window {
   showOpenFilePicker?(options?: OpenFilePickerOptions): Promise<FileSystemFileHandle[]>;
+  showDirectoryPicker?(options?: DirectoryPickerOptions): Promise<FileSystemDirectoryHandle>;
 }

@@ -17,6 +17,17 @@
 # is plain Compose so it stays portable to ECS/App Runner/Container Apps/AKS
 # later without rewriting anything here.
 #
+# Storage Data-Plane (Enterprise Gateway <-> real host filesystem): the
+# `agent` service bind-mounts ONE dedicated host directory
+# (GATEWAY_STORAGE_HOST_DIR, default `E:\DPDP-Test-Storage` for local
+# Windows testing) to the FIXED container path `/client-storage`. Never the
+# repo, never a whole drive, never an arbitrary user folder — only that one
+# directory. GATEWAY_STORAGE_ROOTS then tells the agent which DPDP storage
+# root id maps to that container path (see the `agent` service's own
+# comment, and docs/environment-variables.md). Central PostgreSQL never
+# receives file contents; the real files/folders live ONLY on this host
+# directory, never in a Docker volume.
+#
 # Secrets: nothing is hardcoded in this file. backend/worker read `.env`
 # (gitignored, never committed) via `env_file` — they're the services that
 # actually need APP_DATABASE_URL/JWT_SECRET/etc. `frontend` and `agent` get
@@ -75,6 +86,13 @@ services:
     # or any other backend secret.
     environment:
       NODE_ENV: production
+      # Server-rendered public pages (forms/[slug], portal/[slug]) run INSIDE
+      # this container and cannot reach the backend at "localhost:3001" (that
+      # would mean this container, not the backend's) — they need the
+      # container-network address instead. See frontend/src/lib/api.ts's
+      # SERVER_API_URL. Never NEXT_PUBLIC_-prefixed: this is a server-only
+      # runtime value, not baked into the browser bundle.
+      INTERNAL_API_URL: http://backend:3001
     ports:
       - '${WEB_PORT:-3000}:3000'
     depends_on:
@@ -100,7 +118,48 @@ services:
       GATEWAY_BIND_HOST: 0.0.0.0
       GATEWAY_BIND_PORT: ${GATEWAY_BIND_PORT:-7071}
       GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:-http://localhost:3000}
-      GATEWAY_CONTROL_PLANE_URL: ${GATEWAY_CONTROL_PLANE_URL:-}
+      # The backend's CONTAINER-NETWORK address (dpdp-net), never localhost —
+      # agent and backend are separate containers. Overridable for a dev
+      # setup where the backend runs outside Docker instead.
+      GATEWAY_CONTROL_PLANE_URL: ${GATEWAY_CONTROL_PLANE_URL:-http://backend:3001}
+      # Where the agent persists its enrollment device credential between
+      # restarts — backed by the named volume below so it survives
+      # `docker compose down` + `up` (but not `down -v`, which removes it and
+      # correctly forces re-enrollment). See agent/src/enrollment.ts.
+      GATEWAY_STATE_DIR: /app/state
+      # The one-time enrollment code — ONLY needed on the run that first
+      # enrolls this Gateway (no persisted credential yet in the volume
+      # below). Never baked into this file or config/.env; set it as a
+      # transient shell env var for that one `docker compose up` call, e.g.:
+      #   $env:GATEWAY_ENROLLMENT_CODE = '<code>'; docker compose up -d agent
+      GATEWAY_ENROLLMENT_CODE: ${GATEWAY_ENROLLMENT_CODE:-}
+      GATEWAY_DISPLAY_NAME: ${GATEWAY_DISPLAY_NAME:-DPDP Gateway}
+      GATEWAY_HEARTBEAT_INTERVAL_SECONDS: ${GATEWAY_HEARTBEAT_INTERVAL_SECONDS:-60}
+      # Storage data-plane (agent/src/storage/registry.ts's loadStorageRootConfig)
+      # — the SAME config mechanism GATEWAY_SOURCES already uses, applied to
+      # storage roots instead of data sources. A JSON array of
+      # { storageRootId, rootPath } — storageRootId comes from DPDP's own
+      # "Storage Management" screen (POST /storage/roots created it centrally;
+      # you cannot know it ahead of time), rootPath is the path INSIDE this
+      # container (below, always /client-storage — never the host path). Left
+      # empty by default (no storage root configured, exactly like
+      # GATEWAY_SOURCES): set it as a transient shell env var for the run that
+      # needs it, same pattern as GATEWAY_ENROLLMENT_CODE, e.g.:
+      #   $env:GATEWAY_STORAGE_ROOTS = '[{"storageRootId":"<uuid-from-DPDP-UI>","rootPath":"/client-storage"}]'
+      #   docker compose up -d agent
+      GATEWAY_STORAGE_ROOTS: ${GATEWAY_STORAGE_ROOTS:-}
+    volumes:
+      - dpdp_gateway_state:/app/state
+      # The dedicated Windows host test directory for the Storage Data-Plane,
+      # bound to the FIXED in-container path /client-storage (never baked into
+      # agent source — see gateway-storage-provider.ts, which only ever reads
+      # whatever rootPath GATEWAY_STORAGE_ROOTS gives it). Configurable via
+      # GATEWAY_STORAGE_HOST_DIR; defaults to a dedicated local test directory
+      # — NEVER the repo, NEVER a whole drive, NEVER an arbitrary user folder.
+      # Anything the Gateway creates under /client-storage physically appears
+      # here; anything outside it is unreachable (path-safety.ts's
+      # resolveContainedDir still enforces containment INSIDE this mount).
+      - ${GATEWAY_STORAGE_HOST_DIR:-E:\DPDP-Test-Storage}:/client-storage
     ports:
       - '${GATEWAY_BIND_PORT:-7071}:7071'
     networks:
@@ -139,3 +198,9 @@ networks:
 
 volumes:
   dpdp_pgdata:
+  # The Gateway/Agent's persisted enrollment device credential (Phase 1 —
+  # agent/src/enrollment.ts). Deliberately its own volume, separate from
+  # dpdp_pgdata: it holds a local bearer credential, never a database, and
+  # must survive independently of whether the optional local-db profile is
+  # ever used.
+  dpdp_gateway_state:

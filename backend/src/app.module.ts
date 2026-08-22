@@ -22,6 +22,7 @@ import { NotifyModule } from './modules/notify/notify.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DataSourceModule } from './modules/datasource/data-source.module';
 import { GatewayModule } from './modules/gateway/gateway.module';
+import { StorageModule } from './modules/storage/storage.module';
 import { LicensingModule } from './modules/licensing/licensing.module';
 import { CapabilityModule } from './modules/capability/capability.module';
 import { InstallationModule } from './modules/installation/installation.module';
@@ -67,6 +68,10 @@ import { InstallationModule } from './modules/installation/installation.module';
     // revocation). Ids, hashes and metadata only — still no connector, no raw
     // read, no customer data (I1). Data plane is a separate, later capability.
     GatewayModule,
+    // Locked-architecture foundation phase: Storage & Folder Mapping — a
+    // generic, persistent Storage Root -> Folder -> Module Mapping hierarchy
+    // (I1: configuration only, never a file or a customer value).
+    StorageModule,
   ],
 })
 export class AppModule {}

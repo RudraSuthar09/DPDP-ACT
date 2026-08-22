@@ -7,6 +7,13 @@ interface PublicFormRow {
   label: string;
   noticeText: string;
 }
+interface PublicFormField {
+  id: string;
+  label: string;
+  fieldType: 'text' | 'pdf' | 'excel';
+  required: boolean;
+  isIdentifier: boolean;
+}
 interface PublicFormDefinition {
   formId: string;
   name: string;
@@ -14,7 +21,12 @@ interface PublicFormDefinition {
   /** Client-authored Notice/Terms & Conditions, shown once above the form's
    *  consent items. Plain text the client wrote — never generated here. */
   noticeText: string | null;
+  /** Configuration only, for the local Customer Information/retention.json
+   *  the browser writes on submit — never enforced/deleted here. */
+  retentionMonths: number | null;
   rows: PublicFormRow[];
+  /** Field CONFIGURATION only (label/type/required/isIdentifier) — never a value. */
+  fields: PublicFormField[];
 }
 
 /**
@@ -39,7 +51,14 @@ export default async function FormPortalPage({ params }: { params: Promise<{ slu
         <h1>{def.name}</h1>
         {def.description && <p className="muted">{def.description}</p>}
         {def.noticeText && <p style={{ whiteSpace: 'pre-wrap' }}>{def.noticeText}</p>}
-        <FormIntake slug={slug} rows={def.rows} />
+        <FormIntake
+          slug={slug}
+          formId={def.formId}
+          templateName={def.name}
+          retentionMonths={def.retentionMonths}
+          rows={def.rows}
+          fields={def.fields}
+        />
       </div>
     </div>
   );

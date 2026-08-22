@@ -19,6 +19,10 @@ export const GATEWAY_DEVICE_PATHS = new Set([
   '/gateway/pair/redeem',
   '/gateway/session/refresh',
   '/gateway/deenroll',
+  // Storage data-plane integration: the storage-plane sibling of
+  // /gateway/pair/redeem, scoped to a storage root instead of a data source
+  // (see backend/src/modules/storage/storage-gateway.service.ts).
+  '/storage/gateway/pair/redeem',
 ]);
 
 const DEVICE_TOKEN_HEADER = 'x-gateway-device-token';

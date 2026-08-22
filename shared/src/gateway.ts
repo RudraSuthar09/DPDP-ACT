@@ -587,6 +587,96 @@ export interface GatewayCreateColumnResponse {
 }
 
 // ===========================================================================
+// §7b  Storage data-plane contract (Browser -> Agent). Folder browse/create/
+// verify ONLY — no file content, no customer data, ever. This is a SEPARATE
+// capability from the source data plane above (§7): a storage root is a WRITE
+// destination for DPDP-generated artefacts, not a readable structured source.
+// Kept as its own small route/type family rather than overloading
+// GatewaySourceReadResponse's row-shaped contract, which must never carry a
+// folder-listing (that would blur "raw customer rows" with "folder names").
+// ===========================================================================
+
+export const GATEWAY_STORAGE_ROUTES = {
+  /** Device redeems a storage-pairing nonce (mirrors pairRedeem, scoped to a
+   *  storageRootId instead of a sourceId). Auth: device credential. */
+  storagePairRedeem: '/storage/gateway/pair/redeem',
+} as const;
+
+/** The agent's storage data-plane routes (mounted alongside GATEWAY_DATA_ROUTES,
+ *  under a distinct path family so a data-source session can never be reused
+ *  to reach a storage operation, or vice versa). */
+export const GATEWAY_STORAGE_DATA_ROUTES = {
+  storageSessionEstablish: '/storage/session/establish',
+  storageBrowse: '/storage/browse',
+  storageFolderCreate: '/storage/folder/create',
+  storageFolderVerify: '/storage/folder/verify',
+} as const;
+
+/**
+ * A folder path is ALWAYS an array of plain folder NAME segments — the exact
+ * chain the browser already knows from the central storage_folders metadata
+ * (walking parentFolderId). It is NEVER an OS path string, so syntax like
+ * '..' or 'C:\' is not even representable as a valid segment; the agent
+ * additionally validates every segment (see agent/src/storage/path-safety.ts).
+ */
+export type GatewayStoragePath = string[];
+
+/** One real folder entry found while browsing. Name only — never a full path,
+ *  never a file (this endpoint lists folders only). */
+export interface GatewayStorageEntry {
+  name: string;
+}
+
+export interface GatewayStorageSessionEstablishRequest {
+  storageRootId: string;
+  nonce: string;
+}
+export interface GatewayStorageSessionEstablishResponse {
+  sessionToken: string;
+  expiresAt: string;
+}
+
+export interface GatewayStorageBrowseRequest {
+  storageRootId: string;
+  path: GatewayStoragePath;
+}
+export interface GatewayStorageBrowseResponse {
+  entries: GatewayStorageEntry[];
+}
+
+export interface GatewayStorageCreateFolderRequest {
+  storageRootId: string;
+  path: GatewayStoragePath;
+  name: string;
+}
+export interface GatewayStorageCreateFolderResponse {
+  created: true;
+}
+
+export interface GatewayStorageVerifyFolderRequest {
+  storageRootId: string;
+  path: GatewayStoragePath;
+}
+export interface GatewayStorageVerifyFolderResponse {
+  exists: boolean;
+}
+
+/**
+ * StorageConnector — the agent-side storage contract. Implemented by
+ * GatewayStorageProvider (agent/src/storage), a Node `fs`-backed adapter
+ * rooted at ONE configured local path on the Enterprise machine, reusing the
+ * same containment discipline as DataConnector's filesystem connector
+ * (§9 below) — canonicalize, resolve symlinks, verify descendant-of-root —
+ * but for folders, not files, and with no read-content capability at all.
+ */
+export interface StorageConnector {
+  browse(path: GatewayStoragePath): Promise<GatewayStorageBrowseResponse>;
+  createFolder(path: GatewayStoragePath, name: string): Promise<GatewayStorageCreateFolderResponse>;
+  verifyFolder(path: GatewayStoragePath): Promise<GatewayStorageVerifyFolderResponse>;
+  healthCheck(): Promise<GatewayHealthResponse>;
+}
+
+// ===========================================================================
 // §8  Connector interface (agent-side). SEPARATE from SchemaSource (S4).
 // ===========================================================================
 //
@@ -752,6 +842,12 @@ export const GATEWAY_ERROR_CODES = [
   'SOURCE_MISMATCH',
   'DEVICE_MISMATCH',
   'SOURCE_NOT_AUTHORIZED',
+  /** A storage session/pairing does not match the storageRootId a request
+   *  names — the storage-plane sibling of SOURCE_MISMATCH. */
+  'STORAGE_ROOT_MISMATCH',
+  /** This Gateway has no configured filesystem root for the given
+   *  storageRootId — the storage-plane sibling of SOURCE_NOT_AUTHORIZED. */
+  'STORAGE_ROOT_NOT_AUTHORIZED',
   'PATH_NOT_ALLOWED',
   'FILE_NOT_FOUND',
   'PERMISSION_DENIED',

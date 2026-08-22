@@ -24,6 +24,7 @@ import { evaluateOrigin } from './origin';
 import { inspectAuthHeader, GATEWAY_AUTH_HEADER } from './auth';
 import { buildHealth } from './health';
 import { DATA_PLANE_PATHS, handleDataPlaneRequest, type DataPlane } from './data-plane';
+import { STORAGE_PLANE_PATHS, handleStoragePlaneRequest, type StoragePlane } from './storage/storage-plane';
 
 /** Requests larger than this are refused outright (there is no legitimate body). */
 const MAX_CONTENT_LENGTH = 4096;
@@ -42,6 +43,9 @@ export interface AgentServerOptions {
   /** When provided, the agent also serves the data-plane routes (Phase 3D).
    *  Absent (Phase-3B skeleton) → only GET /health exists. */
   dataPlane?: DataPlane;
+  /** When provided, the agent also serves the storage-plane routes (folder
+   *  browse/create/verify — a SEPARATE capability from the data plane). */
+  storagePlane?: StoragePlane;
   log?: LogFn;
 }
 
@@ -96,6 +100,7 @@ function sendError(res: ServerResponse, status: number, code: GatewayErrorCode |
 export function createAgentServer(config: AgentConfig, options: AgentServerOptions = {}): Server {
   const log: LogFn = options.log ?? (() => {});
   const dataPlane = options.dataPlane;
+  const storagePlane = options.storagePlane;
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     const method = req.method ?? 'GET';
     const path = (req.url ?? '/').split('?')[0] ?? '/';
@@ -156,6 +161,26 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
           const code = err.message === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'BAD_REQUEST';
           sendError(res, code === 'RATE_LIMITED' ? 413 : 400, code);
           done(code === 'RATE_LIMITED' ? 413 : 400, 'data-plane-error');
+        });
+      return;
+    }
+
+    // 2c. Storage-plane routes — the SEPARATE folder browse/create/verify
+    //     capability. A data-plane session cannot be reused here (different
+    //     path family, different session store) and vice versa.
+    if (storagePlane && STORAGE_PLANE_PATHS.has(path)) {
+      const header = req.headers[GATEWAY_AUTH_HEADER];
+      const sessionToken = typeof header === 'string' ? header : undefined;
+      void readJsonBody(req)
+        .then(async (body) => {
+          const reply = await handleStoragePlaneRequest(storagePlane, { method, path, sessionToken, body });
+          sendJson(res, reply.status, reply.json, corsHeaders);
+          done(reply.status, 'storage-plane');
+        })
+        .catch((err: Error) => {
+          const code = err.message === 'RATE_LIMITED' ? 'RATE_LIMITED' : 'BAD_REQUEST';
+          sendError(res, code === 'RATE_LIMITED' ? 413 : 400, code);
+          done(code === 'RATE_LIMITED' ? 413 : 400, 'storage-plane-error');
         });
       return;
     }

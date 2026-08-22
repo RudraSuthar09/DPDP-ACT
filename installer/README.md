@@ -99,6 +99,39 @@ or pre-populate `config\.env` by hand (see `docs/environment-variables.md`
 in the source repo) before the first run. After that, `config\.env` is left
 untouched by subsequent runs.
 
+## Enterprise Gateway enrollment (agent container)
+
+`agent` (the Gateway) enrolls with the central control plane and persists
+its own device credential to a Docker volume (`gateway_state`, mounted at
+`/app/state` inside the container) — see `agent/src/enrollment.ts` in the
+source repo for the full mechanism.
+
+**First enrollment** — generate a one-time code in DPDP (Data Sources →
+Enterprise Gateway → Connect Enterprise Gateway), then:
+```powershell
+scripts\start.ps1 -GatewayEnrollmentCode "<the one-time code>"
+```
+The code is passed through as a transient process environment variable for
+that one run only — it is never written to `config\.env`, never baked into
+any image, never committed. Once enrolled, the persisted credential in the
+`gateway_state` volume is sufficient; every later `start.ps1` (no code
+needed) reuses it.
+
+**What survives what:**
+- `docker compose restart` / `scripts\stop.ps1` then `scripts\start.ps1` /
+  a full `docker compose down` + `up` (equivalently, an uninstall that
+  doesn't touch the volume, followed by reinstall) — the Gateway stays
+  enrolled; no new code is needed.
+- `docker compose down -v` — removes the `gateway_state` volume along with
+  it, so the next start requires a brand-new enrollment code (the backend
+  has no record of a device whose local credential is gone). `scripts\
+  uninstall-cleanup.ps1` deliberately does **not** pass `-v`, so a normal
+  uninstall/reinstall preserves Gateway enrollment.
+- De-enrolling the Gateway itself (`node dist/index.js --deenroll` inside
+  the `agent` container, e.g. via `docker compose exec agent node dist/
+  index.js --deenroll`) removes the device centrally and clears the local
+  credential — the next start then correctly requires a fresh code.
+
 ## Building a release
 
 ```powershell

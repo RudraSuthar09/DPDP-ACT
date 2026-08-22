@@ -12,24 +12,24 @@ export interface ConsentFormRow {
    *  text, shown once above the form. NULL until the client adds one. */
   notice_text: string | null;
   is_active: boolean;
-  /** Phase 3G-1: the client data source this form may map customer-data fields
-   *  into. NULL for ordinary SaaS/consent-only forms — unchanged behaviour. */
-  source_id: string | null;
+  /** Central DPDP Storage simplification: months to retain this template's
+   *  consent data in the client's local storage. Configuration only. */
+  retention_months: number | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
 }
 
+/** A form's plain field: label + type + required, nothing else. The client's
+ *  submitted VALUE never lands in this table — see the field-simplification
+ *  migration header. */
 export interface CustomerFieldRow {
   id: string;
   form_id: string;
   label: string;
   field_type: string;
   required: boolean;
-  destination: 'consent_record' | 'customer_field' | 'both';
-  mapped_column: string | null;
-  new_column_name: string | null;
-  new_column_type: string | null;
+  is_identifier: boolean;
   display_order: number;
   status: 'active' | 'removed';
 }
@@ -54,6 +54,10 @@ export interface FormSubmissionRow {
   subject_ref: string;
   channel: 'widget' | 'link';
   submitted_at: Date;
+  /** Central DPDP Storage simplification: when this submission's consent
+   *  record was last written into the client's local storage. NULL = pending
+   *  sync. */
+  local_synced_at: Date | null;
 }
 
 export interface FormSubmissionAnswerRow {
@@ -75,7 +79,12 @@ export interface FormSubmissionAnswerRow {
 export class ConsentFormsRepository {
   constructor(private readonly db: TenantDatabaseService) {}
 
-  createForm(input: { name: string; description: string | null; createdBy: string | null }): Promise<ConsentFormRow> {
+  createForm(input: {
+    name: string;
+    description: string | null;
+    retentionMonths: number | null;
+    createdBy: string | null;
+  }): Promise<ConsentFormRow> {
     return this.db.withTenant(async (client) => {
       // Mint the hosted-link slug at creation so a per-form share link exists as
       // soon as the form has active rows (the slug is an identifier, not a
@@ -83,10 +92,10 @@ export class ConsentFormsRepository {
       // hosted-link directory/route treat it as servable; is_active is the live
       // switch that actually gates public visibility.
       const { rows } = await client.query<ConsentFormRow>(
-        `INSERT INTO consent_forms (name, description, created_by, status, slug)
-         VALUES ($1, $2, $3, 'published', app.mint_form_slug($1, gen_random_uuid()))
+        `INSERT INTO consent_forms (name, description, retention_months, created_by, status, slug)
+         VALUES ($1, $2, $3, $4, 'published', app.mint_form_slug($1, gen_random_uuid()))
          RETURNING *`,
-        [input.name, input.description, input.createdBy],
+        [input.name, input.description, input.retentionMonths, input.createdBy],
       );
       return rows[0]!;
     });
@@ -101,12 +110,12 @@ export class ConsentFormsRepository {
 
   updateForm(
     formId: string,
-    input: { name: string; description: string | null; noticeText: string | null },
+    input: { name: string; description: string | null; noticeText: string | null; retentionMonths: number | null },
   ): Promise<ConsentFormRow | null> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<ConsentFormRow>(
-        `UPDATE consent_forms SET name = $2, description = $3, notice_text = $4, updated_at = now() WHERE id = $1 RETURNING *`,
-        [formId, input.name, input.description, input.noticeText],
+        `UPDATE consent_forms SET name = $2, description = $3, notice_text = $4, retention_months = $5, updated_at = now() WHERE id = $1 RETURNING *`,
+        [formId, input.name, input.description, input.noticeText, input.retentionMonths],
       );
       return rows[0] ?? null;
     });
@@ -168,24 +177,12 @@ export class ConsentFormsRepository {
     });
   }
 
-  /** Phase 3G-1: associate/clear the form's data source. Config only. */
-  setFormSource(formId: string, sourceId: string | null): Promise<ConsentFormRow | null> {
-    return this.db.withTenant(async (client) => {
-      const { rows } = await client.query<ConsentFormRow>(
-        `UPDATE consent_forms SET source_id = $2, updated_at = now() WHERE id = $1 RETURNING *`,
-        [formId, sourceId],
-      );
-      return rows[0] ?? null;
-    });
-  }
-
-  // --- Phase 3G-1: customer-data field configuration -------------------------
+  // --- Form fields — a simple, Google-Forms-like field list -------------------
 
   listCustomerFields(formId: string): Promise<CustomerFieldRow[]> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
-        `SELECT id, form_id, label, field_type, required, destination, mapped_column,
-                new_column_name, new_column_type, display_order, status
+        `SELECT id, form_id, label, field_type, required, is_identifier, display_order, status
            FROM consent_form_customer_fields
           WHERE form_id = $1 AND status = 'active'
           ORDER BY display_order, label`,
@@ -210,30 +207,15 @@ export class ConsentFormsRepository {
     label: string;
     fieldType: string;
     required: boolean;
-    destination: 'consent_record' | 'customer_field' | 'both';
-    mappedColumn: string | null;
-    newColumnName: string | null;
-    newColumnType: string | null;
+    isIdentifier: boolean;
     displayOrder: number;
   }): Promise<CustomerFieldRow> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
-        `INSERT INTO consent_form_customer_fields
-           (form_id, label, field_type, required, destination, mapped_column, new_column_name, new_column_type, display_order)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, form_id, label, field_type, required, destination, mapped_column,
-                   new_column_name, new_column_type, display_order, status`,
-        [
-          input.formId,
-          input.label,
-          input.fieldType,
-          input.required,
-          input.destination,
-          input.mappedColumn,
-          input.newColumnName,
-          input.newColumnType,
-          input.displayOrder,
-        ],
+        `INSERT INTO consent_form_customer_fields (form_id, label, field_type, required, is_identifier, display_order)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, form_id, label, field_type, required, is_identifier, display_order, status`,
+        [input.formId, input.label, input.fieldType, input.required, input.isIdentifier, input.displayOrder],
       );
       return rows[0]!;
     });
@@ -241,34 +223,15 @@ export class ConsentFormsRepository {
 
   updateCustomerField(
     fieldId: string,
-    input: {
-      label: string;
-      fieldType: string;
-      required: boolean;
-      destination: 'consent_record' | 'customer_field' | 'both';
-      mappedColumn: string | null;
-      newColumnName: string | null;
-      newColumnType: string | null;
-    },
+    input: { label: string; fieldType: string; required: boolean; isIdentifier: boolean },
   ): Promise<CustomerFieldRow | null> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
         `UPDATE consent_form_customer_fields
-            SET label = $2, field_type = $3, required = $4, destination = $5,
-                mapped_column = $6, new_column_name = $7, new_column_type = $8, updated_at = now()
+            SET label = $2, field_type = $3, required = $4, is_identifier = $5, updated_at = now()
           WHERE id = $1 AND status = 'active'
-          RETURNING id, form_id, label, field_type, required, destination, mapped_column,
-                    new_column_name, new_column_type, display_order, status`,
-        [
-          fieldId,
-          input.label,
-          input.fieldType,
-          input.required,
-          input.destination,
-          input.mappedColumn,
-          input.newColumnName,
-          input.newColumnType,
-        ],
+          RETURNING id, form_id, label, field_type, required, is_identifier, display_order, status`,
+        [fieldId, input.label, input.fieldType, input.required, input.isIdentifier],
       );
       return rows[0] ?? null;
     });
@@ -435,6 +398,51 @@ export class ConsentFormsRepository {
         byId.set(a.submission_id, list);
       }
       return submissions.map((s) => ({ ...s, answers: byId.get(s.id) ?? [] }));
+    });
+  }
+
+  /** Submissions this template's consent data has not yet been written into
+   *  local storage for (Central DPDP Storage simplification's hybrid sync
+   *  model). Same shape as listSubmissions, filtered. */
+  listPendingLocalSync(formId: string): Promise<Array<FormSubmissionRow & { answers: FormSubmissionAnswerRow[] }>> {
+    return this.db.withTenant(async (client) => {
+      const { rows: submissions } = await client.query<FormSubmissionRow>(
+        `SELECT * FROM consent_form_submissions WHERE form_id = $1 AND local_synced_at IS NULL ORDER BY submitted_at`,
+        [formId],
+      );
+      if (submissions.length === 0) return [];
+      const { rows: answers } = await client.query<FormSubmissionAnswerRow>(
+        `SELECT a.id, a.submission_id, a.consent_purpose_id, a.granted, a.consent_event_id,
+                cpv.purpose_name AS consent_purpose_name
+           FROM consent_form_submission_answers a
+           LEFT JOIN LATERAL (
+             SELECT purpose_name FROM consent_purpose_versions
+              WHERE purpose_id = a.consent_purpose_id ORDER BY version_number DESC LIMIT 1
+           ) cpv ON true
+          WHERE a.submission_id = ANY($1::uuid[])`,
+        [submissions.map((s) => s.id)],
+      );
+      const byId = new Map<string, FormSubmissionAnswerRow[]>();
+      for (const a of answers) {
+        const list = byId.get(a.submission_id) ?? [];
+        list.push(a);
+        byId.set(a.submission_id, list);
+      }
+      return submissions.map((s) => ({ ...s, answers: byId.get(s.id) ?? [] }));
+    });
+  }
+
+  /** Marks one submission's local write as complete. Scoped to formId so a
+   *  submission can only be marked via the template it actually belongs to.
+   *  Idempotent (re-marking an already-synced submission is a no-op, not an
+   *  error) — the browser may legitimately retry after a partial failure. */
+  markSubmissionSynced(formId: string, submissionId: string): Promise<boolean> {
+    return this.db.withTenant(async (client) => {
+      const { rowCount } = await client.query(
+        `UPDATE consent_form_submissions SET local_synced_at = now() WHERE id = $1 AND form_id = $2`,
+        [submissionId, formId],
+      );
+      return (rowCount ?? 0) > 0;
     });
   }
 }

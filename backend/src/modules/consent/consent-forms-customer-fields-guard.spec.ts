@@ -2,16 +2,18 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * THE PHASE-3G-1 GUARD.
+ * THE CONSENT FORM FIELD GUARD.
  *
- * Phase 3G-1 is CONFIGURATION ONLY: field discovery (metadata), explicit
- * mapping, and identity-column selection. It must NEVER, from the central
+ * A consent form field (the simple, Google-Forms-like field list) is
+ * CONFIGURATION ONLY: label/type/required. It must NEVER, from the central
  * backend:
- *   - run a schema-changing statement (ALTER TABLE / CREATE COLUMN) — that is a
- *     Gateway-side, explicitly-confirmed operation belonging to a later phase;
- *   - write to a client's customer table (INSERT/UPDATE against anything other
- *     than this phase's own consent_form_customer_fields / consent_forms rows);
- *   - store a submitted customer VALUE anywhere;
+ *   - run a schema-changing statement (ALTER TABLE / CREATE COLUMN) — a form
+ *     field has never had any relationship to a client's own database schema;
+ *   - write to any table other than its own (consent_form_customer_fields /
+ *     consent_forms);
+ *   - store a submitted customer VALUE anywhere — the browser writes that
+ *     straight to Central DPDP Storage (frontend/src/lib/central-storage.ts),
+ *     never through this backend;
  *   - resolve/look up a customer (no resolveCustomer, no customer lookup call);
  *   - touch Data Inventory tables/services.
  *
@@ -45,7 +47,7 @@ const PHASE_3G1_FILES = [
   join(DATASOURCE_DIR, 'data-source.controller.ts'),
 ];
 
-describe('Phase 3G-1 — no schema write, no customer-table write, no customer resolution', () => {
+describe('Consent form fields — no schema write, no customer-table write, no customer resolution', () => {
   it('checks real files (not vacuous)', () => {
     for (const f of PHASE_3G1_FILES) expect(statSync(f).isFile()).toBe(true);
   });
@@ -59,10 +61,10 @@ describe('Phase 3G-1 — no schema write, no customer-table write, no customer r
     }
   });
 
-  it('no customer resolution / lookup capability exists yet', () => {
+  it('no LIVE customer lookup (the removed Gateway-side resolve/write/create flow) — the internal customer/data-principal UUID registry (DataPrincipalService.resolveCustomerId) is a different, later, deliberate capability and is NOT what this guards', () => {
     for (const f of PHASE_3G1_FILES) {
       const code = codeOnly(readFileSync(f, 'utf8'));
-      for (const forbidden of ['resolveCustomer', 'findCustomer', 'lookupCustomer', 'customerLookup']) {
+      for (const forbidden of ['customer-resolution', 'CustomerResolutionError', 'findCustomer', 'lookupCustomer', 'customerLookup']) {
         expect({ f, forbidden, hit: code.includes(forbidden) }).toEqual({ f, forbidden, hit: false });
       }
     }
@@ -70,10 +72,10 @@ describe('Phase 3G-1 — no schema write, no customer-table write, no customer r
 
   it('the customer-field repository methods write only to their own table — no customer-table write', () => {
     const repo = codeOnly(readFileSync(join(CONSENT_DIR, 'consent-forms.repository.ts'), 'utf8'));
-    // Scope to the 3G-1 section only — the rest of this file legitimately writes
-    // to the PRE-EXISTING consent_form_rows/consent_form_submissions tables,
-    // which this guard is not about.
-    const start = repo.indexOf('setFormSource(');
+    // Scope to the field-CRUD section only — the rest of this file legitimately
+    // writes to the PRE-EXISTING consent_form_rows/consent_form_submissions
+    // tables, which this guard is not about.
+    const start = repo.indexOf('listCustomerFields(');
     const end = repo.indexOf('addRow(input:');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);

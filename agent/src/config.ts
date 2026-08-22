@@ -15,9 +15,12 @@
  * the agent detects and reports it (networkMode = 'non-loopback') and must never
  * be silently exposed to a network interface.
  */
-import { GATEWAY_LOOPBACK_HOST } from '@dpdp/shared';
+import os from 'node:os';
+import path from 'node:path';
+import { GATEWAY_LOOPBACK_HOST, GATEWAY_AGENT_PLATFORMS, type GatewayAgentPlatform } from '@dpdp/shared';
 
 export const DEFAULT_BIND_PORT = 7071;
+const DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60;
 
 export type NetworkMode = 'loopback' | 'non-loopback';
 
@@ -26,10 +29,37 @@ export interface AgentConfig {
   bindPort: number;
   /** Exact origins allowed to call the agent. Empty until configured. */
   allowedOrigins: readonly string[];
-  /** Where the agent will reach Azure/the DPDP control plane later. Not used in 3B. */
+  /** Where the agent reaches the central DPDP control plane (enrollment,
+   *  heartbeat, pairing, de-enrollment). Required for any of that; a data-only
+   *  local test setup can still omit it (data-plane calls don't need it). */
   controlPlaneUrl: string | null;
   /** Derived from bindHost — 'non-loopback' the moment it is not a loopback addr. */
   networkMode: NetworkMode;
+  /** Where this agent persists its enrollment device credential between
+   *  restarts (see enrollment.ts) — never the central database, never the
+   *  one-time enrollment code itself (which is spent after one use). */
+  stateDir: string;
+  /** A one-time enrollment code, present only on a run before this device has
+   *  ever enrolled. Once a credential exists in stateDir this is never read. */
+  enrollmentCode: string | null;
+  /** Non-secret label shown to staff in DPDP's Gateway device list. */
+  displayName: string;
+  /** How often the agent calls POST /gateway/heartbeat once enrolled. */
+  heartbeatIntervalSeconds: number;
+  /** This device's platform, exactly as the enrollment contract requires
+   *  (GATEWAY_AGENT_PLATFORMS) — derived from the runtime, never guessed. */
+  platform: GatewayAgentPlatform;
+}
+
+/** windows|linux only, matching GATEWAY_AGENT_PLATFORMS exactly — fails closed
+ *  (loudly) rather than mis-declaring an unsupported OS as one of these two. */
+export function resolvePlatform(nodePlatform: NodeJS.Platform): GatewayAgentPlatform {
+  if (nodePlatform === 'win32') return 'windows';
+  if (nodePlatform === 'linux') return 'linux';
+  throw new AgentConfigError(
+    `This platform (${nodePlatform}) is not supported by the Gateway enrollment contract ` +
+      `(${GATEWAY_AGENT_PLATFORMS.join('|')} only).`,
+  );
 }
 
 /** Raised for any invalid configuration. The message never contains a secret. */
@@ -111,7 +141,10 @@ function parseAllowedOrigins(raw: string | undefined): string[] {
  * total: it either returns a valid config or throws AgentConfigError. It performs
  * NO I/O and opens NO socket — creating/listening is the server's job.
  */
-export function loadAgentConfig(env: NodeJS.ProcessEnv = process.env): AgentConfig {
+export function loadAgentConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  nodePlatform: NodeJS.Platform = process.platform,
+): AgentConfig {
   const bindHost = (env.GATEWAY_BIND_HOST ?? GATEWAY_LOOPBACK_HOST).trim();
   if (!isValidBindHost(bindHost)) {
     throw new AgentConfigError('GATEWAY_BIND_HOST is not a valid IP address or hostname.');
@@ -137,11 +170,37 @@ export function loadAgentConfig(env: NodeJS.ProcessEnv = process.env): AgentConf
     }
   }
 
+  const stateDir = (env.GATEWAY_STATE_DIR ?? path.join(os.homedir(), '.dpdp-gateway')).trim();
+  if (!stateDir) {
+    throw new AgentConfigError('GATEWAY_STATE_DIR resolved to an empty path.');
+  }
+
+  const enrollmentCode = env.GATEWAY_ENROLLMENT_CODE?.trim() || null;
+
+  const displayName = (env.GATEWAY_DISPLAY_NAME ?? os.hostname()).trim();
+  if (!displayName) {
+    throw new AgentConfigError('GATEWAY_DISPLAY_NAME resolved to an empty string — set it explicitly.');
+  }
+
+  const heartbeatRaw = env.GATEWAY_HEARTBEAT_INTERVAL_SECONDS;
+  const heartbeatIntervalSeconds =
+    heartbeatRaw === undefined || heartbeatRaw === '' ? DEFAULT_HEARTBEAT_INTERVAL_SECONDS : Number(heartbeatRaw);
+  if (!Number.isInteger(heartbeatIntervalSeconds) || heartbeatIntervalSeconds < 5) {
+    throw new AgentConfigError('GATEWAY_HEARTBEAT_INTERVAL_SECONDS must be an integer of at least 5.');
+  }
+
+  const platform = resolvePlatform(nodePlatform);
+
   return {
     bindHost,
     bindPort,
     allowedOrigins,
     controlPlaneUrl,
     networkMode: isLoopbackHost(bindHost) ? 'loopback' : 'non-loopback',
+    stateDir,
+    enrollmentCode,
+    displayName,
+    heartbeatIntervalSeconds,
+    platform,
   };
 }

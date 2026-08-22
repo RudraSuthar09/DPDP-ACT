@@ -32,5 +32,9 @@ import { GatewayRepository } from './gateway.repository';
   imports: [DataSourceModule, InstallationModule, CapabilityModule],
   controllers: [GatewayController],
   providers: [GatewayService, GatewayRepository, TokenService],
+  // Exported so a later module (e.g. Storage & Folder Mapping, binding a
+  // storage root to a Gateway device) can verify a device THROUGH this
+  // service (R2 — never its own SQL against gateway_devices).
+  exports: [GatewayService],
 })
 export class GatewayModule {}

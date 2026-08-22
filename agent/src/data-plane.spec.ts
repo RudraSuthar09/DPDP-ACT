@@ -328,19 +328,31 @@ describe('Phase 3D — RAW-DATA BOUNDARY guard (connectors + data plane)', () =>
     }
   });
 
-  it('the ONLY outbound call (control-plane redeem) sends metadata only — never rows', () => {
+  it('the ONLY outbound HTTP call site is enrollment.ts\'s shared control-plane client — never rows', () => {
+    // Phase 3C moved the control-plane HTTP client (enroll/heartbeat/refresh/
+    // de-enroll/pairing-redeem) into enrollment.ts as the SINGLE such client —
+    // data-plane.ts no longer makes its own HTTP call at all (it depends on
+    // the injected ControlPlaneClient interface; index.ts wires an adapter
+    // over enrollment.ts's client). This asserts that split precisely, rather
+    // than just widening the old single-file check.
     const dp = codeOnly(readFileSync(join(dir, 'data-plane.ts'), 'utf8'));
-    // exactly one fetch, in the control-plane client
-    expect((dp.match(/fetch\(/g) ?? []).length).toBe(1);
-    // The request BODY (not the fetch options) must be metadata only.
-    const at = dp.indexOf('body: JSON.stringify(');
-    expect(at).toBeGreaterThan(-1);
-    const bodyArg = dp.slice(at, at + 60);
-    for (const banned of ['rows', 'headers', 'parsed', 'values', 'buffer']) {
-      expect({ banned, hit: bodyArg.includes(banned) }).toEqual({ banned, hit: false });
+    expect((dp.match(/fetch\(/g) ?? []).length).toBe(0);
+
+    const enroll = codeOnly(readFileSync(join(dir, 'enrollment.ts'), 'utf8'));
+    // Every control-plane call funnels through ONE shared postJson() helper —
+    // not five separate fetch() call sites, one per operation.
+    expect((enroll.match(/fetch\(/g) ?? []).length).toBe(1);
+
+    // No raw-row-shaped identifier appears anywhere in the control-plane
+    // client — every payload it sends is ids/hashes/tokens/non-secret device
+    // metadata (enforced server-side too, by gateway.dto.ts).
+    for (const banned of ['rows', 'parsedRow', 'customerValue', 'rowData', 'buffer']) {
+      expect({ banned, hit: enroll.includes(banned) }).toEqual({ banned, hit: false });
     }
-    expect(bodyArg).toContain('nonce');
-    expect(bodyArg).toContain('sourceId');
+    // The pairing-redemption request shape (nonce + sourceId, metadata only)
+    // is still exactly what it was before the move.
+    expect(enroll).toContain('nonce');
+    expect(enroll).toContain('sourceId');
   });
 
   it('no raw rows/headers/values are ever logged', () => {

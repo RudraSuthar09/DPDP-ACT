@@ -5,7 +5,7 @@
  * never read or attach the bearer token api.ts keeps in localStorage.
  */
 
-import { API_URL } from './api';
+import { API_URL, SERVER_API_URL } from './api';
 
 export class FormPortalApiError extends Error {
   constructor(
@@ -43,7 +43,7 @@ export async function formPortalFetch<T>(
 /** Server-side fetch for the SSR form lookup — returns null on a 404 so the
  *  page can call Next's `notFound()`, same contract as portalFetchServer. */
 export async function formPortalFetchServer<T>(path: string): Promise<T | null> {
-  const res = await fetch(`${API_URL}${path}`, { cache: 'no-store' });
+  const res = await fetch(`${SERVER_API_URL}${path}`, { cache: 'no-store' });
   if (res.status === 404) return null;
   if (!res.ok) {
     const text = await res.text();

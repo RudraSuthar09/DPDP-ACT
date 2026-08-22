@@ -77,67 +77,47 @@ export interface ConsentStatusAsOf {
 }
 
 // ===========================================================================
-// Phase 3G-1 — Consent Form customer-data field CONFIGURATION (metadata only)
+// Consent Form fields — a simple, Google-Forms-like field list (metadata only)
 // ===========================================================================
 //
-// A form can now contain, alongside its existing consent-purpose rows, fields
-// that are configured to eventually correspond to a column in the client's OWN
-// connected data source. These types describe the CONFIGURATION only — a column
-// NAME the client explicitly chose, never a submitted value. See the migration
-// header (1737003300000) for the full invariant.
+// A form contains, alongside its existing consent-purpose rows, the plain
+// information fields it collects (Name, Aadhaar Number, Identity Document...).
+// This is CONFIGURATION only: label/type/required. The value a customer
+// submits for a field NEVER reaches central PostgreSQL — it is written by the
+// browser directly into Central DPDP Storage (always) and, if the client
+// explicitly configured one, into that field's own additional local folder
+// (StorageMapping, moduleKey 'consent_form_field', entityId = this field's own
+// id — see shared/src/storage.ts). There is no "customer database column"
+// destination concept any more (that Phase 3G-1/3H-1 system — Customer Data
+// Source, mapped/new columns, staff-assisted consent — has been removed; the
+// Data Source module's own identity-column/writable-columns configuration is
+// untouched and unrelated).
 
 /**
- * Where a customer-data field's submitted response is configured to go:
- *   - 'consent_record'  — not a customer-data field at all (e.g. a T&C checkbox);
- *     recorded only in the existing Consent Register, exactly as today.
- *   - 'customer_field'  — mapped to an existing/new column in the connected source.
- *   - 'both'            — recorded in the Consent Register AND mapped to a column.
+ * Form field types the builder offers today. Purely a label/presentation +
+ * local-write concept — choosing one never infers a database column or
+ * meaning (I1/no-inference); it only decides how the browser renders the
+ * public input (text box vs. file picker) and what it writes locally
+ * (a plain value vs. raw file bytes). Extend this list (a one-line migration
+ * + this array, same mechanism as STORAGE_MODULE_KEYS) when a future type is
+ * needed — deliberately small for now.
  */
-export const CONSENT_FIELD_DESTINATIONS = ['consent_record', 'customer_field', 'both'] as const;
-export type ConsentFieldDestination = (typeof CONSENT_FIELD_DESTINATIONS)[number];
-
-/**
- * Form field types the builder offers. Purely a label/presentation concept —
- * choosing one never infers a database column or a meaning (I1/no-inference).
- *
- * `document_upload` and `signature` are real field types a client can add to a
- * form, but there is currently NO supported destination for their actual
- * VALUE anywhere in this platform — no central file/blob storage exists (by
- * design, I1/R6), and the Gateway's controlled write contract carries only
- * short string values, never binary. See CONSENT_FIELD_TYPES_WITHOUT_STORAGE:
- * the DTO layer enforces that these two types can only ever be configured
- * with `destination: 'consent_record'` (i.e. not persisted to a customer
- * column) until a future, separately-approved storage adapter exists — at
- * which point loosening this is a DTO change, not a migration.
- */
-export const CONSENT_FORM_FIELD_TYPES = ['text', 'number', 'date', 'document_upload', 'signature', 'checkbox'] as const;
+export const CONSENT_FORM_FIELD_TYPES = ['text', 'pdf', 'excel'] as const;
 export type ConsentFormFieldType = (typeof CONSENT_FORM_FIELD_TYPES)[number];
 
-/** Field types with no supported customer-column storage destination (yet). */
-export const CONSENT_FIELD_TYPES_WITHOUT_STORAGE = ['document_upload', 'signature'] as const satisfies readonly ConsentFormFieldType[];
-
-/** A form's customer-data field configuration — never a submitted value. */
+/** A form's field configuration — never a submitted value. */
 export interface ConsentFormCustomerField {
   id: string;
   formId: string;
   label: string;
-  fieldType: string;
+  fieldType: ConsentFormFieldType;
   required: boolean;
-  destination: ConsentFieldDestination;
-  /** The EXISTING client column name, explicitly chosen. Null until confirmed. */
-  mappedColumn: string | null;
-  /** "Create new column" configuration — requested only, nothing created (3G-1). */
-  newColumnName: string | null;
-  newColumnType: string | null;
+  /** Whether THIS field's value is the raw identity hashed into subject_ref
+   *  (I2) and used to resolve/reuse the customer's Central DPDP Storage
+   *  folder — the platform never hardcodes Name/Email/Phone any more; the
+   *  client marks whichever of their own fields serves that role, or none
+   *  (each submission is then a new, unrelated customer). At most one true
+   *  per form, DB-enforced. */
+  isIdentifier: boolean;
   displayOrder: number;
-}
-
-export interface SaveConsentFormCustomerFieldInput {
-  label: string;
-  fieldType: string;
-  required: boolean;
-  destination: ConsentFieldDestination;
-  mappedColumn: string | null;
-  newColumnName: string | null;
-  newColumnType: string | null;
 }

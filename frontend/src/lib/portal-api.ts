@@ -13,7 +13,7 @@
  * storage.
  */
 
-import { API_URL } from './api';
+import { API_URL, SERVER_API_URL } from './api';
 
 export class PortalApiError extends Error {
   constructor(
@@ -73,7 +73,7 @@ function errorMessage(data: unknown): string | null {
  * error message.
  */
 export async function portalFetchServer<T>(path: string): Promise<T | null> {
-  const res = await fetch(`${API_URL}${path}`, { cache: 'no-store' });
+  const res = await fetch(`${SERVER_API_URL}${path}`, { cache: 'no-store' });
   if (res.status === 404) return null;
   if (!res.ok) {
     const text = await res.text();

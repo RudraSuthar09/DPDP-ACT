@@ -2,14 +2,22 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * THE PHASE-3B AGENT BOUNDARY GUARD.
+ * THE AGENT BOUNDARY GUARD (originally Phase-3B; now also pins the Phase-3C
+ * enrollment exception precisely, rather than being disabled/loosened).
  *
- * The skeleton agent must have NO raw-data capability, NO connector, NO database
- * write path, NO filesystem reader, NO outbound Azure data plane, and must never
- * log a token/credential. It must not reach into SchemaSource (S4) or Tier-2.
- * This spec asserts those absences structurally over the agent's own source, in
- * the same static-analysis style as the datasource/consent/gateway guards — so a
- * future edit that starts building capability before its phase goes red here.
+ * The agent's TOP-LEVEL files (this directory, non-recursive — connectors/ has
+ * its own guards, e.g. raw-access-guard equivalents at the connector level)
+ * must have NO database write path, and must never log a token/credential. It
+ * must not reach into SchemaSource (S4) or Tier-2. Two capabilities are now
+ * deliberately real, each confined to exactly one file and asserted as such
+ * below rather than just exempted silently: enrollment.ts is the sole
+ * filesystem reader (its own local credential file) and the sole
+ * control-plane HTTP client; data-plane.ts is exempted from the outbound-call
+ * check too, but — following the removal of its own httpControlPlaneClient —
+ * no longer itself calls fetch. This spec asserts those absences/exceptions
+ * structurally over the agent's own source, in the same static-analysis style
+ * as the datasource/consent/gateway guards — so a future edit that starts
+ * building capability outside its intended file goes red here.
  */
 
 const SRC_DIR = __dirname;
@@ -59,23 +67,34 @@ describe('Phase 3B — the agent skeleton has no data capability (boundary guard
     }
   });
 
-  it('12. no filesystem reader exists (the agent reads no files)', () => {
+  it('12. no filesystem reader exists outside the one deliberate exception (enrollment.ts)', () => {
+    // enrollment.ts (Phase 3C agent-side enrollment) is the ONE deliberate
+    // exception: it persists this device's own enrollment credential to a
+    // local JSON file (never a client-database credential, never customer
+    // data — see loadPersistedCredential/savePersistedCredential). No other
+    // top-level runtime file may read/write a file.
     const FS = ['readFileSync', 'readFile(', 'createReadStream', 'openSync', 'fs.read', "from 'node:fs'", "require('node:fs')"];
     for (const [file, src] of Object.entries(code)) {
+      if (file.endsWith('enrollment.ts')) continue;
       for (const token of FS) {
         expect({ file, token, hit: src.includes(token) }).toEqual({ file, token, hit: false });
       }
     }
   });
 
-  it('the only outbound call is the control-plane redeem in data-plane.ts (metadata only)', () => {
-    // Phase 3D connects the data plane to the control plane via exactly ONE
-    // outbound call (redeem a pairing → session), in data-plane.ts, carrying
-    // metadata only — proven metadata-only by data-plane.spec.ts. NO other
-    // top-level runtime file may make a network call, and raw rows never leave.
+  it('the only outbound calls are the control-plane client (enrollment.ts) and its data-plane use (data-plane.ts)', () => {
+    // enrollment.ts is the ONE control-plane HTTP client (enroll, heartbeat,
+    // session refresh, de-enroll, pairing redemption) — see
+    // createControlPlaneClient. It carries metadata only: ids, hashes,
+    // tokens, non-secret device info, never a client-database credential or
+    // a customer value (enforced server-side too, by gateway.dto.ts's
+    // rejectSecretFields). data-plane.ts is exempted too (harmless even
+    // though it no longer itself calls fetch — it depends on the injected
+    // ControlPlaneClient interface, never a second HTTP implementation of
+    // its own). NO other top-level runtime file may make a network call.
     const OUT = ['http.request', 'https.request', 'fetch(', 'axios', 'new WebSocket', 'sendBeacon'];
     for (const [file, src] of Object.entries(code)) {
-      if (file.endsWith('data-plane.ts')) continue; // the sole, guarded control-plane call
+      if (file.endsWith('data-plane.ts') || file.endsWith('enrollment.ts')) continue;
       for (const token of OUT) {
         expect({ file, token, hit: src.includes(token) }).toEqual({ file, token, hit: false });
       }

@@ -17,9 +17,13 @@ import { SessionStore } from './session-store';
  * browser; they are never sent to Azure, persisted, or logged here.
  */
 
-/** The one outbound call the data plane makes: redeem a pairing → session. It
- *  carries METADATA ONLY (nonce + sourceId) and returns a session token — never
- *  a customer value. Injected so it is network-agnostic and testable. */
+/** The one outbound call the data plane itself makes: redeem a pairing →
+ *  session. It carries METADATA ONLY (nonce + sourceId) and returns a session
+ *  token — never a customer value. Injected so it is network-agnostic and
+ *  testable. The real HTTP implementation lives in enrollment.ts's
+ *  `createControlPlaneClient` (the single control-plane HTTP client, also
+ *  covering enroll/heartbeat/refresh/de-enroll) — index.ts adapts it down to
+ *  this narrower shape rather than this module having its own copy. */
 export interface ControlPlaneClient {
   redeemPairing(input: { nonce: string; sourceId: string }): Promise<{ sessionToken: string; expiresAt: string }>;
 }
@@ -236,27 +240,4 @@ export async function handleDataPlaneRequest(
     if (typeof code === 'string') return fail(code);
     return fail('BAD_REQUEST');
   }
-}
-
-/**
- * The real control-plane client: redeems a pairing at the configured control
- * plane URL, presenting the device token. Network comes from configuration — no
- * hardcoded address. Sends METADATA ONLY (nonce + sourceId); receives a token.
- */
-export function httpControlPlaneClient(input: {
-  controlPlaneUrl: string;
-  deviceToken: string;
-}): ControlPlaneClient {
-  return {
-    async redeemPairing({ nonce, sourceId }) {
-      const res = await fetch(`${input.controlPlaneUrl}/gateway/pair/redeem`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-gateway-device-token': input.deviceToken },
-        body: JSON.stringify({ nonce, sourceId }),
-      });
-      if (!res.ok) throw new Error('PERMISSION_DENIED');
-      const json = (await res.json()) as { sessionToken: string; expiresAt: string };
-      return { sessionToken: json.sessionToken, expiresAt: json.expiresAt };
-    },
-  };
 }

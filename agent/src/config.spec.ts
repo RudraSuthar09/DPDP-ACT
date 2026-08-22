@@ -5,6 +5,7 @@ import {
   isLoopbackHost,
   isValidBindHost,
   isExactOrigin,
+  resolvePlatform,
   DEFAULT_BIND_PORT,
 } from './config';
 
@@ -109,5 +110,45 @@ describe('Phase 3B — agent network configuration is env-driven with secure def
     expect(isExactOrigin('https://a.example:8443')).toBe(true);
     expect(isExactOrigin('https://a.example/app')).toBe(false);
     expect(isExactOrigin('*')).toBe(false);
+  });
+
+  it('Phase 3C: enrollment config has sensible defaults and validates', () => {
+    const c = loadAgentConfig({}, 'linux');
+    expect(c.enrollmentCode).toBeNull();
+    expect(c.heartbeatIntervalSeconds).toBe(60);
+    expect(c.stateDir.length).toBeGreaterThan(0);
+    expect(c.displayName.length).toBeGreaterThan(0);
+    expect(c.platform).toBe('linux');
+
+    const c2 = loadAgentConfig(
+      {
+        GATEWAY_STATE_DIR: '/tmp/my-gateway-state',
+        GATEWAY_ENROLLMENT_CODE: '  a-code  ',
+        GATEWAY_DISPLAY_NAME: 'Finance workstation',
+        GATEWAY_HEARTBEAT_INTERVAL_SECONDS: '30',
+      },
+      'win32',
+    );
+    expect(c2.stateDir).toBe('/tmp/my-gateway-state');
+    expect(c2.enrollmentCode).toBe('a-code');
+    expect(c2.displayName).toBe('Finance workstation');
+    expect(c2.heartbeatIntervalSeconds).toBe(30);
+    expect(c2.platform).toBe('windows');
+  });
+
+  it('Phase 3C: an invalid heartbeat interval is rejected', () => {
+    for (const bad of ['0', '4', '-1', 'abc', '3.5']) {
+      expect(() => loadAgentConfig({ GATEWAY_HEARTBEAT_INTERVAL_SECONDS: bad }, 'linux')).toThrow(
+        AgentConfigError,
+      );
+    }
+  });
+
+  it('Phase 3C: platform is derived from the runtime, never guessed — win32/linux map, everything else fails closed', () => {
+    expect(resolvePlatform('win32')).toBe('windows');
+    expect(resolvePlatform('linux')).toBe('linux');
+    for (const unsupported of ['darwin', 'freebsd', 'sunos'] as const) {
+      expect(() => resolvePlatform(unsupported)).toThrow(AgentConfigError);
+    }
   });
 });

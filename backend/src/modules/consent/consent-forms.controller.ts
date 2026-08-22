@@ -8,7 +8,6 @@ import {
   parseAddRowInput,
   parseSaveCustomerField,
   parseSaveFormInput,
-  parseSetFormSource,
   parseUpdateRowInput,
 } from './consent-forms.dto';
 
@@ -57,16 +56,7 @@ export class ConsentFormsController {
     return this.forms.setActive(id, parseActiveFlag(body, 'isActive'));
   }
 
-  /** Phase 3G-1: explicitly associate (or clear, with sourceId: null) this
-   *  form's data source. Never automatic. */
-  @Patch(':id/source')
-  @Roles(...MANAGE)
-  @Audited('consent.form.source_set')
-  async setSource(@Param('id') id: string, @Body() body: unknown) {
-    return this.forms.setFormSource(id, parseSetFormSource(body).sourceId);
-  }
-
-  // --- customer-data fields (Phase 3G-1: configuration only) -----------------
+  // --- form fields (a simple, Google-Forms-like field list; configuration only) --
 
   @Post(':id/customer-fields')
   @Roles(...MANAGE)
@@ -126,5 +116,21 @@ export class ConsentFormsController {
   @Get(':id/submissions')
   async submissions(@Param('id') id: string) {
     return { submissions: await this.forms.listSubmissions(id) };
+  }
+
+  /** Central DPDP Storage simplification: submissions not yet written to the
+   *  client's local storage — the Storage page's sync routine reads this. */
+  @Get(':id/submissions/pending-local-sync')
+  @Roles(...MANAGE)
+  async pendingLocalSync(@Param('id') id: string) {
+    return { submissions: await this.forms.listPendingLocalSync(id) };
+  }
+
+  @Post(':id/submissions/:submissionId/mark-synced')
+  @Roles(...MANAGE)
+  @Audited('consent.form.submission_local_synced')
+  @HttpCode(HttpStatus.OK)
+  async markSubmissionSynced(@Param('id') id: string, @Param('submissionId') submissionId: string) {
+    return this.forms.markSubmissionSynced(id, submissionId);
   }
 }

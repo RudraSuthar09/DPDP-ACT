@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
 import { EntryPurposesService } from '../inventory/entry-purposes.service';
@@ -7,6 +8,7 @@ import { ConsentNoticesService } from './consent-notices.service';
 import { SubjectRefHasher } from './subject-ref';
 import { ConsentFormsRepository, type CustomerFieldRow, type FormRow } from './consent-forms.repository';
 import { ConsentInventoryLinkRepository } from './consent-inventory-link.repository';
+import { DataPrincipalService } from '../data-principal/data-principal.service';
 import type {
   AddRowInput,
   LinkSubmissionInput,
@@ -39,6 +41,7 @@ export class ConsentFormsService {
     private readonly subjectRef: SubjectRefHasher,
     private readonly entryPurposes: EntryPurposesService,
     private readonly inventoryLinks: ConsentInventoryLinkRepository,
+    private readonly dataPrincipals: DataPrincipalService,
     private readonly tenantContext: TenantContextService,
     private readonly audit: AuditContextService,
   ) {}
@@ -50,6 +53,7 @@ export class ConsentFormsService {
     const form = await this.repo.createForm({
       name: input.name,
       description: input.description,
+      retentionMonths: input.retentionMonths,
       createdBy: ctx.userId,
     });
     this.audit.annotate({
@@ -66,13 +70,14 @@ export class ConsentFormsService {
       name: input.name,
       description: input.description,
       noticeText: input.noticeText,
+      retentionMonths: input.retentionMonths,
     });
     if (!form) throw new NotFoundException('Consent form not found.');
     this.audit.annotate({
       targetType: 'consent_form',
       targetId: formId,
       reason: `Consent form "${input.name}" updated.`,
-      afterState: { name: input.name, hasNoticeText: !!input.noticeText },
+      afterState: { name: input.name, hasNoticeText: !!input.noticeText, retentionMonths: input.retentionMonths },
     });
     return this.getForm(formId);
   }
@@ -98,6 +103,7 @@ export class ConsentFormsService {
       description: f.description,
       slug: f.slug,
       isActive: f.is_active,
+      retentionMonths: f.retention_months,
       rowCount: f.row_count,
       activeRowCount: f.active_row_count,
       submissionCount: f.submission_count,
@@ -117,70 +123,72 @@ export class ConsentFormsService {
       noticeText: form.notice_text,
       slug: form.slug,
       isActive: form.is_active,
-      /** Phase 3G-1: the data source this form may map fields into. NULL for an
-       *  ordinary consent-only form — existing forms are unaffected. */
-      sourceId: form.source_id,
+      /** Central DPDP Storage simplification: months to retain this
+       *  template's consent data in the client's local storage, or null if
+       *  not configured. */
+      retentionMonths: form.retention_months,
       rows: rows.map(toRowResponse),
       customerFields: customerFields.map(toCustomerFieldResponse),
     };
   }
 
-  /** Phase 3G-1: explicitly associate (or clear) this form's data source. A form
-   *  is never auto-associated — only set when a client chooses to. */
-  async setFormSource(formId: string, sourceId: string | null) {
-    const form = await this.repo.setFormSource(formId, sourceId);
-    if (!form) throw new NotFoundException('Consent form not found.');
-    this.audit.annotate({
-      targetType: 'consent_form',
-      targetId: formId,
-      reason: sourceId ? `Consent form associated with data source ${sourceId}.` : 'Consent form data source association cleared.',
-      afterState: { sourceId },
-    });
-    return this.getForm(formId);
-  }
-
-  // --- Phase 3G-1: customer-data field configuration --------------------------
+  // --- Form fields — a simple, Google-Forms-like field list -------------------
   //
-  // A customer-data field is CONFIGURATION ONLY: label/type/required + an
-  // explicit destination + (if mapped) the EXISTING column NAME the client
-  // chose, or (if "create new column") the requested name/type. Nothing here
-  // reads, writes, or stores a submitted VALUE, and nothing here talks to the
-  // Gateway — mapping is a pure metadata decision a human makes in the builder.
+  // A field is CONFIGURATION ONLY: label/type/required, nothing else. Nothing
+  // here reads, writes, or stores a submitted VALUE — the browser writes that
+  // directly to Central DPDP Storage (and, if configured, the field's own
+  // additional local folder via storage_mappings module_key
+  // 'consent_form_field') without it ever reaching this service or PostgreSQL.
 
   async addCustomerField(formId: string, input: SaveCustomerFieldDtoInput) {
     const form = await this.repo.getForm(formId);
     if (!form) throw new NotFoundException('Consent form not found.');
     const displayOrder = await this.repo.nextCustomerFieldDisplayOrder(formId);
-    const field = await this.repo.addCustomerField({ formId, displayOrder, ...input });
+    let field;
+    try {
+      field = await this.repo.addCustomerField({ formId, displayOrder, ...input });
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new BadRequestException('This form already has a Customer Identifier field — uncheck it there first.');
+      }
+      throw err;
+    }
     this.audit.annotate({
       targetType: 'consent_form_customer_field',
       targetId: field.id,
-      reason: `Customer-data field "${input.label}" added (destination: ${input.destination}).`,
-      // Metadata only: destination + column NAME (schema metadata, never a value).
-      afterState: { destination: input.destination, mappedColumn: input.mappedColumn, newColumnName: input.newColumnName },
+      reason: `Field "${input.label}" added (type: ${input.fieldType}${input.isIdentifier ? ', identifier' : ''}).`,
+      afterState: { label: input.label, fieldType: input.fieldType, required: input.required, isIdentifier: input.isIdentifier },
     });
     return this.getForm(formId);
   }
 
   async updateCustomerField(formId: string, fieldId: string, input: SaveCustomerFieldDtoInput) {
-    const field = await this.repo.updateCustomerField(fieldId, input);
-    if (!field) throw new NotFoundException('Customer-data field not found.');
+    let field;
+    try {
+      field = await this.repo.updateCustomerField(fieldId, input);
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new BadRequestException('This form already has a Customer Identifier field — uncheck it there first.');
+      }
+      throw err;
+    }
+    if (!field) throw new NotFoundException('Field not found.');
     this.audit.annotate({
       targetType: 'consent_form_customer_field',
       targetId: fieldId,
-      reason: `Customer-data field "${input.label}" edited (destination: ${input.destination}).`,
-      afterState: { destination: input.destination, mappedColumn: input.mappedColumn, newColumnName: input.newColumnName },
+      reason: `Field "${input.label}" edited (type: ${input.fieldType}${input.isIdentifier ? ', identifier' : ''}).`,
+      afterState: { label: input.label, fieldType: input.fieldType, required: input.required, isIdentifier: input.isIdentifier },
     });
     return this.getForm(formId);
   }
 
   async removeCustomerField(formId: string, fieldId: string) {
     const removed = await this.repo.removeCustomerField(fieldId);
-    if (!removed) throw new NotFoundException('Customer-data field not found or already removed.');
+    if (!removed) throw new NotFoundException('Field not found or already removed.');
     this.audit.annotate({
       targetType: 'consent_form_customer_field',
       targetId: fieldId,
-      reason: 'Customer-data field removed from a form.',
+      reason: 'Field removed from a form.',
       afterState: { status: 'removed' },
     });
     return this.getForm(formId);
@@ -292,6 +300,46 @@ export class ConsentFormsService {
     }));
   }
 
+  /** Submissions this template's consent data has not yet been written into
+   *  the client's local storage for — the Storage page's sync routine reads
+   *  this, writes the file(s) itself (browser-side, this service never
+   *  touches a filesystem), then calls markSubmissionSynced. Never a raw
+   *  customer name/id — subjectRef only, exactly like listSubmissions (I2). */
+  async listPendingLocalSync(formId: string) {
+    const form = await this.repo.getForm(formId);
+    if (!form) throw new NotFoundException('Consent form not found.');
+    const submissions = await this.repo.listPendingLocalSync(formId);
+    return Promise.all(
+      submissions.map(async (s) => ({
+        id: s.id,
+        channel: s.channel,
+        submittedAt: s.submitted_at,
+        subjectRef: s.subject_ref,
+        // Resolves (never re-creates — every one of these was already
+        // resolved once at submit time) the same internal customer UUID the
+        // Storage page's deferred sync needs for resolveCustomerFolder.
+        customerId: await this.dataPrincipals.resolveCustomerId(s.subject_ref),
+        answers: s.answers.map((a) => ({
+          consentPurposeId: a.consent_purpose_id,
+          purposeName: a.consent_purpose_name,
+          granted: a.granted,
+        })),
+      })),
+    );
+  }
+
+  async markSubmissionSynced(formId: string, submissionId: string) {
+    const ok = await this.repo.markSubmissionSynced(formId, submissionId);
+    if (!ok) throw new NotFoundException('Consent form submission not found.');
+    this.audit.annotate({
+      targetType: 'consent_form_submission',
+      targetId: submissionId,
+      reason: 'Consent submission written into local storage.',
+      afterState: { locallySynced: true },
+    });
+    return { synced: true };
+  }
+
   // --- public: the tenant-wide embed + the per-form hosted link --------------
 
   /** The one read the site-wide embed makes: every live form with its active
@@ -319,7 +367,22 @@ export class ConsentFormsService {
     if (rows.length === 0) {
       throw new NotFoundException('This form has no active rows.');
     }
-    return { formId: form.id, name: form.name, description: form.description, noticeText: form.notice_text, rows: rows.map(toPublicRow) };
+    const customerFields = await this.repo.listCustomerFields(formId);
+    return {
+      formId: form.id,
+      name: form.name,
+      description: form.description,
+      noticeText: form.notice_text,
+      // Configuration only, for the local Customer Information/retention.json
+      // the browser writes on submit — never enforced/deleted here.
+      retentionMonths: form.retention_months,
+      rows: rows.map(toPublicRow),
+      // Field CONFIGURATION only (id/label/type/required/isIdentifier) —
+      // never a value. The public page renders one input per field; the
+      // browser writes whatever the visitor types/uploads straight to local
+      // storage on submit, never through this backend (I1).
+      fields: customerFields.map(toCustomerFieldResponse),
+    };
   }
 
   async submitWidget(formId: string, input: WidgetSubmissionInput) {
@@ -327,7 +390,13 @@ export class ConsentFormsService {
   }
 
   async submitLink(formId: string, input: LinkSubmissionInput) {
-    const customerId = input.email ? input.email.trim().toLowerCase() : input.phone!.trim();
+    // No hardcoded Name/Email/Phone any more — the client marks ONE of their
+    // own configured fields "Use as Customer Identifier" (is_identifier) and
+    // its value rides here as identityValue. No identifier field configured
+    // (or the visitor left it blank) is legitimate, not an error: a fresh,
+    // never-repeating id means this submission simply won't be recognised as
+    // a repeat customer later — correct, not a failure.
+    const customerId = input.identityValue?.trim() || randomUUID();
     return this.submit(formId, 'link', customerId, input.answers);
   }
 
@@ -378,6 +447,16 @@ export class ConsentFormsService {
     }
 
     const submission = await this.repo.createSubmission({ formId, subjectRef, channel, answers: recorded });
+
+    // The internal customer UUID — never subject_ref itself, and never the
+    // raw `customerId` parameter above (that's the pre-hash identity value,
+    // e.g. an email) — resolved from the SAME subject_ref every other
+    // consent write for this person uses. The SAME person submitting again
+    // always resolves to the SAME internalCustomerId;
+    // storage_mappings.entity_id (moduleKey 'data_principal') uses ONLY
+    // this value, never the 64-character subject_ref hash.
+    const internalCustomerId = await this.dataPrincipals.resolveCustomerId(subjectRef);
+
     this.audit.annotate({
       actorLabel: channel === 'widget' ? 'consent_form:widget' : 'consent_form:link',
       targetType: 'consent_form_submission',
@@ -385,7 +464,12 @@ export class ConsentFormsService {
       reason: `Consent form submitted (${channel}) — ${recorded.filter((r) => r.granted).length}/${recorded.length} granted.`,
       afterState: { formId, channel },
     });
-    return { submissionId: submission.id, subjectRef, answers: recorded.map((r) => ({ consentPurposeId: r.consentPurposeId, granted: r.granted })) };
+    return {
+      submissionId: submission.id,
+      subjectRef,
+      customerId: internalCustomerId,
+      answers: recorded.map((r) => ({ consentPurposeId: r.consentPurposeId, granted: r.granted })),
+    };
   }
 
   // --- the "behind the scenes" resolution ------------------------------------
@@ -443,10 +527,7 @@ function toCustomerFieldResponse(f: CustomerFieldRow) {
     label: f.label,
     fieldType: f.field_type,
     required: f.required,
-    destination: f.destination,
-    mappedColumn: f.mapped_column,
-    newColumnName: f.new_column_name,
-    newColumnType: f.new_column_type,
+    isIdentifier: f.is_identifier,
     displayOrder: f.display_order,
   };
 }

@@ -1,34 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import {
-  CONSENT_FIELD_DESTINATIONS,
-  CONSENT_FIELD_TYPES_WITHOUT_STORAGE,
-  CONSENT_FORM_FIELD_TYPES,
-  type ConsentFieldDestination,
-} from '@dpdp/shared';
-
-/** Column TYPES a "create new column" request may declare (3G-1: config only —
- *  nothing is created yet; this is the allowlist the eventual 3G-2 ALTER will
- *  also enforce). Kept small and generic — never a business-meaning type like
- *  "aadhaar" or "pan". */
-const NEW_COLUMN_TYPES = ['text', 'integer', 'boolean', 'timestamp', 'date'] as const;
-
-/**
- * A strict, conservative column-identifier validator (letters/digits/underscore,
- * starting with a letter/underscore, ≤63 chars). Deliberately duplicated from
- * data-source.dto.ts rather than imported (R2 — modules stay independent; this
- * is six lines, not a shared table) — both copies exist purely so a
- * client-supplied "this is a column name" string is shape-checked at the edge,
- * never to construct SQL here.
- */
-function parseColumnIdentifier(value: string, field: string): string {
-  const trimmed = value.trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(trimmed)) {
-    throw new BadRequestException(
-      `${field} must be a valid column identifier (letters, digits, underscore; starting with a letter or underscore).`,
-    );
-  }
-  return trimmed;
-}
+import { CONSENT_FORM_FIELD_TYPES } from '@dpdp/shared';
 
 /** Request parsing for the new-UX consent forms — hand-written and total. */
 
@@ -38,6 +9,10 @@ export interface SaveFormInput {
   /** Client-authored Notice/Terms & Conditions, shown once above the form.
    *  Plain content the client owns — never generated here. */
   noticeText: string | null;
+  /** Central DPDP Storage simplification: how many months this template's
+   *  consent data should be retained in the client's local storage.
+   *  Configuration only — never enforced/deleted by this endpoint. */
+  retentionMonths: number | null;
 }
 
 export interface AddRowInput {
@@ -64,9 +39,11 @@ export interface WidgetSubmissionInput {
 }
 
 export interface LinkSubmissionInput {
-  name: string;
-  email: string | null;
-  phone: string | null;
+  /** The value the customer typed/uploaded into the field marked
+   *  `isIdentifier`, or null if this form has no identifier field (or the
+   *  visitor left it blank) — a submission with no identity is legitimate,
+   *  not an error; it simply cannot be recognised as a repeat customer. */
+  identityValue: string | null;
   answers: FormAnswerInput[];
 }
 
@@ -76,7 +53,19 @@ export function parseSaveFormInput(body: unknown): SaveFormInput {
     name: requireString(obj, 'name', { min: 2, max: 200 }),
     description: optionalStringOrNull(obj, 'description', { max: 2000 }),
     noticeText: optionalStringOrNull(obj, 'noticeText', { max: 20000 }),
+    retentionMonths: optionalPositiveIntOrNull(obj, 'retentionMonths'),
   };
+}
+
+/** A whole number of months, > 0, or absent/null. Never guessed/defaulted —
+ *  the client explicitly sets a retention period or leaves it unconfigured. */
+function optionalPositiveIntOrNull(obj: Record<string, unknown>, field: string): number | null {
+  const value = obj[field];
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new BadRequestException(`${field} must be a positive whole number of months, or omitted.`);
+  }
+  return value;
 }
 
 export function parseAddRowInput(body: unknown): AddRowInput {
@@ -114,13 +103,10 @@ export function parseWidgetSubmission(body: unknown): WidgetSubmissionInput {
 
 export function parseLinkSubmission(body: unknown): LinkSubmissionInput {
   const obj = asObject(body);
-  const name = requireString(obj, 'name', { min: 1, max: 200 });
-  const email = optionalStringOrNull(obj, 'email', { max: 320 });
-  const phone = optionalStringOrNull(obj, 'phone', { max: 32 });
-  if (!email && !phone) {
-    throw new BadRequestException('Either email or phone is required.');
-  }
-  return { name, email, phone, answers: parseAnswers(obj) };
+  return {
+    identityValue: optionalStringOrNull(obj, 'identityValue', { max: 500 }),
+    answers: parseAnswers(obj),
+  };
 }
 
 function parseAnswers(obj: Record<string, unknown>): FormAnswerInput[] {
@@ -143,86 +129,35 @@ function parseAnswers(obj: Record<string, unknown>): FormAnswerInput[] {
   });
 }
 
-// --- Phase 3G-1: customer-data field configuration --------------------------
+// --- Form fields — a simple, Google-Forms-like field list -------------------
 
 export interface SaveCustomerFieldDtoInput {
   label: string;
   fieldType: string;
   required: boolean;
-  destination: ConsentFieldDestination;
-  mappedColumn: string | null;
-  newColumnName: string | null;
-  newColumnType: string | null;
+  /** Whether this field's value is the raw identity hashed into subject_ref
+   *  (I2) — at most one per form (DB-enforced, see the migration header). */
+  isIdentifier: boolean;
 }
 
-/**
- * Parses a customer-data field save. The mapping is EXPLICIT-or-absent by
- * construction: `mappedColumn`/`newColumnName` are only ever set to what the
- * caller sent, never derived, never defaulted from the label. A
- * `destination: 'consent_record'` field is rejected if it carries a mapping —
- * the DB CHECK constraint enforces the same rule, this just fails fast with a
- * clear message. `mappedColumn` and a `newColumnName` may not both be present
- * (a field is either mapped to an existing column or configured to create one).
- *
- * `fieldType` must be one of CONSENT_FORM_FIELD_TYPES. For `document_upload`/
- * `signature` — real field types with no supported customer-column storage
- * destination anywhere in this platform today (no central file/blob storage
- * exists, and the Gateway's write contract is string-only) — `destination`
- * is rejected unless it is `consent_record` (i.e. not persisted to a customer
- * column). This is enforced here, not just hidden in the UI, so it cannot be
- * bypassed by a direct API call. Loosening this later (once a real storage
- * adapter is approved) is a change to this function, not a migration.
- */
+/** Parses a field save: label + type + required + isIdentifier, nothing
+ *  else. `fieldType` must be one of CONSENT_FORM_FIELD_TYPES (text/pdf/
+ *  excel) — enforced here, not just hidden in the UI, so it cannot be
+ *  bypassed by a direct API call. The one-identifier-per-form rule is
+ *  enforced by the DB's partial unique index, not here — this function
+ *  never guesses or defaults which field that should be. */
 export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput {
   const obj = asObject(body);
-  const destinationRaw = obj['destination'];
-  if (typeof destinationRaw !== 'string' || !(CONSENT_FIELD_DESTINATIONS as readonly string[]).includes(destinationRaw)) {
-    throw new BadRequestException(`destination must be one of: ${CONSENT_FIELD_DESTINATIONS.join(', ')}.`);
-  }
-  const destination = destinationRaw as ConsentFieldDestination;
-
   const fieldType = requireString(obj, 'fieldType', { min: 1, max: 64 });
   if (!(CONSENT_FORM_FIELD_TYPES as readonly string[]).includes(fieldType)) {
     throw new BadRequestException(`fieldType must be one of: ${CONSENT_FORM_FIELD_TYPES.join(', ')}.`);
   }
-  if ((CONSENT_FIELD_TYPES_WITHOUT_STORAGE as readonly string[]).includes(fieldType) && destination !== 'consent_record') {
-    throw new BadRequestException(
-      `"${fieldType}" has no supported customer-record storage destination yet — it can only be added as consent-only (not mapped to a customer field).`,
-    );
-  }
-
-  const mappedColumn = optionalStringOrNull(obj, 'mappedColumn', { max: 63 });
-  const newColumnName = optionalStringOrNull(obj, 'newColumnName', { max: 63 });
-  const newColumnType = optionalStringOrNull(obj, 'newColumnType', { max: 32 });
-
-  if (destination === 'consent_record' && (mappedColumn || newColumnName)) {
-    throw new BadRequestException('A field stored in the Consent Record cannot also carry a column mapping.');
-  }
-  if (mappedColumn && newColumnName) {
-    throw new BadRequestException('Choose either an existing column or "create new column" — not both.');
-  }
-  if (newColumnName && !newColumnType) {
-    throw new BadRequestException('newColumnType is required when newColumnName is set.');
-  }
-  if (newColumnType && !(NEW_COLUMN_TYPES as readonly string[]).includes(newColumnType)) {
-    throw new BadRequestException(`newColumnType must be one of: ${NEW_COLUMN_TYPES.join(', ')}.`);
-  }
-
   return {
     label: requireString(obj, 'label', { min: 1, max: 200 }),
     fieldType,
     required: Boolean(obj['required']),
-    destination,
-    mappedColumn: mappedColumn ? parseColumnIdentifier(mappedColumn, 'mappedColumn') : null,
-    newColumnName: newColumnName ? parseColumnIdentifier(newColumnName, 'newColumnName') : null,
-    newColumnType,
+    isIdentifier: Boolean(obj['isIdentifier']),
   };
-}
-
-/** The body for associating a form with a data source: `{ sourceId: string|null }`. */
-export function parseSetFormSource(body: unknown): { sourceId: string | null } {
-  const obj = asObject(body);
-  return { sourceId: optionalUuidOrNull(obj, 'sourceId') };
 }
 
 function asObject(body: unknown): Record<string, unknown> {

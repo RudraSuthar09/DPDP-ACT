@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { IdentityModule } from '../identity/identity.module';
 import { NotifyModule } from '../notify/notify.module';
 import { InventoryModule } from '../inventory/inventory.module';
+import { DataPrincipalModule } from '../data-principal/data-principal.module';
 import { TenantConsentSecretsRepository } from './tenant-consent-secrets.repository';
 import { ConsentController } from './consent.controller';
 import { ConsentService } from './consent.service';
@@ -60,7 +61,11 @@ import { RetentionRepository } from './retention.repository';
   // row directly to a Data Inventory element and needs that element's purpose
   // ids (through a service, never the table — R2). Inventory does not import
   // Consent, so this is not circular.
-  imports: [IdentityModule, NotifyModule, InventoryModule],
+  // DataPrincipalModule for DataPrincipalService — ConsentFormsService.submit()
+  // resolves the customer/data-principal UUID identity here (never invents one
+  // inline), the same registry Grievance/DSR/Breach/Data Inventory will later
+  // import too (R2 — one identity mechanism, not one per module).
+  imports: [IdentityModule, NotifyModule, InventoryModule, DataPrincipalModule],
   controllers: [
     ConsentController,
     ConsentNoticesController,

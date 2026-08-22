@@ -9,6 +9,20 @@
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
+/**
+ * The address a Next.js SERVER COMPONENT (SSR, running inside this
+ * container) must use to reach the backend — as opposed to `API_URL`, which
+ * is baked in at build time for the BROWSER and is deliberately a
+ * host-reachable address (e.g. http://localhost:3001), never an in-Docker-
+ * network service name. Inside a container, "localhost" means the container
+ * itself, not the backend's container — the SSR-side public pages
+ * (form-portal-api.ts's formPortalFetchServer, portal-api.ts's
+ * portalFetchServer) need a separate, container-network-reachable address.
+ * Falls back to API_URL for local (non-Docker) `pnpm dev`, where both
+ * resolve to the same host anyway. Read at request time (not build time) —
+ * a plain server env var, never NEXT_PUBLIC_-prefixed. */
+export const SERVER_API_URL = process.env.INTERNAL_API_URL ?? API_URL;
+
 const TOKEN_KEY = 'dpdp.accessToken';
 
 export function getToken(): string | null {
