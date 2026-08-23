@@ -7,6 +7,7 @@ import { useAuth } from '../../../lib/auth';
 import type { DataSource, DataSourceKind } from '@dpdp/shared';
 import { classifyGatewayConnection, probeGatewayHealth, type GatewayConnectionState } from '../../../lib/gateway-connection';
 import { getHandle, isFileSystemAccessSupported, queryHandlePermission, removeHandle } from '../../../lib/local-source-handles';
+import { useDialog } from '../../../components/Dialog';
 
 const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
 
@@ -106,6 +107,7 @@ const STATE_BADGE: Record<GatewayConnectionState, string> = {
  */
 function EnterpriseGatewayPanel() {
   const { user } = useAuth();
+  const { confirm } = useDialog();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
 
   const [device, setDevice] = useState<GatewayDevice | null>(null);
@@ -203,7 +205,14 @@ function EnterpriseGatewayPanel() {
 
   async function onRevoke() {
     if (!device) return;
-    if (!window.confirm(`Revoke this Enterprise Gateway ("${device.displayName}")? You will need to enrol a new one to reconnect.`)) {
+    if (
+      !(await confirm({
+        title: 'Revoke Enterprise Gateway',
+        message: `Revoke this Enterprise Gateway ("${device.displayName}")? You will need to enrol a new one to reconnect.`,
+        confirmLabel: 'Revoke',
+        danger: true,
+      }))
+    ) {
       return;
     }
     setBusy(true);
@@ -336,6 +345,7 @@ const KIND_LABEL = Object.fromEntries(KIND_OPTIONS.map((o) => [o.value, o.label]
  */
 export default function DataSourcesPage() {
   const { user } = useAuth();
+  const { confirm, promptText } = useDialog();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
 
   const [sources, setSources] = useState<DataSource[]>([]);
@@ -388,12 +398,15 @@ export default function DataSourcesPage() {
     const enabling = s.dataAccessMode === 'metadata_only';
     if (
       enabling &&
-      !window.confirm(
-        `Enable Gateway-connected mode for "${s.name}"?\n\n` +
+      !(await confirm({
+        title: 'Enable Gateway-connected mode',
+        message:
+          `Enable Gateway-connected mode for "${s.name}"?\n\n` +
           `This is a configuration state only. It records that this source is explicitly ` +
           `permitted to allow future Gateway-based access to raw values. It does NOT grant any ` +
           `access now — the Gateway does not exist yet, and no raw data can be read.`,
-      )
+        confirmLabel: 'Enable',
+      }))
     ) {
       return;
     }
@@ -410,7 +423,13 @@ export default function DataSourcesPage() {
   }
 
   async function onRemove(s: DataSource) {
-    const reason = window.prompt(`Remove data source "${s.name}"? (reason, kept as evidence)`);
+    const reason = await promptText({
+      title: 'Remove data source',
+      message: `Remove data source "${s.name}"?`,
+      label: 'Reason (kept as evidence)',
+      multiline: true,
+      confirmLabel: 'Remove',
+    });
     if (reason === null) return;
     setBusyId(s.id);
     setError(null);

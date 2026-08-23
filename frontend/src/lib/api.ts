@@ -7,6 +7,8 @@
  * it talks to the real API from Prompt 4/5.
  */
 
+import { isElectronDialogAvailable, saveBlobNative } from './electron-dialog';
+
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
 /**
@@ -136,6 +138,15 @@ export async function downloadFile(
   }
 
   const blob = await res.blob();
+
+  // Installed Electron app: save through the native OS save dialog (the
+  // desktop replacement for <a download>). In a plain browser (dev) the
+  // bridge is absent and we fall back to the anchor-download below.
+  if (isElectronDialogAvailable()) {
+    await saveBlobNative(blob, filename); // 'saved' | 'canceled' — either is a completed user action
+    return;
+  }
+
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

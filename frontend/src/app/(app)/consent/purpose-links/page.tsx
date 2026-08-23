@@ -5,6 +5,7 @@ import { apiFetch, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
 import { PiiConfidenceBadge } from '../../../../components/PiiConfidenceBadge';
 import { useToast } from '../../../../components/Toast';
+import { useDialog } from '../../../../components/Dialog';
 
 interface PurposeLink {
   id: string;
@@ -59,6 +60,7 @@ export default function PurposeLinksPage() {
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const { showToast } = useToast();
+  const { promptText } = useDialog();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,10 +102,15 @@ export default function PurposeLinksPage() {
   }
 
   async function onRemove(link: PurposeLink) {
-    const reason = window.prompt(
-      'Why are you removing this mapping? (required, kept as evidence — a summary already ' +
-        'issued under this mapping is unaffected)',
-    );
+    const reason = await promptText({
+      title: 'Remove mapping',
+      message:
+        'Why are you removing this mapping? (a summary already issued under this mapping is unaffected)',
+      label: 'Reason (kept as evidence, at least 5 characters)',
+      required: true,
+      multiline: true,
+      confirmLabel: 'Remove',
+    });
     if (reason === null) return;
     if (reason.trim().length < 5) {
       setError('A reason of at least 5 characters is required to remove a mapping.');

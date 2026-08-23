@@ -113,6 +113,13 @@ describe('Storage & Folder Mapping — configuration only; no automatic guessing
       'removeRoot',
       'setMapping',
       'updateRoot',
+      // Central DPDP Storage automatic sync (Enterprise): a read-only
+      // reachability PROBE for a 'server' root (creates+deletes one empty
+      // marker file, never reads/writes a customer value) — the real file
+      // I/O capability lives entirely in ../storage-sync/, a separate
+      // directory this guard does not scan, precisely so this directory's
+      // "configuration only" invariant keeps meaning something.
+      'verifyServerRoot',
     ]);
   });
 

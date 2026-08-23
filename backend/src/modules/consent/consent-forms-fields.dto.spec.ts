@@ -8,6 +8,7 @@ describe('parseSaveCustomerField — the simplified, Google-Forms-like field sav
       fieldType: 'text',
       required: true,
       isIdentifier: false,
+      isCustomerName: false,
     });
   });
 
@@ -17,11 +18,32 @@ describe('parseSaveCustomerField — the simplified, Google-Forms-like field sav
       fieldType: 'text',
       required: true,
       isIdentifier: true,
+      isCustomerName: false,
     });
   });
 
   it('defaults isIdentifier to false when omitted', () => {
     expect(parseSaveCustomerField({ label: 'Aadhaar Number', fieldType: 'text' }).isIdentifier).toBe(false);
+  });
+
+  it('accepts isCustomerName: true — the field whose value names the filesystem folder', () => {
+    expect(parseSaveCustomerField({ label: 'Customer Name', fieldType: 'text', isCustomerName: true })).toEqual({
+      label: 'Customer Name',
+      fieldType: 'text',
+      required: false,
+      isIdentifier: false,
+      isCustomerName: true,
+    });
+  });
+
+  it('defaults isCustomerName to false when omitted', () => {
+    expect(parseSaveCustomerField({ label: 'Aadhaar Number', fieldType: 'text' }).isCustomerName).toBe(false);
+  });
+
+  it('accepts a field that is BOTH isIdentifier and isCustomerName — the client may choose the same field for both roles', () => {
+    const result = parseSaveCustomerField({ label: 'Email', fieldType: 'text', isIdentifier: true, isCustomerName: true });
+    expect(result.isIdentifier).toBe(true);
+    expect(result.isCustomerName).toBe(true);
   });
 
   it('accepts pdf and excel field types', () => {
@@ -52,6 +74,6 @@ describe('parseSaveCustomerField — the simplified, Google-Forms-like field sav
       destination: 'customer_field',
       mappedColumn: 'aadhaar',
     });
-    expect(result).toEqual({ label: 'Aadhaar Number', fieldType: 'text', required: true, isIdentifier: false });
+    expect(result).toEqual({ label: 'Aadhaar Number', fieldType: 'text', required: true, isIdentifier: false, isCustomerName: false });
   });
 });

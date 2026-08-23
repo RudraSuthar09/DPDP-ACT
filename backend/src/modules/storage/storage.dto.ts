@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { STORAGE_MODULE_KEYS, STORAGE_PROVIDERS, type StorageModuleKey, type StorageProvider } from '@dpdp/shared';
+import { isAbsoluteEnterprisePath } from '../storage-sync/server-storage-fs';
 
 /**
  * Request parsing for /storage — hand-written and total (same style as the
@@ -34,14 +35,23 @@ export function parseCreateStorageRoot(body: unknown): CreateStorageRootInput {
   if (provider === 'gateway' && !gatewayDeviceId) {
     throw new BadRequestException('gatewayDeviceId is required when provider is "gateway".');
   }
-  if (provider === 'local' && gatewayDeviceId) {
-    throw new BadRequestException('gatewayDeviceId must not be set when provider is "local".');
+  if ((provider === 'local' || provider === 'server') && gatewayDeviceId) {
+    throw new BadRequestException(`gatewayDeviceId must not be set when provider is "${provider}".`);
+  }
+  const rootPath = parseRootPath(obj);
+  if (provider === 'server') {
+    if (!rootPath) {
+      throw new BadRequestException(
+        'rootPath is required when provider is "server" — the filesystem path the backend/worker process itself will read and write.',
+      );
+    }
+    assertAbsoluteEnterprisePath(rootPath);
   }
   return {
     name: requireString(obj, 'name', { min: 2, max: 200 }),
     provider: provider as StorageProvider,
     gatewayDeviceId,
-    rootPath: parseRootPath(obj),
+    rootPath,
   };
 }
 
@@ -139,6 +149,23 @@ export function parseTombstoneReason(body: unknown): { reason: string | null } {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+/**
+ * Rejects a 'server' rootPath that isn't absolute — see
+ * server-storage-fs.ts's isAbsoluteEnterprisePath for the exact, reproduced
+ * failure this closes (a bare folder name silently resolving inside the
+ * backend/worker's OWN working directory instead of the configured volume).
+ * This is the HTTP-layer wrapper (throws a clean 400); the underlying check
+ * is also enforced again at every actual write (verifyServerPathWritable),
+ * so a pre-existing bad row from before this validation shipped is still safe. */
+export function assertAbsoluteEnterprisePath(rootPath: string): void {
+  if (!isAbsoluteEnterprisePath(rootPath)) {
+    throw new BadRequestException(
+      `rootPath must be an absolute filesystem path as seen by the backend/worker process (e.g. "/enterprise-storage" in Docker, or "D:\\CompanyData\\DPDP" on a native Windows install) — ` +
+        `"${rootPath}" looks like a bare folder name, not a full path. A picked folder's name alone is never enough: type or confirm the complete path here.`,
+    );
+  }
+}
 
 /** A non-secret path/reference only — same discipline as data-source.dto's
  *  `parseConnectionHint`. Reject anything that looks like it smuggles a

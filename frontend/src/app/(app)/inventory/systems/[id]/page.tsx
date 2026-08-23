@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
 import { useToast } from '../../../../../components/Toast';
+import { useDialog } from '../../../../../components/Dialog';
 
 interface VersionEntry {
   versionNumber: number;
@@ -37,6 +38,7 @@ export default function SystemDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
+  const { promptText } = useDialog();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
 
   const [system, setSystem] = useState<SystemDetail | null>(null);
@@ -108,7 +110,14 @@ export default function SystemDetailPage() {
   }
 
   async function onTombstone() {
-    const reason = window.prompt('Why are you removing this system? (required, kept as evidence)');
+    const reason = await promptText({
+      title: 'Remove system',
+      message: 'Why are you removing this system?',
+      label: 'Reason (kept as evidence)',
+      required: true,
+      multiline: true,
+      confirmLabel: 'Remove',
+    });
     if (reason === null) return;
     if (!reason.trim()) {
       setError('A reason is required to remove a system.');

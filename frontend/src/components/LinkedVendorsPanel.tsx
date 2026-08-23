@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
 import { useToast } from './Toast';
+import { useDialog } from './Dialog';
 
 interface LinkedVendor {
   linkId: string;
@@ -34,6 +35,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
+  const { confirm } = useDialog();
 
   // Inline "+ Add new vendor" — creates through the SAME POST /inventory/vendors
   // the dedicated Vendors register page uses (no new backend), then links the
@@ -87,7 +89,7 @@ export function LinkedVendorsPanel({ entryId, canManage }: { entryId: string; ca
   }
 
   async function onUnlink(linkId: string, name: string) {
-    if (!window.confirm(`Unlink "${name}" from this data element?`)) return;
+    if (!(await confirm({ message: `Unlink "${name}" from this data element?`, confirmLabel: 'Unlink', danger: true }))) return;
     setBusy(true);
     setError(null);
     try {

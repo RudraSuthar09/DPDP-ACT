@@ -3,6 +3,8 @@ import { IdentityModule } from '../identity/identity.module';
 import { NotifyModule } from '../notify/notify.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { DataPrincipalModule } from '../data-principal/data-principal.module';
+import { EnterpriseStorageSyncModule } from '../storage-sync/enterprise-storage-sync.module';
+import { SubmissionDeliveryModule } from '../delivery/submission-delivery.module';
 import { TenantConsentSecretsRepository } from './tenant-consent-secrets.repository';
 import { ConsentController } from './consent.controller';
 import { ConsentService } from './consent.service';
@@ -65,7 +67,10 @@ import { RetentionRepository } from './retention.repository';
   // resolves the customer/data-principal UUID identity here (never invents one
   // inline), the same registry Grievance/DSR/Breach/Data Inventory will later
   // import too (R2 — one identity mechanism, not one per module).
-  imports: [IdentityModule, NotifyModule, InventoryModule, DataPrincipalModule],
+  // EnterpriseStorageSyncModule for EnterpriseStorageSyncService — the
+  // synchronous, submission-time Enterprise filesystem write. Central DPDP
+  // Storage automatic sync (Enterprise half); see that module's header.
+  imports: [IdentityModule, NotifyModule, InventoryModule, DataPrincipalModule, EnterpriseStorageSyncModule, SubmissionDeliveryModule],
   controllers: [
     ConsentController,
     ConsentNoticesController,

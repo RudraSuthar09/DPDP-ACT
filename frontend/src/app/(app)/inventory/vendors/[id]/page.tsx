@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
 import { useToast } from '../../../../../components/Toast';
+import { useDialog } from '../../../../../components/Dialog';
 
 interface VersionEntry {
   versionNumber: number;
@@ -37,6 +38,7 @@ export default function VendorDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
+  const { promptText } = useDialog();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
 
   const [vendor, setVendor] = useState<VendorDetail | null>(null);
@@ -102,7 +104,14 @@ export default function VendorDetailPage() {
   }
 
   async function onTombstone() {
-    const reason = window.prompt('Why are you removing this vendor? (required, kept as evidence)');
+    const reason = await promptText({
+      title: 'Remove vendor',
+      message: 'Why are you removing this vendor?',
+      label: 'Reason (kept as evidence)',
+      required: true,
+      multiline: true,
+      confirmLabel: 'Remove',
+    });
     if (reason === null) return;
     if (!reason.trim()) {
       setError('A reason is required to remove a vendor.');

@@ -6,6 +6,7 @@ import { CONSENT_FORM_FIELD_TYPES, type ConsentFormCustomerField, type ConsentFo
 import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
 import { useToast } from '../../../../../components/Toast';
+import { useDialog } from '../../../../../components/Dialog';
 import {
   connectAdditionalStorageForEntity,
   getAdditionalStorageMapping,
@@ -78,6 +79,7 @@ export default function ConsentFormBuilderPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { showToast } = useToast();
+  const { confirm, promptText } = useDialog();
 
   // --- Notice / Terms ---------------------------------------------------------
   const [formNoticeText, setFormNoticeText] = useState('');
@@ -90,6 +92,7 @@ export default function ConsentFormBuilderPage() {
     status: 'checking',
     root: null,
     handle: null,
+    fs: null,
     displayName: null,
   });
 
@@ -99,6 +102,7 @@ export default function ConsentFormBuilderPage() {
   const [cfType, setCfType] = useState<ConsentFormFieldType>('text');
   const [cfRequired, setCfRequired] = useState(false);
   const [cfIsIdentifier, setCfIsIdentifier] = useState(false);
+  const [cfIsCustomerName, setCfIsCustomerName] = useState(false);
   const [fieldStorage, setFieldStorage] = useState<Record<string, StorageMapping | null>>({});
   const [fieldStorageLoaded, setFieldStorageLoaded] = useState(false);
   const [fieldStorageBusy, setFieldStorageBusy] = useState<Record<string, boolean>>({});
@@ -149,7 +153,7 @@ export default function ConsentFormBuilderPage() {
 
   async function onRename() {
     if (!form) return;
-    const name = window.prompt('Rename this form', form.name);
+    const name = await promptText({ title: 'Rename form', label: 'Form name', initialValue: form.name, required: true, confirmLabel: 'Rename' });
     if (name === null || name.trim().length < 2) return;
     await mutate(
       () =>
@@ -251,7 +255,7 @@ export default function ConsentFormBuilderPage() {
   }
 
   async function onRemoveRow(row: Row) {
-    if (!window.confirm(`Remove the "${row.label}" consent item from this form?`)) return;
+    if (!(await confirm({ message: `Remove the "${row.label}" consent item from this form?`, confirmLabel: 'Remove', danger: true }))) return;
     await mutate(() => apiFetch(`/consent/forms/${id}/rows/${row.id}`, { method: 'DELETE' }), 'Consent item removed.');
   }
 
@@ -287,7 +291,7 @@ export default function ConsentFormBuilderPage() {
       () =>
         apiFetch(`/consent/forms/${id}/customer-fields`, {
           method: 'POST',
-          body: { label: cfLabel.trim(), fieldType: cfType, required: cfRequired, isIdentifier: cfIsIdentifier },
+          body: { label: cfLabel.trim(), fieldType: cfType, required: cfRequired, isIdentifier: cfIsIdentifier, isCustomerName: cfIsCustomerName },
         }),
       'Field added.',
     );
@@ -295,10 +299,11 @@ export default function ConsentFormBuilderPage() {
     setCfType('text');
     setCfRequired(false);
     setCfIsIdentifier(false);
+    setCfIsCustomerName(false);
   }
 
   async function onRemoveCustomerField(field: ConsentFormCustomerField) {
-    if (!window.confirm(`Remove the "${field.label}" field from this form?`)) return;
+    if (!(await confirm({ message: `Remove the "${field.label}" field from this form?`, confirmLabel: 'Remove', danger: true }))) return;
     await mutate(() => apiFetch(`/consent/forms/${id}/customer-fields/${field.id}`, { method: 'DELETE' }), 'Field removed.');
   }
 
@@ -412,6 +417,7 @@ export default function ConsentFormBuilderPage() {
                         <span className="badge neutral">{f.fieldType}</span>
                         {f.required && <span className="badge warning">required</span>}
                         {f.isIdentifier && <span className="badge info">Customer Identifier</span>}
+                        {f.isCustomerName && <span className="badge info">Customer Name</span>}
                       </div>
                       <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         <span className="badge success">✓ Central DPDP Storage</span>
@@ -496,8 +502,34 @@ export default function ConsentFormBuilderPage() {
             })()}
             <p className="muted" style={{ fontSize: '0.78rem', marginTop: 0 }}>
               Whatever the customer types/uploads here identifies them to DPDP — reused to recognise a
-              repeat submission and to name their Central DPDP Storage folder. At most one field per form;
-              none configured means every submission is treated as a new, unrelated customer.
+              repeat submission. At most one field per form; none configured means every submission is
+              treated as a new, unrelated customer.
+            </p>
+
+            {(() => {
+              const existingCustomerName = form.customerFields.find((f) => f.isCustomerName);
+              return (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, opacity: existingCustomerName ? 0.5 : 1 }}>
+                  <input
+                    type="checkbox"
+                    style={{ width: 'auto' }}
+                    checked={cfIsCustomerName}
+                    onChange={(e) => setCfIsCustomerName(e.target.checked)}
+                    disabled={busy || !!existingCustomerName}
+                  />
+                  Use as Customer Name
+                  {existingCustomerName && (
+                    <span className="muted" style={{ fontSize: '0.78rem' }}>
+                      (&quot;{existingCustomerName.label}&quot; already is — remove it there first to change)
+                    </span>
+                  )}
+                </label>
+              );
+            })()}
+            <p className="muted" style={{ fontSize: '0.78rem', marginTop: 0 }}>
+              Names the customer&apos;s folder in Central DPDP Storage (e.g. &quot;Rudra Suthar&quot;) —
+              separate from the Customer Identifier above; it can be the same field or a different one. At
+              most one field per form; none configured falls back to an internal id-based folder name.
             </p>
 
             <div style={{ marginTop: 12 }}>

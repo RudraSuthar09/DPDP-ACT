@@ -5,6 +5,7 @@ import { ROLES, type Role } from '@dpdp/shared';
 import { apiFetch, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
 import { useToast } from '../../../components/Toast';
+import { useDialog } from '../../../components/Dialog';
 
 /**
  * Org Admin surface (FR-IDN-04/05): team list, invite flow, role assignment,
@@ -205,10 +206,22 @@ export default function TeamPage() {
   );
 }
 
-function promptReason(action: string): string | null {
-  const reason = window.prompt(`Why are you ${action}? (required, kept as evidence)`);
-  if (reason === null) return null; // cancelled
-  return reason.trim();
+/** Shared reason-prompt for team actions (role change / suspend / remove /
+ *  reactivate / revoke invite / designate) — a required, audited note via the
+ *  app modal. The Electron-native replacement for window.prompt; returns null
+ *  if cancelled. One hook so all these flows read identically. */
+function useReasonPrompt() {
+  const { promptText } = useDialog();
+  return async (action: string): Promise<string | null> => {
+    const reason = await promptText({
+      title: 'Reason required',
+      message: `Why are you ${action}?`,
+      label: 'Reason (kept as evidence)',
+      required: true,
+      multiline: true,
+    });
+    return reason === null ? null : reason.trim();
+  };
 }
 
 function MemberRow({
@@ -227,6 +240,8 @@ function MemberRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
+  const { confirm } = useDialog();
+  const promptReason = useReasonPrompt();
 
   async function run(fn: () => Promise<unknown>, successMessage?: string) {
     setBusy(true);
@@ -244,7 +259,7 @@ function MemberRow({
 
   async function onRoleChange(role: Role) {
     if (role === member.role) return;
-    const reason = promptReason(`changing this person's role to ${ROLE_LABEL[role]}`);
+    const reason = await promptReason(`changing this person's role to ${ROLE_LABEL[role]}`);
     if (reason === null) return;
     await run(
       () => apiFetch(`/users/${member.userId}/role`, { method: 'POST', body: { role, reason } }),
@@ -254,9 +269,12 @@ function MemberRow({
 
   async function onStatus(status: 'suspended' | 'removed') {
     const verb = status === 'removed' ? 'removing' : 'suspending';
-    const reason = promptReason(`${verb} this person`);
+    const reason = await promptReason(`${verb} this person`);
     if (reason === null) return;
-    if (status === 'removed' && !window.confirm('Removal is permanent and cannot be undone. Continue?')) {
+    if (
+      status === 'removed' &&
+      !(await confirm({ message: 'Removal is permanent and cannot be undone. Continue?', confirmLabel: 'Remove', danger: true }))
+    ) {
       return;
     }
     await run(
@@ -266,7 +284,7 @@ function MemberRow({
   }
 
   async function onReactivate() {
-    const reason = promptReason('reactivating this person');
+    const reason = await promptReason('reactivating this person');
     if (reason === null) return;
     await run(
       () => apiFetch(`/users/${member.userId}/reactivate`, { method: 'POST', body: { reason } }),
@@ -332,9 +350,10 @@ function InvitationRow({ invitation, onChanged }: { invitation: Invitation; onCh
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
+  const promptReason = useReasonPrompt();
 
   async function onRevoke() {
-    const reason = promptReason('revoking this invitation');
+    const reason = await promptReason('revoking this invitation');
     if (reason === null) return;
     setBusy(true);
     setError(null);
@@ -484,11 +503,12 @@ function DesignationRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
+  const promptReason = useReasonPrompt();
   const currentMember = members.find((m) => m.userId === current?.userId);
 
   async function onAssign(userId: string) {
     if (!userId || userId === current?.userId) return;
-    const reason = promptReason(`designating this person as ${label}`);
+    const reason = await promptReason(`designating this person as ${label}`);
     if (reason === null) return;
     setBusy(true);
     setError(null);

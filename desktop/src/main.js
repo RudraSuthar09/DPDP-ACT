@@ -10,9 +10,11 @@
 // is unchanged and lives entirely inside the app it loads.
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, shell } = require('electron');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { registerEnterpriseStorageIpc } = require('./enterprise-storage');
+const { registerDialogIpc } = require('./dialog-bridge');
 
 const APP_URL = 'http://localhost:3000';
 const HEALTH_URLS = [
@@ -120,23 +122,41 @@ function createMainWindow() {
     show: false,
     title: 'DPDP Platform',
     autoHideMenuBar: true,
-    // No preload script here, deliberately: the loaded origin is the
-    // existing DPDP frontend (localhost:3000), which gets exactly the
-    // security posture a normal browser tab already has -- nothing added,
-    // nothing exposed. All app logic (auth, licensing, capability, Gateway)
-    // stays entirely inside that existing web app.
+    // ONE narrow preload: the native Enterprise Central Storage bridge
+    // (window.electronStorage — see storage-preload.js). It exposes only a
+    // closed set of storage operations, every one a typed IPC round-trip to
+    // the main process where the actual filesystem work + path containment
+    // happens. The security posture is otherwise unchanged: contextIsolation
+    // on, sandbox on, nodeIntegration off — no `fs`/`require`/`process` and
+    // no generic IPC ever reach the renderer. All other app logic (auth,
+    // licensing, capability, Gateway) still lives entirely inside the web app.
     webPreferences: {
+      preload: path.join(__dirname, 'storage-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
     },
   });
 
-  // Never open a second window for target="_blank"/window.open, and never
-  // navigate this window anywhere outside the DPDP app itself.
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // Never open a second Electron window. A target="_blank"/window.open to an
+  // EXTERNAL http(s) destination (e.g. the "Share on WhatsApp" link, an
+  // exported PDF opened in a new tab) is routed to the user's real system
+  // browser via shell.openExternal — the controlled Electron equivalent of a
+  // browser opening a new tab. Everything else is denied. This is the ONLY
+  // external-navigation capability exposed; there is no generic shell access.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url) && !url.startsWith(APP_URL)) {
+      void shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+  // In-window navigation stays inside the DPDP app itself; an external link
+  // that would navigate the main window instead opens in the system browser.
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(APP_URL)) event.preventDefault();
+    if (!url.startsWith(APP_URL)) {
+      event.preventDefault();
+      if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+    }
   });
 
   mainWindow.once('ready-to-show', () => {
@@ -181,7 +201,15 @@ async function boot() {
   createMainWindow();
 }
 
-app.whenReady().then(boot);
+app.whenReady().then(() => {
+  // Register the native Enterprise Storage IPC handlers once, before any
+  // window exists, so window.electronStorage is answerable the moment the
+  // renderer loads. These touch only the installed machine's filesystem and
+  // the per-user config file — never the Docker runtime or the database.
+  registerEnterpriseStorageIpc();
+  registerDialogIpc();
+  return boot();
+});
 
 app.on('window-all-closed', () => {
   // Deliberately does NOT stop the Docker runtime and does NOT touch the

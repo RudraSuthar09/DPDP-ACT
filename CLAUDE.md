@@ -55,6 +55,37 @@ microservices — ever, forcibly.
   Nothing is overwritten or hard-deleted. Every write carries actor, timestamp,
   reason, before-state, after-state.
 
+## Documented exception to I1/R6 — submission delivery staging
+
+**One narrow, deliberate carve-out exists, and it is the only one.** A
+hosted-link consent form is filled by a CUSTOMER on their OWN device, which
+must never touch a tenant's local/Enterprise filesystem directly (correct,
+unconditional). If that tenant's own machine (Electron closed, or its local
+delivery agent offline) is not reachable at the moment of submission, the
+field values/documents cannot be written anywhere real yet — and "never lose
+a submission because the tenant's machine happened to be offline" is an
+explicit product requirement. Those two facts are jointly unsatisfiable
+without *some* durable holding point between "customer submits" and "the
+tenant's machine is next online".
+
+`consent_form_submission_deliveries`
+(`backend/migrations/1737005000000_submission-delivery-queue.sql`,
+`backend/src/modules/delivery/`) is that holding point — PENDING →
+DELIVERING → DELIVERED/FAILED, encrypted at rest (AES-256-GCM, a key
+dedicated to this table only), decrypted only in-memory inside one service
+method for the span of one authenticated HTTPS response to the tenant's own
+enrolled delivery agent, and **deleted (columns nulled) the instant that
+agent confirms the local filesystem write succeeded** — never kept "for
+later," never I4-style evidence-retained the way an audit/consent row is.
+
+This does not weaken I1/R6 anywhere else. Every other write path — the
+site-wide widget's browser dual-write, the Electron renderer's own
+synchronous dual-write, the Enterprise `'server'`-provider synchronous write
+(`EnterpriseStorageSyncService`) — is untouched and still never lets a field
+value reach Postgres. Do not generalize this pattern: a new feature that
+wants to "stage" or "queue" customer data for later needs the same explicit
+review and sign-off this one got, not a precedent to cite.
+
 ## The five seams (S1–S5) — build these now; the systems behind them come later
 
 A seam is a place you can cut without bleeding: a simple interface today, a big

@@ -168,6 +168,55 @@ button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+button.danger:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+/* Modal dialogs (components/Dialog.tsx) — the Electron-native replacement for
+   window.confirm()/window.prompt(). A real, focus-trapped-ish centered card
+   over a click-to-dismiss backdrop, styled from the same tokens as .panel. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(26, 26, 30, 0.5);
+}
+.modal-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 10px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  padding: 20px 22px;
+  width: 100%;
+  max-width: 460px;
+}
+.modal-title {
+  margin: 0 0 10px;
+  font-size: 1.1rem;
+}
+.modal-message {
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+}
+.modal-card input,
+.modal-card textarea {
+  width: 100%;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
 
 .error {
   color: var(--danger);

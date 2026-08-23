@@ -119,5 +119,11 @@ export interface ConsentFormCustomerField {
    *  (each submission is then a new, unrelated customer). At most one true
    *  per form, DB-enforced. */
   isIdentifier: boolean;
+  /** Whether THIS field's submitted value should become the customer's
+   *  human-readable display name (data_principals.display_name) — used only
+   *  for filesystem folder naming, never for identity resolution (that
+   *  stays isIdentifier's job; the two may be the same field or different
+   *  ones). At most one true per form, DB-enforced. */
+  isCustomerName: boolean;
   displayOrder: number;
 }

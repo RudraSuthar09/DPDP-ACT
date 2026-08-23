@@ -6,6 +6,7 @@ import { apiFetch, ApiError } from '../../../../../lib/api';
 import { useAuth } from '../../../../../lib/auth';
 import { NoticesPanel } from '../../../../../components/NoticesPanel';
 import { useToast } from '../../../../../components/Toast';
+import { useDialog } from '../../../../../components/Dialog';
 
 interface VersionEntry {
   versionNumber: number;
@@ -46,6 +47,7 @@ export default function ConsentPurposeDetailPage() {
   const [editName, setEditName] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const { showToast } = useToast();
+  const { promptText } = useDialog();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -91,9 +93,14 @@ export default function ConsentPurposeDetailPage() {
   }
 
   async function onTombstone() {
-    const reason = window.prompt(
-      'Why are you removing this consent purpose? (required, kept as evidence)',
-    );
+    const reason = await promptText({
+      title: 'Remove consent purpose',
+      message: 'Why are you removing this consent purpose?',
+      label: 'Reason (kept as evidence)',
+      required: true,
+      multiline: true,
+      confirmLabel: 'Remove',
+    });
     if (reason === null) return;
     if (!reason.trim()) {
       setError('A reason is required to remove a purpose.');

@@ -22,6 +22,8 @@ import { DataPlane } from './data-plane';
 import { StorageRegistry, loadStorageRootConfig } from './storage/registry';
 import { StorageSessionStore } from './storage/storage-session-store';
 import { StoragePlane } from './storage/storage-plane';
+import { startDeliveryPoller } from './delivery/poller';
+import { loadDeliveryConfig, type DeliveryConfig } from './delivery/delivery-config';
 import {
   ensureEnrolled,
   startHeartbeat,
@@ -95,8 +97,10 @@ async function tryEnroll(config: AgentConfig): Promise<PersistedCredential | nul
 
 async function main(): Promise<void> {
   let config: AgentConfig;
+  let deliveryConfig: DeliveryConfig;
   try {
     config = loadAgentConfig();
+    deliveryConfig = loadDeliveryConfig();
   } catch (err) {
     // Sanitized: print only the (secret-free) message, then exit non-zero.
     const message = err instanceof AgentConfigError ? err.message : 'Invalid agent configuration.';
@@ -126,6 +130,23 @@ async function main(): Promise<void> {
       // expired) — clear it locally too, so the NEXT restart correctly asks
       // for a fresh enrollment code instead of retrying a dead one forever.
       clearPersistedCredential(config.stateDir);
+    });
+  }
+
+  // The submission delivery poller — starts as soon as we have a credential,
+  // independent of everything else here (data plane, storage plane): it must
+  // keep delivering even with zero data sources/storage roots configured for
+  // the OTHER Gateway features, and — critically — it is what keeps
+  // delivering submissions while the Electron desktop app is completely
+  // closed (see delivery/poller.ts's header).
+  let stopDeliveryPoller: (() => void) | undefined;
+  if (credential && config.controlPlaneUrl) {
+    const client = heartbeatClient ?? createControlPlaneClient(config.controlPlaneUrl);
+    stopDeliveryPoller = startDeliveryPoller({
+      client,
+      deviceToken: credential.deviceToken,
+      pollIntervalSeconds: deliveryConfig.pollIntervalSeconds,
+      log,
     });
   }
 
@@ -187,6 +208,9 @@ async function main(): Promise<void> {
     console.log(`[agent] allowed origins configured: ${config.allowedOrigins.length}`);
     console.log(`[agent] control-plane configured: ${config.controlPlaneUrl ? 'yes' : 'no'}`);
     console.log(`[agent] Gateway enrolled: ${credential ? `yes (device ${credential.deviceId})` : 'no'}`);
+    console.log(
+      `[agent] submission delivery: ${stopDeliveryPoller ? `polling every ${deliveryConfig.pollIntervalSeconds}s` : 'not started (no device credential)'}`,
+    );
     if (config.networkMode === 'non-loopback') {
       console.warn(
         '[agent] ============================================================\n' +
@@ -201,6 +225,7 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     stopHeartbeat?.();
+    stopDeliveryPoller?.();
     server.close(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);

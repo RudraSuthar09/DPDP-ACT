@@ -48,6 +48,18 @@ services:
       NODE_ENV: development
     ports:
       - '${API_PORT:-3001}:3001'
+    # Central DPDP Storage automatic sync — Enterprise 'server' provider. A
+    # dedicated host directory bind-mounted to a FIXED container path, same
+    # discipline as the agent's GATEWAY_STORAGE_HOST_DIR->/client-storage
+    # mount below: never the repo, never a whole drive. The API process needs
+    # this so ConsentFormsService.submit() can write field values SYNCHRONOUSLY
+    # at submission time (see EnterpriseStorageSyncService); the worker (below)
+    # needs the SAME mount for its periodic catch-up sweep. Configuring a
+    # 'server' storage root in the UI means entering the CONTAINER path
+    # (/enterprise-storage) here, not the host path — the bind mount is what
+    # makes ENTERPRISE_STORAGE_HOST_DIR appear there.
+    volumes:
+      - ${ENTERPRISE_STORAGE_HOST_DIR:-E:\DPDP-Enterprise-Test}:/enterprise-storage
     networks:
       - dpdp-net
     restart: unless-stopped
@@ -67,6 +79,11 @@ services:
     # an HTTP port the worker never opens).
     healthcheck:
       disable: true
+    # Same Enterprise Central DPDP Storage mount as backend, above — the
+    # periodic catch-up sweep (EnterpriseStorageSyncWorker) runs here and
+    # needs the identical container path to reach the identical host directory.
+    volumes:
+      - ${ENTERPRISE_STORAGE_HOST_DIR:-E:\DPDP-Enterprise-Test}:/enterprise-storage
     networks:
       - dpdp-net
     restart: unless-stopped
@@ -148,6 +165,19 @@ services:
       #   $env:GATEWAY_STORAGE_ROOTS = '[{"storageRootId":"<uuid-from-DPDP-UI>","rootPath":"/client-storage"}]'
       #   docker compose up -d agent
       GATEWAY_STORAGE_ROOTS: ${GATEWAY_STORAGE_ROOTS:-}
+      # Submission delivery queue poller (agent/src/delivery) — the client
+      # half of the cloud relay for a hosted-link submission's field values/
+      # documents. Distinct from the Storage Data-Plane above (GATEWAY_
+      # STORAGE_ROOTS/client-storage): that is per-storageRootId folder
+      # browsing; this is the SINGLE local root the poller writes a
+      # submission's Customer Information/Consent Register files into,
+      # exactly mirroring Central DPDP Storage's structure. In a REAL
+      # (non-Docker) deployment, co-located with the installed Electron app,
+      # set ELECTRON_STORAGE_CONFIG_PATH instead (read directly, takes
+      # precedence) — see agent/src/delivery/local-root.ts. Left as the
+      # in-container path below for this Docker local-cloud-simulation test.
+      AGENT_LOCAL_STORAGE_ROOT: /delivery-storage
+      AGENT_DELIVERY_POLL_INTERVAL_SECONDS: ${AGENT_DELIVERY_POLL_INTERVAL_SECONDS:-10}
     volumes:
       - dpdp_gateway_state:/app/state
       # The dedicated Windows host test directory for the Storage Data-Plane,
@@ -160,6 +190,12 @@ services:
       # here; anything outside it is unreachable (path-safety.ts's
       # resolveContainedDir still enforces containment INSIDE this mount).
       - ${GATEWAY_STORAGE_HOST_DIR:-E:\DPDP-Test-Storage}:/client-storage
+      # The submission delivery poller's local root (see AGENT_LOCAL_STORAGE_
+      # ROOT above) — for the acceptance test in this task, point this at the
+      # SAME folder Electron was configured with, e.g.:
+      #   $env:AGENT_DELIVERY_HOST_DIR = 'D:\Enterprise testing old'
+      #   docker compose up -d --build agent
+      - ${AGENT_DELIVERY_HOST_DIR:-E:\DPDP-Delivery-Test}:/delivery-storage
     ports:
       - '${GATEWAY_BIND_PORT:-7071}:7071'
     networks:

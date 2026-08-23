@@ -23,6 +23,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { DataSourceModule } from './modules/datasource/data-source.module';
 import { GatewayModule } from './modules/gateway/gateway.module';
 import { StorageModule } from './modules/storage/storage.module';
+import { SubmissionDeliveryModule } from './modules/delivery/submission-delivery.module';
 import { LicensingModule } from './modules/licensing/licensing.module';
 import { CapabilityModule } from './modules/capability/capability.module';
 import { InstallationModule } from './modules/installation/installation.module';
@@ -72,6 +73,12 @@ import { InstallationModule } from './modules/installation/installation.module';
     // generic, persistent Storage Root -> Folder -> Module Mapping hierarchy
     // (I1: configuration only, never a file or a customer value).
     StorageModule,
+    // Submission delivery queue — the cloud relay for a hosted-link
+    // submission's field values/documents when no synchronous local write was
+    // possible (the customer's own device, or the tenant's agent offline).
+    // Deliberate, documented CLAUDE.md I1/R6 exception — see
+    // submission-delivery.service.ts's header.
+    SubmissionDeliveryModule,
   ],
 })
 export class AppModule {}

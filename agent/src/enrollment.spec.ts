@@ -33,6 +33,10 @@ function fakeClient(overrides: Partial<GatewayControlPlaneClient> = {}): Gateway
     deenroll: jest.fn().mockResolvedValue(undefined),
     redeemPairing: jest.fn().mockResolvedValue({ sessionToken: 'x', expiresAt: '2026-01-01T00:00:00.000Z' }),
     redeemStoragePairing: jest.fn().mockResolvedValue({ sessionToken: 'x', expiresAt: '2026-01-01T00:00:00.000Z' }),
+    listPendingSubmissions: jest.fn().mockResolvedValue({ submissions: [] }),
+    claimSubmission: jest.fn().mockResolvedValue({ ready: false, reason: 'NOTHING_PENDING' }),
+    ackSubmission: jest.fn().mockResolvedValue({ ok: true }),
+    failSubmission: jest.fn().mockResolvedValue({ ok: true }),
     ...overrides,
   };
 }

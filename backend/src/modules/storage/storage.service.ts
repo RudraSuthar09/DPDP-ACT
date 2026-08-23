@@ -1,10 +1,11 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { StorageFolder, StorageMapping, StorageModuleKey, StorageRoot } from '@dpdp/shared';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
 import { GatewayService } from '../gateway/gateway.service';
 import { StorageRepository, type StorageFolderRow, type StorageMappingRow, type StorageRootRow } from './storage.repository';
-import type { CreateStorageFolderInput, CreateStorageRootInput, UpdateStorageRootInput, UpsertStorageMappingInput } from './storage.dto';
+import { assertAbsoluteEnterprisePath, type CreateStorageFolderInput, type CreateStorageRootInput, type UpdateStorageRootInput, type UpsertStorageMappingInput } from './storage.dto';
+import { verifyServerPathWritable } from '../storage-sync/server-storage-fs';
 
 /**
  * Managing the persistent Storage & Folder Mapping foundation — CONFIGURATION
@@ -71,6 +72,17 @@ export class StorageService {
   }
 
   async updateRoot(id: string, input: UpdateStorageRootInput): Promise<StorageRoot> {
+    const before = await this.repo.findRoot(id);
+    if (before?.provider === 'server') {
+      if (!input.rootPath) {
+        throw new BadRequestException('rootPath cannot be cleared for a "server" storage root — the worker needs it to synchronize.');
+      }
+      // Same guard as parseCreateStorageRoot — updateRoot's DTO doesn't know
+      // the provider (it can't be changed after creation), so this is the
+      // one place an UPDATE to a 'server' root's path is checked. See
+      // assertAbsoluteEnterprisePath's header for the exact failure this closes.
+      assertAbsoluteEnterprisePath(input.rootPath);
+    }
     const row = await this.repo.updateRoot(id, input);
     if (!row) throw new NotFoundException('Storage root not found or has been removed.');
     this.audit.annotate({
@@ -100,6 +112,33 @@ export class StorageService {
       afterState: { status: 'tombstoned' },
     });
     return toRootResponse(row);
+  }
+
+  /** For a 'server' root: does the backend/worker process ITSELF actually
+   *  have read/write access to root_path right now? CONFIGURED (a
+   *  storage_roots row exists) and AVAILABLE (the real filesystem is
+   *  reachable right now) are deliberately different questions — this
+   *  answers only the second one, fresh, every call; it never assumes
+   *  availability from the row's mere existence. For 'local'/'gateway',
+   *  this backend never touches the real filesystem at all, so there is
+   *  nothing to verify from here — the caller (the Storage UI) checks those
+   *  a different way (browser permission / Gateway session). */
+  async verifyServerRoot(id: string): Promise<{ available: boolean; reason: string }> {
+    const row = await this.repo.findRoot(id);
+    if (!row) throw new NotFoundException('Storage root not found.');
+    if (row.provider !== 'server') {
+      return { available: false, reason: `Verification only applies to a "server" storage root (this one is "${row.provider}").` };
+    }
+    if (!row.root_path) {
+      return { available: false, reason: 'No path is configured yet.' };
+    }
+    const available = await verifyServerPathWritable(row.root_path);
+    return {
+      available,
+      reason: available
+        ? 'The backend/worker process can read and write this path.'
+        : 'Folder does not exist or cannot be accessed by the backend/worker process — check that it exists, is mounted, and is writable.',
+    };
   }
 
   // --- folders ------------------------------------------------------------

@@ -8,8 +8,14 @@ import { apiFetch, ApiError } from '../../lib/api';
 import { MODULE_NAV, OVERVIEW_NAV, PLATFORM_NAV, type NavItem } from '../../lib/nav';
 import { TakeTheTourButton, TourProvider } from '../../components/ProductTour';
 import { ToastProvider } from '../../components/Toast';
+import { DialogProvider } from '../../components/Dialog';
 import { NAV_ICONS } from '../../components/NavIcons';
 import { ActivationGate } from '../../components/ActivationGate';
+import { getCentralStorageStatus, syncPendingSubmissions } from '../../lib/central-storage';
+
+/** Same manage-roles gate as the Storage page — only a role that could act on
+ *  a sync failure gets the automatic attempt at all. */
+const STORAGE_SYNC_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
 
 /**
  * Customer installation package phase: a fresh installer-provisioned local
@@ -65,6 +71,32 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (!loading && !user && !connectionError) router.replace('/login');
   }, [loading, user, connectionError, router]);
 
+  // Central DPDP Storage automatic sync — SaaS half. Runs once per
+  // authenticated session, on WHATEVER page loads first, not only /storage:
+  // restore the persisted browser folder handle, verify permission (both
+  // read-only — safe to do without a user gesture), and if still connected,
+  // write any consent submissions recorded centrally while this browser
+  // wasn't around to catch them. Never prompts, never blocks the page — a
+  // lost permission surfaces as "Needs Reconnect" on the Storage page
+  // (reconnecting itself needs a real click, so it can't happen here).
+  useEffect(() => {
+    if (!user || !STORAGE_SYNC_ROLES.has(user.role)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await getCentralStorageStatus();
+        if (cancelled || status.status !== 'connected') return;
+        await syncPendingSubmissions(status);
+      } catch {
+        // Best-effort — the Storage page surfaces real status/errors; a
+        // background sync attempt failing must never affect the rest of the app.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
   if (loading) return <p style={{ padding: 24 }} className="muted">Loading…</p>;
   if (!user && connectionError) {
     return (
@@ -88,6 +120,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     // The tour lives inside the authenticated shell, so it can only ever run
     // for a real signed-in user against their own real screens.
     <ToastProvider>
+    <DialogProvider>
     <TourProvider>
       <div className="shell">
       <aside className="sidebar">
@@ -134,6 +167,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </div>
       </div>
     </TourProvider>
+    </DialogProvider>
     </ToastProvider>
   );
 }

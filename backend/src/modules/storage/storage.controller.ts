@@ -92,6 +92,19 @@ export class StorageController {
     return this.storage.removeRoot(id, reason);
   }
 
+  /** For a 'server' (Enterprise) root only: can the backend/worker process
+   *  itself actually read/write the configured path right now? This is what
+   *  the Storage UI's Available/"Configured but unavailable" status is
+   *  driven from — called on EVERY Storage page load (any role, like
+   *  getRoot/listRoots below), not gated to MANAGE: it never mutates
+   *  anything, so there is nothing here a viewer/auditor shouldn't be able
+   *  to see. Not @Audited — a read-only probe, not a change. */
+  @Post('roots/:id/verify')
+  @HttpCode(HttpStatus.OK)
+  async verifyRoot(@Param('id') id: string) {
+    return this.storage.verifyServerRoot(id);
+  }
+
   /**
    * Staff mint a one-time pairing nonce for a Gateway-provider storage root
    * (the browser then presents it directly to the Gateway agent to establish

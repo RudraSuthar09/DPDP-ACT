@@ -22,9 +22,20 @@ export class DataPrincipalService {
   /** Resolve subjectRef to its stable internal customer_id, creating the
    *  registry row on first sight. The SAME subjectRef always yields the
    *  SAME customer_id — this is what makes "the same customer submitting
-   *  twice reuses one folder" possible. */
-  async resolveCustomerId(subjectRef: string): Promise<string> {
-    const row = await this.repo.resolveOrCreate(subjectRef);
+   *  twice reuses one folder" possible. `displayName`, if given, is recorded
+   *  (see DataPrincipalRepository.resolveOrCreate — never blanks an
+   *  existing name); omit it for a read-only resolution. */
+  async resolveCustomerId(subjectRef: string, displayName: string | null = null): Promise<string> {
+    const row = await this.repo.resolveOrCreate(subjectRef, displayName);
     return row.id;
+  }
+
+  /** Same resolution, also returning the customer's current display name —
+   *  for callers that need it for filesystem folder naming (see
+   *  ConsentFormsService.submit / EnterpriseStorageSyncService) without a
+   *  second round trip. */
+  async resolve(subjectRef: string, displayName: string | null = null): Promise<{ customerId: string; displayName: string | null }> {
+    const row = await this.repo.resolveOrCreate(subjectRef, displayName);
+    return { customerId: row.id, displayName: row.display_name };
   }
 }

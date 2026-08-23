@@ -30,6 +30,7 @@ export interface CustomerFieldRow {
   field_type: string;
   required: boolean;
   is_identifier: boolean;
+  is_customer_name: boolean;
   display_order: number;
   status: 'active' | 'removed';
 }
@@ -182,7 +183,7 @@ export class ConsentFormsRepository {
   listCustomerFields(formId: string): Promise<CustomerFieldRow[]> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
-        `SELECT id, form_id, label, field_type, required, is_identifier, display_order, status
+        `SELECT id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status
            FROM consent_form_customer_fields
           WHERE form_id = $1 AND status = 'active'
           ORDER BY display_order, label`,
@@ -208,14 +209,15 @@ export class ConsentFormsRepository {
     fieldType: string;
     required: boolean;
     isIdentifier: boolean;
+    isCustomerName: boolean;
     displayOrder: number;
   }): Promise<CustomerFieldRow> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
-        `INSERT INTO consent_form_customer_fields (form_id, label, field_type, required, is_identifier, display_order)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, form_id, label, field_type, required, is_identifier, display_order, status`,
-        [input.formId, input.label, input.fieldType, input.required, input.isIdentifier, input.displayOrder],
+        `INSERT INTO consent_form_customer_fields (form_id, label, field_type, required, is_identifier, is_customer_name, display_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status`,
+        [input.formId, input.label, input.fieldType, input.required, input.isIdentifier, input.isCustomerName, input.displayOrder],
       );
       return rows[0]!;
     });
@@ -223,15 +225,15 @@ export class ConsentFormsRepository {
 
   updateCustomerField(
     fieldId: string,
-    input: { label: string; fieldType: string; required: boolean; isIdentifier: boolean },
+    input: { label: string; fieldType: string; required: boolean; isIdentifier: boolean; isCustomerName: boolean },
   ): Promise<CustomerFieldRow | null> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
         `UPDATE consent_form_customer_fields
-            SET label = $2, field_type = $3, required = $4, is_identifier = $5, updated_at = now()
+            SET label = $2, field_type = $3, required = $4, is_identifier = $5, is_customer_name = $6, updated_at = now()
           WHERE id = $1 AND status = 'active'
-          RETURNING id, form_id, label, field_type, required, is_identifier, display_order, status`,
-        [fieldId, input.label, input.fieldType, input.required, input.isIdentifier],
+          RETURNING id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status`,
+        [fieldId, input.label, input.fieldType, input.required, input.isIdentifier, input.isCustomerName],
       );
       return rows[0] ?? null;
     });
@@ -443,6 +445,28 @@ export class ConsentFormsRepository {
         [submissionId, formId],
       );
       return (rowCount ?? 0) > 0;
+    });
+  }
+
+  /** Client-based twin of markSubmissionSynced, for the Enterprise storage
+   *  sync WORKER (no HTTP request/ambient tenant context there — the tenant
+   *  is already bound on `client`, exactly like RetentionRepository.
+   *  flagExpired). Same idempotency guarantee. */
+  async markSubmissionSyncedOnClient(client: PoolClient, formId: string, submissionId: string): Promise<boolean> {
+    const { rowCount } = await client.query(
+      `UPDATE consent_form_submissions SET local_synced_at = now() WHERE id = $1 AND form_id = $2`,
+      [submissionId, formId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /** Every currently-active form's id — the worker-side sync sweep's outer
+   *  loop (it has no HTTP request to key off; it just needs "every template
+   *  this tenant currently has"). */
+  listActiveFormIds(): Promise<string[]> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<{ id: string }>(`SELECT id FROM consent_forms WHERE is_active = true`);
+      return rows.map((r) => r.id);
     });
   }
 }

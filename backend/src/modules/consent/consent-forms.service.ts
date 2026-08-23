@@ -9,8 +9,11 @@ import { SubjectRefHasher } from './subject-ref';
 import { ConsentFormsRepository, type CustomerFieldRow, type FormRow } from './consent-forms.repository';
 import { ConsentInventoryLinkRepository } from './consent-inventory-link.repository';
 import { DataPrincipalService } from '../data-principal/data-principal.service';
+import { EnterpriseStorageSyncService, type FieldValueToWrite } from '../storage-sync/enterprise-storage-sync.service';
+import { SubmissionDeliveryService, type StageDeliveryFieldInput } from '../delivery/submission-delivery.service';
 import type {
   AddRowInput,
+  LinkSubmissionFieldValueInput,
   LinkSubmissionInput,
   SaveCustomerFieldDtoInput,
   SaveFormInput,
@@ -42,6 +45,8 @@ export class ConsentFormsService {
     private readonly entryPurposes: EntryPurposesService,
     private readonly inventoryLinks: ConsentInventoryLinkRepository,
     private readonly dataPrincipals: DataPrincipalService,
+    private readonly enterpriseSync: EnterpriseStorageSyncService,
+    private readonly delivery: SubmissionDeliveryService,
     private readonly tenantContext: TenantContextService,
     private readonly audit: AuditContextService,
   ) {}
@@ -148,16 +153,13 @@ export class ConsentFormsService {
     try {
       field = await this.repo.addCustomerField({ formId, displayOrder, ...input });
     } catch (err) {
-      if (isUniqueViolation(err)) {
-        throw new BadRequestException('This form already has a Customer Identifier field — uncheck it there first.');
-      }
-      throw err;
+      throw toFieldConflictError(err);
     }
     this.audit.annotate({
       targetType: 'consent_form_customer_field',
       targetId: field.id,
-      reason: `Field "${input.label}" added (type: ${input.fieldType}${input.isIdentifier ? ', identifier' : ''}).`,
-      afterState: { label: input.label, fieldType: input.fieldType, required: input.required, isIdentifier: input.isIdentifier },
+      reason: `Field "${input.label}" added (type: ${input.fieldType}${input.isIdentifier ? ', identifier' : ''}${input.isCustomerName ? ', customer name' : ''}).`,
+      afterState: { label: input.label, fieldType: input.fieldType, required: input.required, isIdentifier: input.isIdentifier, isCustomerName: input.isCustomerName },
     });
     return this.getForm(formId);
   }
@@ -167,17 +169,14 @@ export class ConsentFormsService {
     try {
       field = await this.repo.updateCustomerField(fieldId, input);
     } catch (err) {
-      if (isUniqueViolation(err)) {
-        throw new BadRequestException('This form already has a Customer Identifier field — uncheck it there first.');
-      }
-      throw err;
+      throw toFieldConflictError(err);
     }
     if (!field) throw new NotFoundException('Field not found.');
     this.audit.annotate({
       targetType: 'consent_form_customer_field',
       targetId: fieldId,
-      reason: `Field "${input.label}" edited (type: ${input.fieldType}${input.isIdentifier ? ', identifier' : ''}).`,
-      afterState: { label: input.label, fieldType: input.fieldType, required: input.required, isIdentifier: input.isIdentifier },
+      reason: `Field "${input.label}" edited (type: ${input.fieldType}${input.isIdentifier ? ', identifier' : ''}${input.isCustomerName ? ', customer name' : ''}).`,
+      afterState: { label: input.label, fieldType: input.fieldType, required: input.required, isIdentifier: input.isIdentifier, isCustomerName: input.isCustomerName },
     });
     return this.getForm(formId);
   }
@@ -310,21 +309,26 @@ export class ConsentFormsService {
     if (!form) throw new NotFoundException('Consent form not found.');
     const submissions = await this.repo.listPendingLocalSync(formId);
     return Promise.all(
-      submissions.map(async (s) => ({
-        id: s.id,
-        channel: s.channel,
-        submittedAt: s.submitted_at,
-        subjectRef: s.subject_ref,
+      submissions.map(async (s) => {
         // Resolves (never re-creates — every one of these was already
-        // resolved once at submit time) the same internal customer UUID the
-        // Storage page's deferred sync needs for resolveCustomerFolder.
-        customerId: await this.dataPrincipals.resolveCustomerId(s.subject_ref),
-        answers: s.answers.map((a) => ({
-          consentPurposeId: a.consent_purpose_id,
-          purposeName: a.consent_purpose_name,
-          granted: a.granted,
-        })),
-      })),
+        // resolved once at submit time) the same internal customer UUID +
+        // display name the Storage page's deferred sync needs for
+        // resolveCustomerFolder's folder-naming.
+        const { customerId, displayName } = await this.dataPrincipals.resolve(s.subject_ref);
+        return {
+          id: s.id,
+          channel: s.channel,
+          submittedAt: s.submitted_at,
+          subjectRef: s.subject_ref,
+          customerId,
+          displayName,
+          answers: s.answers.map((a) => ({
+            consentPurposeId: a.consent_purpose_id,
+            purposeName: a.consent_purpose_name,
+            granted: a.granted,
+          })),
+        };
+      }),
     );
   }
 
@@ -380,13 +384,18 @@ export class ConsentFormsService {
       // Field CONFIGURATION only (id/label/type/required/isIdentifier) —
       // never a value. The public page renders one input per field; the
       // browser writes whatever the visitor types/uploads straight to local
-      // storage on submit, never through this backend (I1).
+      // storage on submit, never through this backend (I1) — UNLESS
+      // hasServerStorage below is true, in which case the frontend also
+      // sends field VALUES on submit, for the synchronous Enterprise write
+      // (see EnterpriseStorageSyncService). Absent/false for every tenant
+      // without a 'server' storage root — I1 unchanged for them.
       fields: customerFields.map(toCustomerFieldResponse),
+      hasServerStorage: await this.enterpriseSync.hasActiveServerRoot(),
     };
   }
 
   async submitWidget(formId: string, input: WidgetSubmissionInput) {
-    return this.submit(formId, 'widget', input.customerId, input.answers);
+    return this.submit(formId, 'widget', input.customerId, null, input.answers, []);
   }
 
   async submitLink(formId: string, input: LinkSubmissionInput) {
@@ -397,14 +406,16 @@ export class ConsentFormsService {
     // never-repeating id means this submission simply won't be recognised as
     // a repeat customer later — correct, not a failure.
     const customerId = input.identityValue?.trim() || randomUUID();
-    return this.submit(formId, 'link', customerId, input.answers);
+    return this.submit(formId, 'link', customerId, input.customerNameValue, input.answers, input.fieldValues);
   }
 
   private async submit(
     formId: string,
     channel: 'widget' | 'link',
     customerId: string,
+    customerNameValue: string | null,
     answers: Array<{ consentPurposeId: string; granted: boolean }>,
+    fieldValues: LinkSubmissionFieldValueInput[],
   ) {
     const form = await this.repo.getForm(formId);
     if (!form || !form.is_active) {
@@ -455,21 +466,154 @@ export class ConsentFormsService {
     // always resolves to the SAME internalCustomerId;
     // storage_mappings.entity_id (moduleKey 'data_principal') uses ONLY
     // this value, never the 64-character subject_ref hash.
-    const internalCustomerId = await this.dataPrincipals.resolveCustomerId(subjectRef);
+    //
+    // displayName is the customer's human-readable name — from whichever
+    // field the client marked "Use as Customer Name" (may be a DIFFERENT
+    // field than the identifier, or the same one, or none). Used ONLY for
+    // filesystem folder naming (never identity); COALESCEd server-side so a
+    // submission with no name doesn't blank out one a prior submission set.
+    const { customerId: internalCustomerId, displayName } = await this.dataPrincipals.resolve(
+      subjectRef,
+      customerNameValue?.trim() || null,
+    );
+
+    // Enterprise Central DPDP Storage automatic sync: SYNCHRONOUS, best-
+    // effort, never fails the submission itself. No-ops instantly (synced:
+    // false) for every tenant without a 'server' storage root configured —
+    // see EnterpriseStorageSyncService's header for why this cannot be
+    // deferred/retried with the real field bytes later (CLAUDE.md R6).
+    //
+    // Computed BEFORE the one audit.annotate() call below (not a second,
+    // later call) — AuditContextService.annotate() does a shallow
+    // Object.assign per request, so a second call would silently overwrite
+    // this one's reason/afterState instead of adding to them.
+    const syncResult =
+      fieldValues.length > 0
+        ? await this.writeEnterpriseFieldsNow(formId, submission.id, internalCustomerId, subjectRef, displayName, fieldValues)
+        : null;
+
+    // Cloud relay staging: ONLY when the synchronous Enterprise-server write
+    // did not already deliver these values (either no 'server' root is
+    // configured at all — the SaaS/Electron-local case this exists for — or
+    // it was configured but unreachable right now). Never a second, redundant
+    // delivery path for a tenant whose synchronous write just succeeded. See
+    // SubmissionDeliveryService's header for why this table exists at all
+    // (a deliberate, documented CLAUDE.md I1/R6 exception) and why staging
+    // here is additive, not a replacement for the untouched Enterprise sync
+    // call above.
+    if (fieldValues.length > 0 && !syncResult?.synced) {
+      await this.stageFieldsForDelivery(formId, submission.id, internalCustomerId, subjectRef, displayName, fieldValues);
+    }
 
     this.audit.annotate({
       actorLabel: channel === 'widget' ? 'consent_form:widget' : 'consent_form:link',
       targetType: 'consent_form_submission',
       targetId: submission.id,
-      reason: `Consent form submitted (${channel}) — ${recorded.filter((r) => r.granted).length}/${recorded.length} granted.`,
-      afterState: { formId, channel },
+      reason:
+        `Consent form submitted (${channel}) — ${recorded.filter((r) => r.granted).length}/${recorded.length} granted.` +
+        (syncResult?.synced ? ' Written into Enterprise Central DPDP Storage.' : ''),
+      afterState: { formId, channel, ...(syncResult ? { enterpriseSynced: syncResult.synced } : {}) },
     });
+
     return {
       submissionId: submission.id,
       subjectRef,
       customerId: internalCustomerId,
+      displayName,
       answers: recorded.map((r) => ({ consentPurposeId: r.consentPurposeId, granted: r.granted })),
     };
+  }
+
+  /** Returns `{ synced: false }` (never throws) whenever there is nothing to
+   *  write or the write failed — the caller folds this into the SAME single
+   *  audit.annotate() call as the submission itself, never a second one. */
+  private async writeEnterpriseFieldsNow(
+    formId: string,
+    submissionId: string,
+    customerId: string,
+    subjectRef: string,
+    displayName: string | null,
+    fieldValues: LinkSubmissionFieldValueInput[],
+  ): Promise<{ synced: boolean }> {
+    const form = await this.repo.getForm(formId);
+    const customerFields = await this.repo.listCustomerFields(formId);
+    const byId = new Map(customerFields.map((f) => [f.id, f]));
+
+    const fields: FieldValueToWrite[] = [];
+    for (const v of fieldValues) {
+      const field = byId.get(v.fieldId);
+      if (!field) continue; // an unknown/removed field id — ignore rather than fail the submission
+      if (v.file) {
+        fields.push({ label: field.label, file: { filename: v.file.filename, bytes: Buffer.from(v.file.contentBase64, 'base64') } });
+      } else if (v.textValue !== undefined) {
+        fields.push({ label: field.label, textValue: v.textValue });
+      }
+    }
+    if (fields.length === 0) return { synced: false };
+
+    // The resolved Customer Name (data_principals.display_name) — never the
+    // identifier's raw value (an email is not a folder name). Falls back to
+    // a UUID-derived label only when no "Customer Name" field is configured.
+    const displayNameHint = displayName?.trim() || `customer-${customerId.slice(0, 8)}`;
+
+    const { success } = await this.enterpriseSync.writeSubmissionFieldsNow({
+      customerId,
+      subjectRef,
+      displayNameHint,
+      templateName: form!.name,
+      retentionMonths: form!.retention_months,
+      fields,
+    });
+
+    if (success) {
+      await this.repo.markSubmissionSynced(formId, submissionId);
+    }
+    // On failure: local_synced_at stays NULL. The worker's periodic sweep can
+    // later recover Customer Information, but NOT these field values — they
+    // existed only in this request's memory (R6). Logged inside
+    // EnterpriseStorageSyncService; the consent GRANT itself is unaffected.
+    return { synced: success };
+  }
+
+  /** Stages field values for the cloud delivery queue — see the call site's
+   *  comment and SubmissionDeliveryService's header. Reuses the exact same
+   *  field-id -> label resolution as writeEnterpriseFieldsNow above (never a
+   *  second, divergent copy of that lookup). Never throws: staging is
+   *  best-effort, exactly like the synchronous Enterprise write it backs up. */
+  private async stageFieldsForDelivery(
+    formId: string,
+    submissionId: string,
+    customerId: string,
+    subjectRef: string,
+    displayName: string | null,
+    fieldValues: LinkSubmissionFieldValueInput[],
+  ): Promise<void> {
+    const form = await this.repo.getForm(formId);
+    const customerFields = await this.repo.listCustomerFields(formId);
+    const byId = new Map(customerFields.map((f) => [f.id, f]));
+
+    const fields: StageDeliveryFieldInput[] = [];
+    for (const v of fieldValues) {
+      const field = byId.get(v.fieldId);
+      if (!field) continue;
+      if (v.file) {
+        fields.push({ label: field.label, file: { filename: v.file.filename, contentBase64: v.file.contentBase64 } });
+      } else if (v.textValue !== undefined && v.textValue.trim().length > 0) {
+        fields.push({ label: field.label, textValue: v.textValue });
+      }
+    }
+    if (fields.length === 0) return;
+
+    await this.delivery.stage({
+      submissionId,
+      formId,
+      customerId,
+      subjectRef,
+      displayName,
+      templateName: form!.name,
+      retentionMonths: form!.retention_months,
+      fields,
+    });
   }
 
   // --- the "behind the scenes" resolution ------------------------------------
@@ -528,6 +672,7 @@ function toCustomerFieldResponse(f: CustomerFieldRow) {
     fieldType: f.field_type,
     required: f.required,
     isIdentifier: f.is_identifier,
+    isCustomerName: f.is_customer_name,
     displayOrder: f.display_order,
   };
 }
@@ -543,4 +688,16 @@ function toPublicRow(r: FormRow) {
 
 function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
+}
+
+/** Distinguishes WHICH one-per-form rule a customer-field save tripped
+ *  (identifier vs customer-name) via the violated constraint's name, so the
+ *  client gets an accurate message instead of always blaming the identifier. */
+function toFieldConflictError(err: unknown): Error {
+  if (!isUniqueViolation(err)) return err as Error;
+  const constraint = (err as { constraint?: string }).constraint ?? '';
+  if (constraint.includes('customer_name')) {
+    return new BadRequestException('This form already has a Customer Name field — uncheck it there first.');
+  }
+  return new BadRequestException('This form already has a Customer Identifier field — uncheck it there first.');
 }

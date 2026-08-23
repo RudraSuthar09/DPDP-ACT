@@ -6,6 +6,7 @@ import type { ConsentEventRecord, ConsentStatus, ConsentStatusAsOf } from '@dpdp
 import { apiFetch, downloadFile, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
 import { NoticeViewer, type NoticeTranslation } from '../../../../components/NoticeViewer';
+import { useDialog } from '../../../../components/Dialog';
 
 const WITHDRAW_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
 
@@ -52,6 +53,7 @@ interface NoticeVersion {
 
 export default function SubjectConsentHistoryPage() {
   const { user } = useAuth();
+  const { confirm, promptText } = useDialog();
   const canWithdraw = !!user && WITHDRAW_ROLES.has(user.role);
 
   // The raw identifier lives only in this input's state, and only until it is
@@ -135,10 +137,22 @@ export default function SubjectConsentHistoryPage() {
 
   async function onWithdraw(purposeId: string, purposeName: string | null) {
     if (!subjectRef) return;
-    if (!window.confirm(`Withdraw consent for "${purposeName ?? purposeId}"? This writes a new WITHDRAWN event — the grant it revokes is never removed.`)) {
+    if (
+      !(await confirm({
+        title: 'Withdraw consent',
+        message: `Withdraw consent for "${purposeName ?? purposeId}"? This writes a new WITHDRAWN event — the grant it revokes is never removed.`,
+        confirmLabel: 'Withdraw',
+        danger: true,
+      }))
+    ) {
       return;
     }
-    const reason = window.prompt('Reason for this withdrawal (optional, kept as evidence):') ?? '';
+    const reason = (await promptText({
+      title: 'Withdrawal reason',
+      label: 'Reason (optional, kept as evidence)',
+      multiline: true,
+      confirmLabel: 'Record withdrawal',
+    })) ?? '';
     setWithdrawingPurpose(purposeId);
     setWithdrawError(null);
     try {

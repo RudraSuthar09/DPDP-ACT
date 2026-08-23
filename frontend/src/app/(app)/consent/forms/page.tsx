@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
+import { useDialog } from '../../../../components/Dialog';
 
 interface FormListItem {
   id: string;
@@ -28,6 +29,7 @@ const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
 export default function ConsentFormsPage() {
   const { user } = useAuth();
   const router = useRouter();
+  const { promptText } = useDialog();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
 
   const [forms, setForms] = useState<FormListItem[]>([]);
@@ -53,7 +55,13 @@ export default function ConsentFormsPage() {
   }, [load]);
 
   async function onNew() {
-    const name = window.prompt('Name this consent form (e.g. "Website sign-up consent")');
+    const name = await promptText({
+      title: 'Create consent form',
+      label: 'Form name',
+      placeholder: 'e.g. Website sign-up consent',
+      required: true,
+      confirmLabel: 'Create',
+    });
     if (name === null) return;
     if (name.trim().length < 2) {
       setError('A form name needs at least 2 characters.');

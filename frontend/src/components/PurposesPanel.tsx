@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
 import { useToast } from './Toast';
+import { useDialog } from './Dialog';
 
 export type LegalBasis = 'consent' | 'legitimate_use' | 'contract' | 'legal_obligation' | 'other';
 
@@ -67,6 +68,7 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
   const { showToast } = useToast();
+  const { promptText } = useDialog();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -148,9 +150,14 @@ export function PurposesPanel({ entryId, canManage }: { entryId: string; canMana
   }
 
   async function onRemove(purposeId: string, purposeName: string) {
-    const reason = window.prompt(
-      `Why are you removing the "${purposeName}" purpose? (required, kept as evidence)`,
-    );
+    const reason = await promptText({
+      title: 'Remove purpose',
+      message: `Why are you removing the "${purposeName}" purpose?`,
+      label: 'Reason (kept as evidence)',
+      required: true,
+      multiline: true,
+      confirmLabel: 'Remove',
+    });
     if (reason === null) return;
     if (!reason.trim()) {
       setError('A reason is required to remove a purpose.');

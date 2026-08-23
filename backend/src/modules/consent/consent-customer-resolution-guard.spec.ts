@@ -89,7 +89,23 @@ describe('Consent Form Builder simplification — Customer Data Source / staff-a
     // LinkSubmissionInput no longer hardcodes name/email/phone (Central DPDP
     // Storage correction) — identityValue is whatever the CLIENT's own field
     // marked isIdentifier collected, or null. No hardcoded field name here.
-    const linkShape = /export interface LinkSubmissionInput\s*\{\s*identityValue:\s*string \| null;\s*answers:\s*FormAnswerInput\[\];\s*\}/;
+    //
+    // fieldValues (Central DPDP Storage automatic sync, Enterprise half) is a
+    // DELIBERATE, narrow exception to "no customer-field-value acceptance in
+    // the public submission DTOs" — see EnterpriseStorageSyncService's header
+    // for the full reasoning. It stays generic (keyed by fieldId, never a
+    // hardcoded field name — the same discipline this guard already enforces
+    // elsewhere), is populated by the frontend ONLY when the tenant has an
+    // Enterprise 'server' storage root configured (hasActiveServerRoot), and
+    // is used ONLY for a synchronous filesystem write — never persisted to
+    // Postgres (R6), never a second write path into consent_form_submissions.
+    // customerNameValue (Customer Name / display name correction) is the
+    // SAME kind of narrow, generic exception as fieldValues — whatever the
+    // client's own field marked isCustomerName collected, never a hardcoded
+    // field name, used only to name a filesystem folder (data_principals.
+    // display_name), never a second identity mechanism.
+    const linkShape =
+      /export interface LinkSubmissionInput\s*\{\s*identityValue:\s*string \| null;\s*customerNameValue:\s*string \| null;\s*answers:\s*FormAnswerInput\[\];\s*fieldValues:\s*LinkSubmissionFieldValueInput\[\];\s*\}/;
     expect(widgetShape.test(code)).toBe(true);
     expect(linkShape.test(code)).toBe(true);
   });

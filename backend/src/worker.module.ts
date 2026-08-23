@@ -14,6 +14,8 @@ import { BreachStoreModule } from './modules/breach/breach-store.module';
 import { BreachDeadlineHandler } from './modules/breach/breach-deadline.handler';
 import { RetentionStoreModule } from './modules/consent/retention-store.module';
 import { RetentionDeadlineHandler } from './modules/consent/retention-deadline.handler';
+import { EnterpriseStorageSyncModule } from './modules/storage-sync/enterprise-storage-sync.module';
+import { EnterpriseStorageSyncWorker } from './modules/storage-sync/enterprise-storage-sync.worker';
 
 /**
  * Root module for the worker process — the second Stage 1 container.
@@ -69,6 +71,11 @@ import { RetentionDeadlineHandler } from './modules/consent/retention-deadline.h
     // Retention tracking's worker-safe half — flags a record past-retention when
     // its (frozen) clock runs out.
     RetentionStoreModule,
+    // Central DPDP Storage automatic sync (Enterprise): the periodic catch-up
+    // sweep for tenants with a 'server' storage root — see
+    // enterprise-storage-sync.worker.ts's header for why this is a plain
+    // ticker, not a pg-boss queue.
+    EnterpriseStorageSyncModule,
   ],
   providers: [
     WorkflowWorker,
@@ -76,6 +83,7 @@ import { RetentionDeadlineHandler } from './modules/consent/retention-deadline.h
     RequestDeadlineHandler,
     BreachDeadlineHandler,
     RetentionDeadlineHandler,
+    EnterpriseStorageSyncWorker,
     {
       // One token, many handlers. Nest has no Angular-style `multi: true`, so
       // the array is assembled here explicitly — which is arguably better: the

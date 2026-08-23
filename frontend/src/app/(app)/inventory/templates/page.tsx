@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../../../../lib/api';
 import { useAuth } from '../../../../lib/auth';
+import { useDialog } from '../../../../components/Dialog';
 
 interface TemplateListItem {
   id: string;
@@ -57,6 +58,7 @@ const SECTOR_LABELS: Record<string, string> = {
  */
 export default function SectorTemplatesPage() {
   const { user } = useAuth();
+  const { confirm } = useDialog();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
   const router = useRouter();
 
@@ -90,15 +92,17 @@ export default function SectorTemplatesPage() {
 
   async function onApply(t: TemplateListItem) {
     if (
-      !window.confirm(
-        `Apply "${t.name}"?\n\n` +
+      !(await confirm({
+        title: `Apply "${t.name}"?`,
+        message:
           `This adds ${t.elementCount} data element(s), ${t.systemCount} system(s) and ` +
           `${t.vendorCount} vendor(s) to your registers as a STARTING POINT. Everything it ` +
           `adds is yours to edit, rename or remove — nothing is locked.\n\n` +
           `Retention periods are INDICATIVE. Confirm the exact statutory period before ` +
           `relying on any of them.\n\n` +
           `Nothing already in your registers is changed or removed.`,
-      )
+        confirmLabel: 'Apply template',
+      }))
     ) {
       return;
     }

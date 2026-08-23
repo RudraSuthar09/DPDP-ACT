@@ -51,7 +51,19 @@ import {
   requestStorageHandlePermission,
   saveStorageHandle,
 } from './local-storage-handles';
-import { createLocalFolder, writeLocalJsonFile, writeLocalRawFile, writeLocalTextFile } from './local-storage-provider';
+import {
+  browserFsProvider,
+  writeLocalRawFile,
+  writeLocalTextFile,
+  type CentralFsProvider,
+} from './local-storage-provider';
+import {
+  electronFsProvider,
+  getEnterpriseStatus,
+  isElectronStorageAvailable,
+  selectEnterpriseFolder,
+  setEnterpriseFolder,
+} from './electron-storage';
 
 export const CENTRAL_STORAGE_ROOT_NAME = 'DPDP Central Storage';
 
@@ -82,14 +94,23 @@ export type CentralStorageStatus = 'checking' | 'unsupported' | 'not_configured'
 export interface CentralStorageState {
   status: CentralStorageStatus;
   root: StorageRoot | null;
+  /** The browser File System Access handle — set only in the SaaS/browser
+   *  path, always null in the installed Electron app (which uses `fs` +
+   *  `displayName` instead). */
   handle: FileSystemDirectoryHandle | null;
-  /** Best-effort display only (the handle's own folder name) — never a full
-   *  OS path, since a FileSystemDirectoryHandle carries no extractable path. */
+  /** How reads/writes actually reach the filesystem for this connected state:
+   *  browserFsProvider(handle) in a browser, electronFsProvider() in the
+   *  installed app. Null unless status is 'connected'. Every write path uses
+   *  THIS, never `handle` directly — that is the provider seam. */
+  fs: CentralFsProvider | null;
+  /** Display label for the connected location. In the browser this is the
+   *  handle's folder name (no OS path is extractable there); in the installed
+   *  Electron app this is the REAL absolute path (e.g. D:\DPDP-Storage). */
   displayName: string | null;
 }
 
-const UNSUPPORTED: CentralStorageState = { status: 'unsupported', root: null, handle: null, displayName: null };
-const NOT_CONFIGURED: CentralStorageState = { status: 'not_configured', root: null, handle: null, displayName: null };
+const UNSUPPORTED: CentralStorageState = { status: 'unsupported', root: null, handle: null, fs: null, displayName: null };
+const NOT_CONFIGURED: CentralStorageState = { status: 'not_configured', root: null, handle: null, fs: null, displayName: null };
 
 /** The tenant's Central DPDP Storage root record, if one has been connected —
  *  identified purely by its reserved name (see the module doc comment). */
@@ -98,29 +119,47 @@ export async function findCentralRoot(): Promise<StorageRoot | null> {
   return roots.find((r) => r.name === CENTRAL_STORAGE_ROOT_NAME && r.status === 'active') ?? null;
 }
 
-/** Full status: does a central root exist centrally, and does THIS browser
- *  still hold a granted handle for it? Read-only — never prompts. */
+/** Full status. In the installed Electron app this reflects the native
+ *  Enterprise Storage config + a real availability probe; in a browser it
+ *  reflects whether THIS browser still holds a granted handle. Read-only —
+ *  never prompts, safe to call automatically. */
 export async function getCentralStorageStatus(): Promise<CentralStorageState> {
+  if (isElectronStorageAvailable()) return getElectronCentralStorageStatus();
   if (!isLocalStorageAdapterSupported()) return UNSUPPORTED;
 
   const root = await findCentralRoot();
   if (!root) return NOT_CONFIGURED;
 
   const record = await getStorageHandle(root.id);
-  if (!record) return { status: 'needs_reconnect', root, handle: null, displayName: null };
+  if (!record) return { status: 'needs_reconnect', root, handle: null, fs: null, displayName: null };
 
   const permission = await queryStorageHandlePermission(record.handle);
   if (permission !== 'granted') {
-    return { status: 'needs_reconnect', root, handle: record.handle, displayName: record.handle.name };
+    return { status: 'needs_reconnect', root, handle: record.handle, fs: null, displayName: record.handle.name };
   }
-  return { status: 'connected', root, handle: record.handle, displayName: record.handle.name };
+  return { status: 'connected', root, handle: record.handle, fs: browserFsProvider(record.handle), displayName: record.handle.name };
+}
+
+/** Electron-native status: CONFIGURED (a central root row exists AND this
+ *  machine has a persisted rootPath) vs AVAILABLE (the main process can
+ *  actually read/write that path right now) are answered separately. */
+async function getElectronCentralStorageStatus(): Promise<CentralStorageState> {
+  const root = await findCentralRoot();
+  const es = await getEnterpriseStatus();
+  if (!root || !es.rootPath) {
+    return { status: 'not_configured', root: root ?? null, handle: null, fs: null, displayName: es.rootPath };
+  }
+  if (!es.available) {
+    return { status: 'needs_reconnect', root, handle: null, fs: null, displayName: es.rootPath };
+  }
+  return { status: 'connected', root, handle: null, fs: electronFsProvider(), displayName: es.rootPath };
 }
 
 /** Idempotent, additive-only: creates any of the five top-level folders that
  *  don't already exist yet, both on disk and centrally — never deletes or
  *  renames anything already there (a client may have hand-created other
  *  folders during earlier testing; those are left exactly as they are). */
-async function ensureTopLevelFolders(rootId: string, handle: FileSystemDirectoryHandle): Promise<void> {
+async function ensureTopLevelFolders(rootId: string, fs: CentralFsProvider): Promise<void> {
   const { folders } = await apiFetch<{ folders: StorageFolder[] }>(`/storage/roots/${rootId}/folders`);
   const existingTopLevel = new Set(folders.filter((f) => f.parentFolderId === null).map((f) => f.name));
 
@@ -128,16 +167,18 @@ async function ensureTopLevelFolders(rootId: string, handle: FileSystemDirectory
     if (!existingTopLevel.has(name)) {
       await apiFetch('/storage/folders', { method: 'POST', body: { storageRootId: rootId, parentFolderId: null, name } });
     }
-    // Real disk folder too — createLocalFolder is already idempotent.
-    await createLocalFolder(handle, [], name);
+    // Real disk folder too — createFolder is idempotent in both providers.
+    await fs.createFolder([], name);
   }
 }
 
-/** MUST be called from a user gesture (a click handler) — opens the native
- *  picker. Creates the central root record on first connect, saves the
- *  handle, and ensures the five top-level folders exist (Customers, Data
- *  Inventory, Grievances, DSR, Breach) — safe to call again later. */
+/** MUST be called from a user gesture (a click handler). In the installed
+ *  Electron app this opens the NATIVE OS folder picker and persists the real
+ *  path; in a browser it opens the File System Access picker and saves the
+ *  handle. Either way it creates the central root record on first connect and
+ *  ensures the five top-level folders exist — safe to call again later. */
 export async function connectCentralStorage(): Promise<CentralStorageState> {
+  if (isElectronStorageAvailable()) return connectElectronCentralStorage();
   if (!isLocalStorageAdapterSupported() || !window.showDirectoryPicker) {
     throw new Error('This browser does not support local folder selection (File System Access API).');
   }
@@ -151,13 +192,43 @@ export async function connectCentralStorage(): Promise<CentralStorageState> {
     });
   }
   await saveStorageHandle(root.id, handle);
-  await ensureTopLevelFolders(root.id, handle);
-  return { status: 'connected', root, handle, displayName: handle.name };
+  const fs = browserFsProvider(handle);
+  await ensureTopLevelFolders(root.id, fs);
+  return { status: 'connected', root, handle, fs, displayName: handle.name };
 }
 
-/** Re-grants permission for an already-known root whose handle needs
- *  reconnecting. MUST be called from a user gesture. */
+/** The installed-app path: native folder dialog → persist the real absolute
+ *  path (validated + write-probed in the Electron main process) → ensure the
+ *  logical central root row + the five top-level real folders exist. */
+async function connectElectronCentralStorage(): Promise<CentralStorageState> {
+  const picked = await selectEnterpriseFolder();
+  if (!picked) {
+    // User dismissed the native picker — surfaced like the browser's own
+    // AbortError so callers (storage/page.tsx) treat it as a silent cancel.
+    throw new DOMException('The folder picker was dismissed.', 'AbortError');
+  }
+  const saved = await setEnterpriseFolder(picked);
+  if (!saved.available) {
+    throw new Error(saved.reason || 'The selected folder cannot be used for Enterprise Storage.');
+  }
+  let root = await findCentralRoot();
+  if (!root) {
+    root = await apiFetch<StorageRoot>('/storage/roots', {
+      method: 'POST',
+      body: { name: CENTRAL_STORAGE_ROOT_NAME, provider: 'local' },
+    });
+  }
+  const fs = electronFsProvider();
+  await ensureTopLevelFolders(root.id, fs);
+  return { status: 'connected', root, handle: null, fs, displayName: saved.rootPath };
+}
+
+/** Re-establish access for an already-known root. In the installed app this
+ *  re-opens the native picker (choosing a replacement folder updates the
+ *  persisted config); in a browser it re-requests handle permission. MUST be
+ *  called from a user gesture. */
 export async function reconnectCentralStorage(state: CentralStorageState): Promise<CentralStorageState> {
+  if (isElectronStorageAvailable()) return connectCentralStorage();
   if (!state.root) return connectCentralStorage();
   if (!state.handle) {
     // No handle persisted at all in THIS browser (e.g. a different device) —
@@ -166,7 +237,7 @@ export async function reconnectCentralStorage(state: CentralStorageState): Promi
   }
   const permission = await requestStorageHandlePermission(state.handle);
   if (permission !== 'granted') return { ...state, status: 'needs_reconnect' };
-  return { ...state, status: 'connected' };
+  return { ...state, status: 'connected', fs: browserFsProvider(state.handle) };
 }
 
 /** Filesystem-safe label — collapses path separators/control characters so a
@@ -192,6 +263,73 @@ export async function getAdditionalStorageMapping(moduleKey: StorageModuleKey, e
     `/storage/mappings?moduleKey=${encodeURIComponent(moduleKey)}&entityId=${encodeURIComponent(entityId)}`,
   );
   return mapping;
+}
+
+// --- deferred sync (submissions recorded centrally while this browser had no
+//     connected storage, or wasn't the one that submitted them) -----------
+
+/** Local mirror of a GET .../submissions/pending-local-sync row — enough to
+ *  file it under Customers/. */
+export interface PendingSubmission {
+  id: string;
+  channel: 'widget' | 'link';
+  submittedAt: string;
+  subjectRef: string;
+  /** The stable INTERNAL customer UUID (data_principals registry) — never
+   *  the subjectRef hash. See resolveCustomerFolder below. */
+  customerId: string;
+  /** The customer's human-readable name (data_principals.display_name), from
+   *  whichever field the client marked "Use as Customer Name" — used ONLY
+   *  for the filesystem folder name, never for identity. Null if no such
+   *  field is configured (falls back to a UUID-derived label). */
+  displayName: string | null;
+  answers: Array<{ purposeName: string | null; granted: boolean }>;
+}
+
+/**
+ * The one sync routine — reused by BOTH the automatic "on platform open"
+ * trigger ((app)/layout.tsx, so it runs no matter which page a staff member
+ * lands on) and the Storage page's manual "Sync now" fallback button. Writes
+ * ONLY Customer Information (folder + profile.json + retention.json) — a
+ * submission's field VALUES were never sent to this backend at all (I1);
+ * they are recoverable here only if THIS SAME browser was the one that
+ * originally collected them (already written at submit time by
+ * FormIntake.tsx), never from central state. `state` must already be
+ * `status: 'connected'`; the caller checks that first (see
+ * getCentralStorageStatus, safe to call automatically — no user gesture).
+ */
+export async function syncPendingSubmissions(
+  state: Pick<CentralStorageState, 'fs' | 'root'>,
+): Promise<{ synced: number; failed: number }> {
+  if (!state.fs || !state.root) return { synced: 0, failed: 0 };
+  const fs = state.fs;
+  const rootId = state.root.id;
+
+  let synced = 0;
+  let failed = 0;
+  const { forms } = await apiFetch<{ forms: Array<{ id: string; name: string; retentionMonths: number | null }> }>('/consent/forms');
+  for (const form of forms) {
+    const { submissions } = await apiFetch<{ submissions: PendingSubmission[] }>(
+      `/consent/forms/${form.id}/submissions/pending-local-sync`,
+    );
+    for (const submission of submissions) {
+      try {
+        const displayNameHint = submission.displayName?.trim() || `customer-${submission.customerId.slice(0, 8)}`;
+        const customer = await resolveCustomerFolder(fs, rootId, submission.customerId, displayNameHint);
+        await writeCustomerInformation(
+          fs,
+          customer.name,
+          { customerId: submission.customerId, subjectRef: submission.subjectRef, displayName: submission.displayName, createdAt: submission.submittedAt },
+          { templateName: form.name, retentionMonths: form.retentionMonths },
+        );
+        await apiFetch(`/consent/forms/${form.id}/submissions/${submission.id}/mark-synced`, { method: 'POST' });
+        synced += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+  }
+  return { synced, failed };
 }
 
 /** Resolves which root a folder belongs to (the mapping only carries a
@@ -233,10 +371,12 @@ export interface CustomerFolder {
  *    suffix so two different "Rudra Suthar"s never merge into one folder.
  *    Then create the real folder + the mapping.
  *
- * MUST be called from a browser that already holds a connected `handle` for
- * `rootId` — this does real disk + real API calls, never a guess. */
+ * MUST be called with a connected `fs` provider for `rootId` — this does real
+ * disk + real API calls, never a guess. The provider is either the browser's
+ * File System Access adapter or the Electron native adapter; the resolution
+ * logic here is identical for both. */
 export async function resolveCustomerFolder(
-  handle: FileSystemDirectoryHandle,
+  fs: CentralFsProvider,
   rootId: string,
   customerId: string,
   displayNameHint: string,
@@ -259,7 +399,7 @@ export async function resolveCustomerFolder(
   const baseName = sanitizeFolderLabel(displayNameHint);
   const name = siblingNames.has(baseName) ? `${baseName} (${customerId.slice(0, 6)})` : baseName;
 
-  await createLocalFolder(handle, [CUSTOMERS_FOLDER_NAME], name);
+  await fs.createFolder([CUSTOMERS_FOLDER_NAME], name);
   const folder = await apiFetch<StorageFolder>('/storage/folders', {
     method: 'POST',
     body: { storageRootId: rootId, parentFolderId: customersFolder.id, name },
@@ -282,15 +422,15 @@ export async function resolveCustomerFolder(
  *  retention_records) already uses; it is not itself an identity this
  *  storage layer resolves anything by. */
 export async function writeCustomerInformation(
-  handle: FileSystemDirectoryHandle,
+  fs: CentralFsProvider,
   customerFolderName: string,
   profile: { customerId: string; subjectRef: string; displayName: string | null; createdAt: string },
   retention: { templateName: string; retentionMonths: number | null } | null,
 ): Promise<void> {
   const path = [CUSTOMERS_FOLDER_NAME, customerFolderName, CUSTOMER_INFORMATION_FOLDER_NAME];
-  await writeLocalJsonFile(handle, path, 'profile.json', profile);
+  await fs.writeJson(path, 'profile.json', profile);
   if (retention) {
-    await writeLocalJsonFile(handle, path, 'retention.json', retention);
+    await fs.writeJson(path, 'retention.json', retention);
   }
 }
 
@@ -310,7 +450,7 @@ export function fieldValuePath(customerFolderName: string, templateName: string,
  *  value is ever written anywhere — never through the backend, never into
  *  PostgreSQL (I1). */
 export async function writeFieldValueLocally(
-  handle: FileSystemDirectoryHandle,
+  fs: CentralFsProvider,
   customerFolderName: string,
   templateName: string,
   fieldLabel: string,
@@ -318,9 +458,9 @@ export async function writeFieldValueLocally(
 ): Promise<void> {
   const path = fieldValuePath(customerFolderName, templateName, fieldLabel);
   if (typeof value === 'string') {
-    await writeLocalTextFile(handle, path, 'value.txt', value);
+    await fs.writeText(path, 'value.txt', value);
   } else {
-    await writeLocalRawFile(handle, path, value.name || 'value', value);
+    await fs.writeRaw(path, value.name || 'value', value);
   }
 }
 

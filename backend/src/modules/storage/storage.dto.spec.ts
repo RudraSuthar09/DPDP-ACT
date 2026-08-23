@@ -72,6 +72,54 @@ describe('parseCreateStorageRoot', () => {
     expect(() => parseCreateStorageRoot({ name: 'D' })).toThrow(BadRequestException);
     expect(() => parseCreateStorageRoot({})).toThrow(BadRequestException);
   });
+
+  describe('provider "server" — Enterprise automatic sync (the backend/worker process itself reads/writes rootPath)', () => {
+    it('requires a rootPath', () => {
+      expect(() => parseCreateStorageRoot({ name: 'DPDP', provider: 'server' })).toThrow(BadRequestException);
+    });
+
+    it('accepts a server root with a rootPath and no gatewayDeviceId', () => {
+      expect(parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: 'D:\\DPDP Central Storage' })).toEqual({
+        name: 'DPDP',
+        provider: 'server',
+        gatewayDeviceId: null,
+        rootPath: 'D:\\DPDP Central Storage',
+      });
+    });
+
+    it('rejects a gatewayDeviceId on a "server" root — this is explicitly not the Gateway path', () => {
+      expect(() =>
+        parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: 'D:\\DPDP', gatewayDeviceId: 'device-1' }),
+      ).toThrow(BadRequestException);
+    });
+
+    describe('rejects a non-absolute rootPath — a REPRODUCED bug: a bare picked-folder NAME (exactly what a directory picker\'s handle.name looks like on its own) resolves inside the backend/worker\'s OWN working directory instead of the configured volume, so every fs op silently "succeeds" against the wrong location', () => {
+      it('rejects a bare relative folder name', () => {
+        expect(() => parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: 'DPDP-Enterprise-Test' })).toThrow(
+          BadRequestException,
+        );
+      });
+
+      it('rejects a relative path with subdirectories', () => {
+        expect(() => parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: 'some/relative/path' })).toThrow(
+          BadRequestException,
+        );
+      });
+
+      it('accepts an absolute POSIX path', () => {
+        expect(() => parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: '/enterprise-storage' })).not.toThrow();
+      });
+
+      it('accepts an absolute Windows path (backslash and forward-slash drive forms)', () => {
+        expect(() => parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: 'D:\\CompanyData\\DPDP' })).not.toThrow();
+        expect(() => parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: 'D:/CompanyData/DPDP' })).not.toThrow();
+      });
+
+      it('accepts a UNC path', () => {
+        expect(() => parseCreateStorageRoot({ name: 'DPDP', provider: 'server', rootPath: '\\\\CompanyServer\\DPDP' })).not.toThrow();
+      });
+    });
+  });
 });
 
 describe('parseUpdateStorageRoot', () => {

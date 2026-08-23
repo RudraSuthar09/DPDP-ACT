@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
 import { useToast } from './Toast';
+import { useDialog } from './Dialog';
 
 interface LinkedSystem {
   linkId: string;
@@ -33,6 +34,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { showToast } = useToast();
+  const { confirm } = useDialog();
 
   // Inline "+ Add new system" — creates through the SAME POST /inventory/systems
   // the dedicated Systems register page uses (no new backend), then links the
@@ -85,7 +87,7 @@ export function LinkedSystemsPanel({ entryId, canManage }: { entryId: string; ca
   }
 
   async function onUnlink(linkId: string, name: string) {
-    if (!window.confirm(`Unlink "${name}" from this data element?`)) return;
+    if (!(await confirm({ message: `Unlink "${name}" from this data element?`, confirmLabel: 'Unlink', danger: true }))) return;
     setBusy(true);
     setError(null);
     try {

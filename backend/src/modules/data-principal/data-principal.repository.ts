@@ -5,6 +5,7 @@ export interface DataPrincipalRow {
   id: string;
   tenant_id: string;
   subject_ref: string;
+  display_name: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -21,15 +22,21 @@ export class DataPrincipalRepository {
   /** Find-or-create in one atomic statement — the SAME subject_ref always
    *  resolves to the SAME row, whether this is the first time it's been seen
    *  or the hundredth. `updated_at` is touched on a repeat resolution purely
-   *  as a "last seen" signal — nothing else about the row changes. */
-  resolveOrCreate(subjectRef: string): Promise<DataPrincipalRow> {
+   *  as a "last seen" signal.
+   *
+   *  `displayName` is COALESCEd, never overwritten with null: a submission
+   *  with no "Customer Name" field configured (or the visitor left it blank)
+   *  must not blank out a name a PREVIOUS submission already set — the name
+   *  can be refreshed by a later submission that provides one, never erased
+   *  by one that doesn't. */
+  resolveOrCreate(subjectRef: string, displayName: string | null = null): Promise<DataPrincipalRow> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<DataPrincipalRow>(
-        `INSERT INTO data_principals (subject_ref) VALUES ($1)
+        `INSERT INTO data_principals (subject_ref, display_name) VALUES ($1, $2)
          ON CONFLICT ON CONSTRAINT data_principals_tenant_subject_uq
-         DO UPDATE SET updated_at = now()
+         DO UPDATE SET updated_at = now(), display_name = COALESCE($2, data_principals.display_name)
          RETURNING *`,
-        [subjectRef],
+        [subjectRef, displayName],
       );
       return rows[0]!;
     });

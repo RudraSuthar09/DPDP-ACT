@@ -23,7 +23,18 @@ export const GATEWAY_DEVICE_PATHS = new Set([
   // /gateway/pair/redeem, scoped to a storage root instead of a data source
   // (see backend/src/modules/storage/storage-gateway.service.ts).
   '/storage/gateway/pair/redeem',
+  // Submission delivery queue (see backend/src/modules/delivery) — the same
+  // enrolled-device credential, four new device-facing routes.
+  '/gateway/submissions/pending',
+  '/gateway/submissions/claim',
 ]);
+
+/** ack/fail carry a :id in the path, so they can't be listed as exact
+ *  strings above — matched by prefix instead. Still exactly two routes,
+ *  still device-only, still gated by the same verified device token. */
+function isSubmissionDeliveryActionPath(path: string): boolean {
+  return /^\/gateway\/submissions\/[^/]+\/(ack|fail)$/.test(path);
+}
 
 const DEVICE_TOKEN_HEADER = 'x-gateway-device-token';
 
@@ -51,7 +62,8 @@ export class GatewayDeviceMiddleware implements NestMiddleware {
   ) {}
 
   use(req: RequestWithGatewayDevice, _res: Response, next: NextFunction): void {
-    if (!GATEWAY_DEVICE_PATHS.has(gatewayRequestPath(req))) {
+    const path = gatewayRequestPath(req);
+    if (!GATEWAY_DEVICE_PATHS.has(path) && !isSubmissionDeliveryActionPath(path)) {
       next();
       return;
     }

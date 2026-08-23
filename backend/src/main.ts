@@ -3,6 +3,7 @@ import path from 'node:path';
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 
 /**
@@ -11,7 +12,15 @@ import { AppModule } from './app.module';
  * only the entrypoint differs (§ deploy: two containers, not Kubernetes).
  */
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // bodyParser: false + explicit json()/urlencoded() below, so the limit can
+  // be raised once, app-wide, from Express's 100kb default — needed for the
+  // hosted consent-form submit route, which base64-encodes a PDF/Excel field
+  // value into the JSON body for the synchronous Enterprise storage write
+  // (see EnterpriseStorageSyncService; each file is separately capped at 8MB
+  // decoded in consent-forms.dto.ts's parseLinkSubmission, well under this).
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
+  app.use(json({ limit: '30mb' }));
+  app.use(urlencoded({ extended: true, limit: '30mb' }));
   app.enableShutdownHooks();
 
   // CORS is branched by path, not one static policy, because this API now

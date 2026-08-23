@@ -25,6 +25,42 @@ export class LocalStorageError extends Error {
   }
 }
 
+/**
+ * The single low-level filesystem contract the Central DPDP Storage
+ * orchestration (central-storage.ts) writes through. `path` is always an
+ * array of plain folder-NAME segments — never an OS path string. There are
+ * two implementations behind this one interface, and the orchestration above
+ * (customer-folder resolution, storage_mappings, structure, collision-safe
+ * naming) is identical for both:
+ *   - browserFsProvider (below) — the SaaS/browser File System Access API,
+ *     unchanged behaviour.
+ *   - electronFsProvider (electron-storage.ts) — the installed Electron app's
+ *     native filesystem, via window.electronStorage → IPC → main process.
+ * This is the "clean provider boundary" that lets Enterprise Storage on
+ * Electron use native fs without duplicating any of the storage business
+ * logic and without touching the browser path.
+ */
+export interface CentralFsProvider {
+  createFolder(path: string[], name: string): Promise<void>;
+  browse(path: string[]): Promise<string[]>;
+  writeText(path: string[], filename: string, text: string): Promise<void>;
+  writeJson(path: string[], filename: string, data: unknown): Promise<void>;
+  writeRaw(path: string[], filename: string, file: File): Promise<void>;
+}
+
+/** The browser (SaaS) implementation of CentralFsProvider — a thin adapter
+ *  over the File System Access API functions below, behaviour byte-for-byte
+ *  identical to how central-storage.ts called them directly before the seam. */
+export function browserFsProvider(handle: FileSystemDirectoryHandle): CentralFsProvider {
+  return {
+    createFolder: (path, name) => createLocalFolder(handle, path, name),
+    browse: (path) => browseLocalFolder(handle, path),
+    writeText: (path, filename, text) => writeLocalTextFile(handle, path, filename, text),
+    writeJson: (path, filename, data) => writeLocalJsonFile(handle, path, filename, data),
+    writeRaw: (path, filename, file) => writeLocalRawFile(handle, path, filename, file),
+  };
+}
+
 /** Walk from `root` through `path` (folder names). `create` controls whether
  *  a missing segment is created along the way (createFolder) or causes a
  *  NOT_FOUND (browse/verify). Every step uses the browser's own handle-based

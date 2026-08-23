@@ -13,6 +13,7 @@ interface PublicFormField {
   fieldType: 'text' | 'pdf' | 'excel';
   required: boolean;
   isIdentifier: boolean;
+  isCustomerName: boolean;
 }
 interface PublicFormDefinition {
   formId: string;

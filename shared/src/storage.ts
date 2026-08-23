@@ -9,11 +9,20 @@
  * DataSource.connectionHint; nothing here ever carries what is stored.
  */
 
-/** 'local' = SaaS, a client-selected local/desktop storage location.
+/** 'local' = SaaS, a client-selected local/desktop storage location (browser
+ *  File System Access API) — automatic sync needs the browser open.
  *  'gateway' = Enterprise, storage reached through an already-enrolled
- *  Gateway device. Future providers (e.g. object storage) extend this list
- *  without changing the shape of folders/mappings. */
-export const STORAGE_PROVIDERS = ['local', 'gateway'] as const;
+ *  Gateway device.
+ *  'server' = Enterprise, a filesystem path the BACKEND/WORKER PROCESS
+ *  itself can read/write directly (e.g. a bind-mounted host directory) — no
+ *  Gateway, no browser required. This is what makes Enterprise
+ *  synchronization automatic and 24/7: the worker process already runs
+ *  continuously, and with a 'server' root configured it can reach the
+ *  filesystem on its own. `rootPath` is the real path for this provider
+ *  (still never a credential); for 'local'/'gateway' it stays a display hint.
+ *  Future providers (e.g. object storage) extend this list without changing
+ *  the shape of folders/mappings. */
+export const STORAGE_PROVIDERS = ['local', 'gateway', 'server'] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
 
 export type StorageStatus = 'active' | 'tombstoned';

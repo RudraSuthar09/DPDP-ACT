@@ -8,6 +8,7 @@ import { PiiConfidenceBadge } from '../../../../components/PiiConfidenceBadge';
 import { PurposesPanel } from '../../../../components/PurposesPanel';
 import { LinkedSystemsPanel } from '../../../../components/LinkedSystemsPanel';
 import { LinkedVendorsPanel } from '../../../../components/LinkedVendorsPanel';
+import { useDialog } from '../../../../components/Dialog';
 
 interface VersionEntry {
   versionNumber: number;
@@ -53,6 +54,7 @@ const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
  * edits on a tombstoned entry.
  */
 export default function InventoryEntryDetailPage() {
+  const { confirm, promptText } = useDialog();
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
@@ -127,9 +129,14 @@ export default function InventoryEntryDetailPage() {
   }
 
   async function onRejectPii() {
-    const reason = window.prompt(
-      'Why are you rejecting this suggestion? (required, kept as evidence)',
-    );
+    const reason = await promptText({
+      title: 'Reject suggestion',
+      message: 'Why are you rejecting this suggestion?',
+      label: 'Reason (kept as evidence)',
+      required: true,
+      multiline: true,
+      confirmLabel: 'Reject',
+    });
     if (reason === null) return;
     if (!reason.trim()) {
       setError('A reason is required to reject a classification suggestion.');
@@ -151,15 +158,22 @@ export default function InventoryEntryDetailPage() {
   }
 
   async function onTombstone() {
-    const reason = window.prompt(
-      'Why are you removing this data element? (required, kept as evidence)',
-    );
+    const reason = await promptText({
+      title: 'Remove data element',
+      message: 'Why are you removing this data element?',
+      label: 'Reason (kept as evidence)',
+      required: true,
+      multiline: true,
+      confirmLabel: 'Continue',
+    });
     if (reason === null) return;
     if (
-      !window.confirm(
-        'This entry will be tombstoned — hidden from the default view but never deleted, and no ' +
-          'longer editable. Continue?',
-      )
+      !(await confirm({
+        message:
+          'This entry will be tombstoned — hidden from the default view but never deleted, and no longer editable. Continue?',
+        confirmLabel: 'Tombstone',
+        danger: true,
+      }))
     ) {
       return;
     }

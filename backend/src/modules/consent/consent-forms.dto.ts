@@ -38,14 +38,44 @@ export interface WidgetSubmissionInput {
   answers: FormAnswerInput[];
 }
 
+export interface LinkSubmissionFieldValueInput {
+  fieldId: string;
+  /** Set for a 'text' field. */
+  textValue?: string;
+  /** Set for a 'pdf'/'excel' field — original bytes, base64-encoded for
+   *  transit. Decoded, never re-encoded, before being written anywhere. */
+  file?: { filename: string; contentBase64: string };
+}
+
 export interface LinkSubmissionInput {
   /** The value the customer typed/uploaded into the field marked
    *  `isIdentifier`, or null if this form has no identifier field (or the
    *  visitor left it blank) — a submission with no identity is legitimate,
    *  not an error; it simply cannot be recognised as a repeat customer. */
   identityValue: string | null;
+  /** The value the customer typed into the field marked `isCustomerName`,
+   *  or null if this form has no customer-name field (or the visitor left
+   *  it blank). Separate from identityValue on purpose: the field that names
+   *  a customer on disk and the field that resolves their identity may be
+   *  the same field or two different ones — see data_principals.display_name. */
+  customerNameValue: string | null;
   answers: FormAnswerInput[];
+  /** OPTIONAL. Present only when the hosted-link frontend's own check
+   *  (publicFormForLink's `hasServerStorage`) says this tenant has an
+   *  Enterprise 'server' storage root configured — never sent otherwise, so
+   *  a SaaS-only tenant's field values still never reach this backend at all
+   *  (I1 unchanged for every tenant without Enterprise server storage).
+   *  Used ONLY to write these values synchronously to the configured
+   *  filesystem path within THIS request; never stored in Postgres, never
+   *  queued (CLAUDE.md R6) — see EnterpriseStorageSyncService. */
+  fieldValues: LinkSubmissionFieldValueInput[];
 }
+
+/** Per-file cap on the DECODED byte size — a compliance document, not an
+ *  arbitrary upload target. Rejected with a clean 400 rather than accepted
+ *  and silently truncated. */
+const MAX_FIELD_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_FIELD_TEXT_LENGTH = 10_000;
 
 export function parseSaveFormInput(body: unknown): SaveFormInput {
   const obj = asObject(body);
@@ -105,8 +135,56 @@ export function parseLinkSubmission(body: unknown): LinkSubmissionInput {
   const obj = asObject(body);
   return {
     identityValue: optionalStringOrNull(obj, 'identityValue', { max: 500 }),
+    customerNameValue: optionalStringOrNull(obj, 'customerNameValue', { max: 500 }),
     answers: parseAnswers(obj),
+    fieldValues: parseFieldValues(obj),
   };
+}
+
+function parseFieldValues(obj: Record<string, unknown>): LinkSubmissionFieldValueInput[] {
+  const raw = obj['fieldValues'];
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new BadRequestException('fieldValues must be an array.');
+  const seen = new Set<string>();
+  return raw.map((v) => {
+    const vo = asObject(v);
+    const fieldId = requireUuid(vo, 'fieldId');
+    if (seen.has(fieldId)) throw new BadRequestException(`fieldValues has more than one entry for field ${fieldId}.`);
+    seen.add(fieldId);
+
+    const hasText = typeof vo['textValue'] === 'string';
+    const hasFile = typeof vo['file'] === 'object' && vo['file'] !== null;
+    if (hasText === hasFile) {
+      throw new BadRequestException('fieldValues[].must set exactly one of textValue or file.');
+    }
+    if (hasText) {
+      const textValue = vo['textValue'] as string;
+      if (textValue.length > MAX_FIELD_TEXT_LENGTH) {
+        throw new BadRequestException(`fieldValues[].textValue must be at most ${MAX_FIELD_TEXT_LENGTH} characters.`);
+      }
+      return { fieldId, textValue };
+    }
+    const fileObj = asObject(vo['file']);
+    const filename = requireString(fileObj, 'filename', { min: 1, max: 200 });
+    const contentBase64 = requireString(fileObj, 'contentBase64', { min: 1 });
+    const decodedLength = base64DecodedLength(contentBase64);
+    if (decodedLength === null) {
+      throw new BadRequestException('fieldValues[].file.contentBase64 is not valid base64.');
+    }
+    if (decodedLength > MAX_FIELD_FILE_BYTES) {
+      throw new BadRequestException(`fieldValues[].file exceeds the ${MAX_FIELD_FILE_BYTES / (1024 * 1024)}MB limit.`);
+    }
+    return { fieldId, file: { filename, contentBase64 } };
+  });
+}
+
+/** Byte length WITHOUT decoding the whole payload twice — base64 expands 4
+ *  chars per 3 bytes, minus padding. Returns null if the string is not
+ *  valid base64 shape at all (rejected before any decode is attempted). */
+function base64DecodedLength(base64: string): number | null {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || base64.length % 4 !== 0) return null;
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return (base64.length / 4) * 3 - padding;
 }
 
 function parseAnswers(obj: Record<string, unknown>): FormAnswerInput[] {
@@ -138,14 +216,18 @@ export interface SaveCustomerFieldDtoInput {
   /** Whether this field's value is the raw identity hashed into subject_ref
    *  (I2) — at most one per form (DB-enforced, see the migration header). */
   isIdentifier: boolean;
+  /** Whether this field's value becomes the customer's filesystem display
+   *  name (data_principals.display_name) — at most one per form, and
+   *  independent of isIdentifier (may be the same field or a different one). */
+  isCustomerName: boolean;
 }
 
-/** Parses a field save: label + type + required + isIdentifier, nothing
- *  else. `fieldType` must be one of CONSENT_FORM_FIELD_TYPES (text/pdf/
- *  excel) — enforced here, not just hidden in the UI, so it cannot be
- *  bypassed by a direct API call. The one-identifier-per-form rule is
- *  enforced by the DB's partial unique index, not here — this function
- *  never guesses or defaults which field that should be. */
+/** Parses a field save: label + type + required + isIdentifier +
+ *  isCustomerName, nothing else. `fieldType` must be one of
+ *  CONSENT_FORM_FIELD_TYPES (text/pdf/excel) — enforced here, not just
+ *  hidden in the UI, so it cannot be bypassed by a direct API call. The
+ *  one-per-form rules are enforced by the DB's partial unique indexes, not
+ *  here — this function never guesses or defaults which field that should be. */
 export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput {
   const obj = asObject(body);
   const fieldType = requireString(obj, 'fieldType', { min: 1, max: 64 });
@@ -157,6 +239,7 @@ export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput
     fieldType,
     required: Boolean(obj['required']),
     isIdentifier: Boolean(obj['isIdentifier']),
+    isCustomerName: Boolean(obj['isCustomerName']),
   };
 }
 

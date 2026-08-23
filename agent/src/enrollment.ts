@@ -143,18 +143,64 @@ export interface GatewayControlPlaneClient {
     deviceToken: string,
     input: { nonce: string; storageRootId: string },
   ): Promise<{ sessionToken: string; expiresAt: string }>;
+
+  // --- submission delivery queue (backend/src/modules/delivery) ------------
+  // Same device token, same backend host, four more methods — not a second
+  // control-plane client. See delivery/poller.ts for the caller.
+
+  /** Metadata only — no payload (see submission-delivery.controller.ts). */
+  listPendingSubmissions(
+    deviceToken: string,
+  ): Promise<{ submissions: Array<{ id: string; formId: string; createdAt: string; attemptCount: number }> }>;
+
+  /** Atomically claims the oldest pending submission (or a stale abandoned
+   *  claim) and returns its DECRYPTED payload — the only moment this agent
+   *  ever sees a customer field value. `ready:false` means nothing is
+   *  claimable right now (either no submissions are pending, or none can be
+   *  claimed yet because this tenant has no Central DPDP Storage root
+   *  configured) — not an error. */
+  claimSubmission(deviceToken: string): Promise<ClaimedSubmission>;
+
+  ackSubmission(deviceToken: string, deliveryId: string): Promise<{ ok: boolean }>;
+
+  failSubmission(deviceToken: string, deliveryId: string, error: string): Promise<{ ok: boolean }>;
 }
 
-async function postJson(url: string, headers: Record<string, string>, body: unknown): Promise<unknown> {
+export type ClaimedSubmission =
+  | { ready: false; reason: 'NOTHING_PENDING' | 'NOT_CONFIGURED' }
+  | {
+      ready: true;
+      deliveryId: string;
+      folderName: string;
+      customerId: string;
+      subjectRef: string;
+      displayName: string | null;
+      templateName: string;
+      retentionMonths: number | null;
+      fields: Array<{ label: string; textValue?: string; file?: { filename: string; contentBase64: string } }>;
+    };
+
+// The ONE outbound HTTP call site for the whole control-plane client (see
+// data-plane.spec.ts's boundary guard) — postJson/getJson are both thin
+// wrappers over this, never a second independent fetch() call site.
+async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown): Promise<unknown> {
   const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...headers },
-    body: JSON.stringify(body),
+    method,
+    headers: body === undefined ? headers : { 'content-type': 'application/json', ...headers },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : null;
   if (!res.ok) throw new ControlPlaneHttpError(res.status, json);
   return json;
+}
+
+async function postJson(url: string, headers: Record<string, string>, body: unknown): Promise<unknown> {
+  return requestJson('POST', url, headers, body);
+}
+
+async function getJson(url: string, headers: Record<string, string>): Promise<unknown> {
+  return requestJson('GET', url, headers);
 }
 
 /** Reads claims from a JWT WITHOUT verifying its signature. Safe only because
@@ -222,6 +268,28 @@ export function createControlPlaneClient(controlPlaneUrl: string): GatewayContro
         { 'x-gateway-device-token': deviceToken },
         input,
       )) as { sessionToken: string; expiresAt: string };
+    },
+    async listPendingSubmissions(deviceToken) {
+      return (await getJson(`${controlPlaneUrl}/gateway/submissions/pending`, {
+        'x-gateway-device-token': deviceToken,
+      })) as { submissions: Array<{ id: string; formId: string; createdAt: string; attemptCount: number }> };
+    },
+    async claimSubmission(deviceToken) {
+      return (await postJson(`${controlPlaneUrl}/gateway/submissions/claim`, { 'x-gateway-device-token': deviceToken }, {})) as ClaimedSubmission;
+    },
+    async ackSubmission(deviceToken, deliveryId) {
+      return (await postJson(
+        `${controlPlaneUrl}/gateway/submissions/${encodeURIComponent(deliveryId)}/ack`,
+        { 'x-gateway-device-token': deviceToken },
+        {},
+      )) as { ok: boolean };
+    },
+    async failSubmission(deviceToken, deliveryId, error) {
+      return (await postJson(
+        `${controlPlaneUrl}/gateway/submissions/${encodeURIComponent(deliveryId)}/fail`,
+        { 'x-gateway-device-token': deviceToken },
+        { error },
+      )) as { ok: boolean };
     },
   };
 }

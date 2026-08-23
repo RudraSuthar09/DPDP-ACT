@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { apiFetch, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
+import { useDialog } from '../../../components/Dialog';
 
 interface RetentionRecord {
   id: string;
@@ -30,6 +31,7 @@ type Filter = 'approaching' | 'past' | 'all';
  */
 export default function RetentionPage() {
   const { user } = useAuth();
+  const { promptText } = useDialog();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
   const params = useSearchParams();
   const initial = (params.get('filter') as Filter) || 'approaching';
@@ -58,10 +60,15 @@ export default function RetentionPage() {
   }, [load]);
 
   async function onReview(rec: RetentionRecord) {
-    const note = window.prompt(
-      'Record a review note (what you did — e.g. asked the client to delete this from their system). ' +
+    const note = await promptText({
+      title: 'Record review note',
+      message:
+        'Record a review note (what you did — e.g. asked the client to delete this from their system). ' +
         'The platform does not delete their data itself.',
-    );
+      label: 'Review note',
+      multiline: true,
+      confirmLabel: 'Save note',
+    });
     if (note === null) return;
     setBusyId(rec.id);
     setError(null);

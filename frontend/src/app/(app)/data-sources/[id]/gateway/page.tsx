@@ -13,6 +13,7 @@ import {
 } from '@dpdp/shared';
 import { apiFetch } from '../../../../../lib/api';
 import { maskForHeader } from '../../../../../lib/pii-mask';
+import { useDialog } from '../../../../../components/Dialog';
 
 const KIND_LABEL: Record<string, string> = {
   csv: 'CSV', excel: 'Excel', filesystem: 'Filesystem',
@@ -41,6 +42,7 @@ interface ReadResult {
 
 export default function GatewayBrowserPage() {
   const { id: sourceId } = useParams<{ id: string }>();
+  const { confirm } = useDialog();
 
   const [agentUrl, setAgentUrl] = useState(DEFAULT_AGENT_URL);
   const [sessionToken, setSessionToken] = useState('');
@@ -240,7 +242,13 @@ export default function GatewayBrowserPage() {
 
   async function onCreateColumn() {
     if (!selected || !newColumnName.trim()) return;
-    if (!window.confirm(`Create a new column "${newColumnName.trim()}" (${newColumnType}) in this table? This changes the client's database schema.`)) {
+    if (
+      !(await confirm({
+        title: 'Create column',
+        message: `Create a new column "${newColumnName.trim()}" (${newColumnType}) in this table? This changes the client's database schema.`,
+        confirmLabel: 'Create column',
+      }))
+    ) {
       return;
     }
     setColumnBusy(true);
