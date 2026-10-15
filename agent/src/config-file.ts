@@ -15,12 +15,22 @@
  * STATE directory, never this CONFIG file (see config-paths.ts's header for
  * why the two directories are kept separate).
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { writeFileAtomic } from './atomic-write';
 import { isValidBindHost, isExactOrigin, AgentConfigError } from './config';
+import { parseNoProxy, parseProxyUrl, type FileProxyConfig } from './network-config';
+import { parseCaBundle } from './tls-trust';
 
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
+
+export interface FileTlsConfig {
+  /** PEM bundle of extra CAs. Relative paths resolve against the config
+   *  file's directory, and the file must be inside that directory. */
+  extraCaCertsFile?: string;
+  useWindowsCertificateStore?: boolean;
+}
 
 /** Every field optional — a file supplying only `controlPlaneUrl` is valid;
  *  anything it omits falls back to config.ts's existing env/default chain. */
@@ -33,6 +43,41 @@ export interface AgentFileConfig {
   bindPort?: number;
   allowedOrigins?: string[];
   logLevel?: LogLevel;
+  /** Outbound proxy for agent -> DPDP calls (network-config.ts). Unlike the
+   *  fields above, this one takes precedence over environment variables. */
+  proxy?: FileProxyConfig;
+  tls?: FileTlsConfig;
+}
+
+const MAX_CA_FILE_BYTES = 1024 * 1024;
+
+/**
+ * Reads and validates tls.extraCaCertsFile. The file must live inside the
+ * config file's own directory (after resolving symlinks/junctions): on an
+ * installed Gateway that directory is writable only by Administrators, and a
+ * trust anchor that a standard user could replace would let them intercept
+ * the device token. Error messages do not echo the path.
+ */
+export function loadCaBundleFile(configFilePath: string, caFile: string): string[] {
+  const label = '"tls.extraCaCertsFile" in config.json';
+  const configDir = path.dirname(path.resolve(configFilePath));
+  const candidate = path.resolve(configDir, caFile);
+  let realDir: string;
+  let realFile: string;
+  try {
+    realDir = realpathSync(configDir);
+    realFile = realpathSync(candidate);
+  } catch {
+    throw new AgentConfigError(`${label} names a file that does not exist or cannot be read.`);
+  }
+  const rel = path.relative(realDir, realFile);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new AgentConfigError(`${label} must name a file inside the Gateway config directory (the folder that holds config.json).`);
+  }
+  const st = statSync(realFile);
+  if (!st.isFile()) throw new AgentConfigError(`${label} must name a file.`);
+  if (st.size > MAX_CA_FILE_BYTES) throw new AgentConfigError(`${label} is larger than 1 MiB; supply only the CA certificates needed.`);
+  return parseCaBundle(readFileSync(realFile, 'utf8'), label);
 }
 
 /**
@@ -56,7 +101,9 @@ export function loadConfigFile(filePath: string): AgentFileConfig | null {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    // Tolerate a UTF-8 BOM: Windows PowerShell 5.1 (Set-Content -Encoding
+    // UTF8) and older Notepad versions write one when an admin edits the file.
+    parsed = JSON.parse(raw.replace(/^\uFEFF/, ''));
   } catch {
     throw new AgentConfigError(`The Gateway config file at ${filePath} is not valid JSON.`);
   }
@@ -83,8 +130,9 @@ export function writeConfigFile(filePath: string, config: AgentFileConfig): void
   const reparsed = JSON.parse(serialized) as Record<string, unknown>;
   validateObject(reparsed, filePath);
 
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  writeFileSync(filePath, serialized, 'utf8');
+  // Atomic: a crash mid-write must not leave a half-written config.json that
+  // stops the service from starting.
+  writeFileAtomic(filePath, serialized);
 }
 
 /** Extracted from loadConfigFile so write-time validation is the exact same
@@ -144,7 +192,59 @@ function validateObject(obj: Record<string, unknown>, filePath: string): AgentFi
     }
     result.logLevel = obj.logLevel as LogLevel;
   }
+  if (obj.proxy !== undefined) result.proxy = validateProxy(obj.proxy, filePath);
+  if (obj.tls !== undefined) result.tls = validateTls(obj.tls, filePath);
 
+  return result;
+}
+
+function validateProxy(value: unknown, filePath: string): FileProxyConfig {
+  if (value === 'none') return 'none';
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new AgentConfigError(`"proxy" in ${filePath} must be "none" or an object like {"url": "http://proxy.example:8080"}.`);
+  }
+  const p = value as Record<string, unknown>;
+  const unknownKeys = Object.keys(p).filter((k) => k !== 'url' && k !== 'noProxy');
+  if (unknownKeys.length) {
+    throw new AgentConfigError(`"proxy" in ${filePath} has unsupported field(s): ${unknownKeys.join(', ')}. Allowed: url, noProxy.`);
+  }
+  if (typeof p.url !== 'string' || !p.url.trim()) {
+    throw new AgentConfigError(`"proxy.url" in ${filePath} must be a non-empty string.`);
+  }
+  parseProxyUrl(p.url, { label: `"proxy.url" in ${filePath}`, allowCredentials: false });
+  const result: { url: string; noProxy?: string[] } = { url: p.url.trim() };
+  if (p.noProxy !== undefined) {
+    if (!Array.isArray(p.noProxy) || !p.noProxy.every((e) => typeof e === 'string')) {
+      throw new AgentConfigError(`"proxy.noProxy" in ${filePath} must be an array of strings.`);
+    }
+    parseNoProxy(p.noProxy as string[], `"proxy.noProxy" in ${filePath}`);
+    result.noProxy = p.noProxy as string[];
+  }
+  return result;
+}
+
+function validateTls(value: unknown, filePath: string): FileTlsConfig {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new AgentConfigError(`"tls" in ${filePath} must be an object.`);
+  }
+  const t = value as Record<string, unknown>;
+  const unknownKeys = Object.keys(t).filter((k) => k !== 'extraCaCertsFile' && k !== 'useWindowsCertificateStore');
+  if (unknownKeys.length) {
+    // Deliberately strict: a misspelt option, or an attempt at something like
+    // "rejectUnauthorized", must fail loudly rather than be ignored.
+    throw new AgentConfigError(
+      `"tls" in ${filePath} has unsupported field(s): ${unknownKeys.join(', ')}. Allowed: extraCaCertsFile, useWindowsCertificateStore. ` +
+        'Certificate verification cannot be disabled.',
+    );
+  }
+  const result: FileTlsConfig = {};
+  if (t.extraCaCertsFile !== undefined) result.extraCaCertsFile = requireString(t, 'extraCaCertsFile', filePath);
+  if (t.useWindowsCertificateStore !== undefined) {
+    if (typeof t.useWindowsCertificateStore !== 'boolean') {
+      throw new AgentConfigError(`"tls.useWindowsCertificateStore" in ${filePath} must be true or false.`);
+    }
+    result.useWindowsCertificateStore = t.useWindowsCertificateStore;
+  }
   return result;
 }
 

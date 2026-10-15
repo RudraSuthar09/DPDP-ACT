@@ -13,8 +13,9 @@
  */
 import path from 'node:path';
 import { loadAgentConfig, type AgentConfig } from './config';
-import { loadConfigFile, mergeFileConfigIntoEnv, type AgentFileConfig, type LogLevel } from './config-file';
+import { loadCaBundleFile, loadConfigFile, mergeFileConfigIntoEnv, type AgentFileConfig, type LogLevel } from './config-file';
 import { defaultConfigDir, defaultStateDir } from './config-paths';
+import type { TlsTrustSettings } from './tls-trust';
 
 export interface ResolvedAgentConfig {
   config: AgentConfig;
@@ -26,6 +27,8 @@ export interface ResolvedAgentConfig {
    *  such field (logging is orthogonal to network config), so this is
    *  surfaced separately for index.ts to pass to createLogger(). */
   logLevel: LogLevel | null;
+  /** config.json "tls", with the CA bundle already read and validated. */
+  tlsTrust: TlsTrustSettings;
 }
 
 export function resolveAgentConfig(
@@ -47,5 +50,12 @@ export function resolveAgentConfig(
   }
 
   const config = loadAgentConfig(mergedEnv, nodePlatform);
-  return { config, configFilePath, fileConfig, logLevel: fileConfig?.logLevel ?? null };
+
+  // Read once, here, at process start: the trust list is fixed for the life
+  // of the process (a changed CA file takes effect on service restart).
+  const tlsTrust: TlsTrustSettings = {
+    extraCaCertificates: fileConfig?.tls?.extraCaCertsFile ? loadCaBundleFile(configFilePath, fileConfig.tls.extraCaCertsFile) : [],
+    useWindowsCertificateStore: fileConfig?.tls?.useWindowsCertificateStore ?? false,
+  };
+  return { config, configFilePath, fileConfig, logLevel: fileConfig?.logLevel ?? null, tlsTrust };
 }

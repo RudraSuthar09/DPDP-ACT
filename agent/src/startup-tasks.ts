@@ -19,6 +19,7 @@ import {
   type SourcesFileErrorCode,
 } from './sources-file';
 import type { GatewaySourceConfig } from './connectors/registry';
+import { TransportError } from './transport';
 
 type Log = (line: string) => void;
 
@@ -30,10 +31,33 @@ export type EnrollmentErrorCode =
   /** A device credential exists but cannot be decrypted/parsed under this identity. */
   | 'CREDENTIAL_UNREADABLE'
   /** The backend rejected the saved device credential (revoked or expired). */
-  | 'CREDENTIAL_REVOKED';
+  | 'CREDENTIAL_REVOKED'
+  /** The outbound proxy answered 407: missing or wrong proxy credentials. */
+  | 'PROXY_AUTH_FAILED'
+  /** A proxy is configured but could not be reached or refused the tunnel (never bypassed). */
+  | 'PROXY_UNREACHABLE'
+  /** The server (or TLS-inspecting proxy) certificate failed verification. */
+  | 'TLS_CERTIFICATE_REJECTED';
+
+function classifyTransport(err: TransportError): EnrollmentErrorCode {
+  switch (err.code) {
+    case 'PROXY_AUTH_FAILED':
+      return 'PROXY_AUTH_FAILED';
+    case 'PROXY_REFUSED':
+    case 'PROXY_UNREACHABLE':
+      return 'PROXY_UNREACHABLE';
+    case 'TLS_UNTRUSTED':
+    case 'TLS_HOSTNAME_MISMATCH':
+    case 'TLS_FAILED':
+      return 'TLS_CERTIFICATE_REJECTED';
+    default:
+      return 'BACKEND_UNREACHABLE';
+  }
+}
 
 export function classifyEnrollmentFailure(err: unknown): EnrollmentErrorCode | null {
   if (err instanceof EnrollmentRequiredError) return null; // not an error: simply not paired yet
+  if (err instanceof TransportError) return classifyTransport(err);
   if (err instanceof ControlPlaneHttpError) return err.status >= 500 || err.status === 429 ? 'BACKEND_UNREACHABLE' : 'CODE_REJECTED';
   if (err instanceof DpapiError) return 'CREDENTIAL_UNREADABLE';
   if (err instanceof Error && /Corrupt Gateway credential/.test(err.message)) return 'CREDENTIAL_UNREADABLE';
@@ -43,6 +67,7 @@ export function classifyEnrollmentFailure(err: unknown): EnrollmentErrorCode | n
 /** Errors the enrolment retry loop must NOT retry: retrying cannot help. */
 export function isRetryableEnrollmentError(err: unknown): boolean {
   if (err instanceof EnrollmentRequiredError || err instanceof DpapiError) return false;
+  if (err instanceof TransportError) return err.retryable;
   if (err instanceof Error && /Corrupt Gateway credential/.test(err.message)) return false;
   if (err instanceof ControlPlaneHttpError) return err.status >= 500 || err.status === 429;
   return true;

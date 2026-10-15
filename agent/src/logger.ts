@@ -45,8 +45,17 @@ export interface Logger {
  *  query-string delimiter ends it first. */
 const SECRET_KEY_PATTERN = /(device[-_]?token|enrollment[-_]?code|password|x-gateway-[a-z-]*token)["']?\s*[:=]\s*["']?([^"'\s&,}]+)/gi;
 
+/** Authorization / Proxy-Authorization header values ("Basic xyz", "Bearer xyz"). */
+const AUTH_HEADER_PATTERN = /((?:proxy-)?authorization)["']?\s*[:=]\s*["']?(?:(basic|bearer|negotiate|ntlm|digest)\s+)?([^"'\s,}]+)/gi;
+
+/** User info in any URL, e.g. a proxy URL "http://user:secret@proxy:8080". */
+const URL_USERINFO_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@"']+@/gi;
+
 export function redactSecrets(text: string): string {
-  return text.replace(SECRET_KEY_PATTERN, (_match, key: string) => `${key}=[REDACTED]`);
+  return text
+    .replace(SECRET_KEY_PATTERN, (_match, key: string) => `${key}=[REDACTED]`)
+    .replace(AUTH_HEADER_PATTERN, (_match, key: string) => `${key}: [REDACTED]`)
+    .replace(URL_USERINFO_PATTERN, (_match, scheme: string) => `${scheme}[REDACTED]@`);
 }
 
 function write(level: LogLevel, scope: string | null, line: string): void {

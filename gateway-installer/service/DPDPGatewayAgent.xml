@@ -77,12 +77,15 @@
   <stoptimeout>15 sec</stoptimeout>
 
   <!--
-    serviceaccount is deliberately ABSENT here: WinSW's `install` command is
-    invoked by install-service.ps1 with an explicit `--username "NT SERVICE\
-    DPDPGatewayAgent"` argument instead (a per-service VIRTUAL account --
-    Windows creates/manages it automatically, no password to store or
-    rotate, and it is isolated from every other service and from any
-    interactive user). See install-service.ps1's own comments for the
-    permission grants this account needs on %BASE% and the state directory.
+    serviceaccount is deliberately ABSENT here. WinSW 2.12 ignores an
+    install-time account argument, so install-service.ps1 sets the
+    per-service VIRTUAL account (NT SERVICE\DPDPGatewayAgent) with
+    `sc.exe config obj=` after registration and verifies it with `sc.exe qc`.
+    No password to store or rotate; isolated from other services and users.
+
+    Outbound proxy and corporate CA trust are configured in config.json
+    ("proxy", "tls") and proxy-credentials.json, NOT with <env> entries here:
+    this file is replaced on every upgrade, and environment variables set
+    here would be visible to every local user.
   -->
 </service>

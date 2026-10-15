@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import { GATEWAY_AUTH_HEADER } from '@dpdp/shared';
 import { loadAgentConfig } from './config';
 import { createAgentServer } from './server';
+import { DEFAULT_NETWORK_SUMMARY } from './health';
 
 const ALLOWED = 'https://app.test.example';
 
@@ -88,6 +89,7 @@ describe('Phase 3B — the Local Agent HTTP boundary', () => {
       enrollmentError: null,
       sourcesError: null,
       credentialProtection: 'none',
+      network: DEFAULT_NETWORK_SUMMARY,
     });
   });
 
@@ -109,6 +111,7 @@ describe('Phase 3B — the Local Agent HTTP boundary', () => {
       'enrollmentError',
       'heartbeat',
       'lastHeartbeatAt',
+      'network',
       'sourceKinds',
       'sourcesConfigured',
       'sourcesError',
@@ -209,6 +212,7 @@ describe('(Phase 2) GET /health — live gateway status provider wiring', () => 
           enrollmentError: null,
           sourcesError: null,
           credentialProtection: 'dpapi' as const,
+          network: DEFAULT_NETWORK_SUMMARY,
         };
       },
     });
@@ -241,6 +245,7 @@ describe('(Phase 3) adversarial requests against the local listener', () => {
     enrollmentError: null,
     sourcesError: null,
     credentialProtection: 'dpapi' as const,
+    network: DEFAULT_NETWORK_SUMMARY,
   }));
 
   beforeAll(async () => {

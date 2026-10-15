@@ -56,6 +56,17 @@ describe('logger — leveled, structured, secret-redacting (Phase 1)', () => {
     expect(redactSecrets('x-gateway-device-token: abc123')).toContain('[REDACTED]');
   });
 
+  it('(Phase 4) redacts proxy/URL user info and Authorization / Proxy-Authorization values', () => {
+    const out = redactSecrets('HTTPS_PROXY=http://svc:Pr0xy-PW@proxy.corp:8080 failed; https://u@h.example/x');
+    expect(out).not.toContain('Pr0xy-PW');
+    expect(out).not.toContain('svc:');
+    expect(out).toContain('http://[REDACTED]@proxy.corp:8080');
+    expect(out).toContain('https://[REDACTED]@h.example/x');
+    expect(redactSecrets('proxy-authorization: Basic c3ZjOnB3')).not.toContain('c3ZjOnB3');
+    expect(redactSecrets('{"Proxy-Authorization":"Basic c3ZjOnB3"}')).not.toContain('c3ZjOnB3');
+    expect(redactSecrets('Authorization: Bearer eyJabc.def.ghi')).not.toContain('eyJabc');
+  });
+
   it('redactSecrets leaves ordinary, non-sensitive text untouched', () => {
     const line = 'Gateway heartbeat failed (will retry): connect ECONNREFUSED 127.0.0.1:3001';
     expect(redactSecrets(line)).toBe(line);

@@ -13,6 +13,7 @@ import {
   type GatewayControlPlaneClient,
   type PersistedCredential,
 } from './enrollment';
+import { TransportError } from './transport';
 
 function freshStateDir(): string {
   return mkdtempSync(path.join(tmpdir(), 'dpdp-gateway-test-'));
@@ -250,6 +251,29 @@ describe('Phase 3C — heartbeat lifecycle', () => {
     await jest.advanceTimersByTimeAsync(10_000);
     expect(handle.getState()).toBe('degraded');
     expect(handle.getLastSuccessAt()).toBe(firstSuccess);
+  });
+
+  it('(Phase 4) records the failure code during a proxy/network outage and recovers when it ends', async () => {
+    const heartbeat = jest
+      .fn()
+      .mockRejectedValueOnce(new TransportError('PROXY_UNREACHABLE', 'proxy down', true, true, 'ECONNREFUSED'))
+      .mockRejectedValueOnce(new ControlPlaneHttpError(503, null))
+      .mockResolvedValue(undefined);
+    const log = jest.fn();
+    const onAuthFailure = jest.fn();
+    const handle = startHeartbeat(fakeClient({ heartbeat }), CRED, '1.0.0', 10, log, onAuthFailure);
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(handle.getState()).toBe('degraded');
+    expect(handle.getLastErrorCode()).toBe('PROXY_UNREACHABLE');
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(handle.getLastErrorCode()).toBe('HTTP_503');
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(handle.getState()).toBe('connected');
+    expect(handle.getLastErrorCode()).toBeNull();
+    expect(onAuthFailure).not.toHaveBeenCalled();
+    expect(log.mock.calls.join('\n')).not.toContain(CRED.deviceToken);
+    handle();
   });
 });
 

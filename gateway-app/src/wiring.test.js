@@ -32,6 +32,16 @@ check('every window.gateway.* call in the renderer is exposed by the preload bri
   assert.deepStrictEqual(missing, []);
 });
 
+check('every enrollment error code the agent can report has wizard text (agent startup-tasks.ts)', () => {
+  const agentSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'agent', 'src', 'startup-tasks.ts'), 'utf8');
+  const union = /export type EnrollmentErrorCode =([\s\S]*?);/.exec(agentSrc);
+  assert.ok(union, 'EnrollmentErrorCode union not found');
+  const codes = [...union[1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]);
+  assert.ok(codes.length >= 7);
+  const text = /const ENROLLMENT_ERROR_TEXT = \{([\s\S]*?)\n\};/.exec(renderer)[1];
+  assert.deepStrictEqual(codes.filter((c) => !new RegExp(`^\\s+${c}:`, 'm').test(text)), []);
+});
+
 check('every IPC channel the preload invokes has a main-process handler, and nothing else is handled', () => {
   const invoked = new Set([...preload.matchAll(/ipcRenderer\.invoke\('([^']+)'/g)].map((m) => m[1]));
   const handled = new Set([...main.matchAll(/ipcMain\.handle\('([^']+)'/g)].map((m) => m[1]));

@@ -30,7 +30,10 @@ set. A real client install (a background OS service with no shell to export
 
 - **`config.json`** — ordinary, non-secret settings only (`controlPlaneUrl`,
   `displayName`, `heartbeatIntervalSeconds`, `bindHost`, `bindPort`,
-  `allowedOrigins`, `logLevel`). Validated the same way env vars are. Default
+  `allowedOrigins`, `logLevel`, and the outbound `proxy` / `tls` settings
+  described under "Outbound connections"). Validated the same way env vars
+  are. Unlike the other fields, `proxy` takes precedence over environment
+  variables. Default
   location: `%ProgramData%\DPDP Gateway\config\config.json` on Windows, or
   `$XDG_CONFIG_HOME/dpdp-gateway/config.json` (falling back to
   `~/.config/dpdp-gateway/config.json`) on Linux. Override the path with
@@ -153,7 +156,8 @@ Applied to **every** request, in this order:
 `networkMode`) to everyone who passes the checks above -- this is all the DPDP
 dashboard needs. The `gateway` status block (enrolled, device ID, heartbeat
 state/time, source **counts by kind** -- never source IDs, hosts or paths --,
-`enrollmentError`, `sourcesError`, `credentialProtection`) is returned only
+`enrollmentError`, `sourcesError`, `credentialProtection`, and the `network`
+summary -- labels and counts, never a proxy host or CA path) is returned only
 to a caller that sends **no `Origin`** and uses a **loopback `Host`**: the
 Setup app's main process, or any process already running on this machine.
 
@@ -170,18 +174,99 @@ Setup app's main process, or any process already running on this machine.
   certificate trusted by browsers, with its own issuance/rotation lifecycle,
   for little gain on loopback.
 
-## Outbound TLS (to the DPDP workspace)
+## Outbound connections: proxy and TLS trust
 
-- The Setup app and `cli-pair` only accept `https://` workspace URLs
-  (`http://localhost` for development). Certificate validation is Node's
-  default and is never disabled. There is **no certificate pinning**, on
-  purpose: pinning breaks legitimate certificate rotation.
-- Node validates against its **bundled** Mozilla CA list, not the Windows
-  certificate store. Networks that intercept TLS with a private CA, or
-  require an HTTP proxy (Node's `fetch` does not use the Windows proxy
-  settings), will fail to connect until an administrator adds the CA via
-  `NODE_EXTRA_CA_CERTS` (service environment) or proxy support is built.
-  Tracked as a deployment limitation.
+Every agent -> DPDP backend call (enrolment, heartbeat, session refresh,
+pairing redemption, de-enrolment, submission list/claim/ack/fail) goes through
+**one** HTTP call site (`requestJson` in `src/enrollment.ts`) using
+[undici](https://github.com/nodejs/undici) 6.29.0 (the HTTP client Node.js
+itself bundles, pinned exactly) and **one** shared transport
+(`src/transport.ts`). Database connectors, file connectors and the local
+listener never use it: they are not backend HTTP calls and are never proxied.
+
+### Proxy
+
+| Precedence | Setting | Notes |
+|---|---|---|
+| 1 | `config.json` `"proxy": { "url": "http://proxy.corp:8080", "noProxy": ["intranet.corp"] }` | Recommended for the service. Applies to http:// and https:// destinations. |
+| 1 | `config.json` `"proxy": "none"` | Forces direct connections and ignores proxy environment variables. |
+| 2 | `https_proxy`/`HTTPS_PROXY` (https:// destinations), `http_proxy`/`HTTP_PROXY` (http://), `no_proxy`/`NO_PROXY` | Used only when config.json has no `"proxy"`. Lower-case wins. HTTP_PROXY alone does **not** proxy https:// (curl/Node.js convention; a startup warning says so). |
+| 3 | nothing set | Direct. |
+
+- Proxy URLs: `http://` or `https://` (TLS to the proxy), `host:port`
+  without a scheme means `http://`. SOCKS, PAC files, WPAD and the Windows
+  (WinINET/WinHTTP) proxy settings are **not** read.
+- HTTPS destinations use an HTTP `CONNECT` tunnel: TLS is end to end, so the
+  proxy never sees the device token (unless it performs TLS inspection; see
+  below).
+- **Loopback destinations are always direct.** A **configured proxy is never
+  bypassed**: if it is down, refuses the tunnel or rejects the credentials,
+  the request fails and is reported; it is not retried directly.
+- `NO_PROXY` entries (comma/space separated, case-insensitive): `*` (all),
+  `<local>` (dot-less names), `example.com` / `.example.com` /
+  `*.example.com` (the domain and all subdomains), IPv4/IPv6 addresses and
+  CIDR ranges (match only destinations written as that literal address; no
+  DNS lookups), each optionally with `:port`. Invalid entries are a startup
+  configuration error rather than being ignored.
+- **Proxy authentication: Basic only.** Credentials are never accepted in
+  `config.json` (every local user can read it; the agent refuses to start).
+  Put them in the **state** directory as `proxy-credentials.json`:
+  `{ "username": "...", "password": "..." }`. On Windows the service rewrites
+  it DPAPI-protected on its next start
+  (`{ "format": "dpdp-gateway-proxy-credentials", "version": 2, "protected": {...} }`).
+  It applies only to a `config.json` proxy. Environment proxy URLs may carry
+  `user:pass@` (standard), but environment variables are readable by other
+  processes; prefer the file. NTLM/Kerberos (Negotiate) proxies are not
+  supported: allow-list the Gateway's machine, or use Basic.
+- Proxy credentials go only to the proxy (`Proxy-Authorization` on the
+  CONNECT request), never to DPDP; they never appear in logs, status or
+  command lines.
+
+### TLS trust (corporate TLS inspection)
+
+Certificate verification is always on: there is no option to disable it, no
+`rejectUnauthorized: false`, and hostname checks always apply (boundary.spec.ts
+fails the build if any of that appears). No certificate pinning (it breaks
+legitimate rotation). By default the agent trusts Node.js's bundled Mozilla
+roots, **not** the Windows certificate store. An administrator can add trust,
+read once at service start:
+
+- `"tls": { "extraCaCertsFile": "corp-ca.pem" }`: a PEM bundle **inside the
+  config directory** (`%ProgramData%\DPDP Gateway\config`, admin-only
+  writable). Relative paths resolve against that directory; paths (or links)
+  outside it are refused, so a standard user cannot plant a CA. The file may
+  contain only CA certificates (no private key, no server certificate, none
+  expired). The certificates are **added** to the bundled roots.
+- `"tls": { "useWindowsCertificateStore": true }`: also trust the Windows
+  certificate store roots (where Group Policy deploys corporate CAs), read via
+  Node.js's own `tls.getCACertificates('system')`.
+- `NODE_EXTRA_CA_CERTS` still works if present in the process environment at
+  start-up, but for the service prefer config.json: the WinSW XML is replaced
+  on upgrade, and machine-wide environment changes reach services only after a
+  reboot.
+
+Changes to `config.json`, the CA file or `proxy-credentials.json` take effect
+when the service restarts (`Restart-Service DPDPGatewayAgent`).
+
+### Diagnostics
+
+Failures with no HTTP response become stable codes with actionable messages
+that never contain a URL, host, credential or token: `PROXY_AUTH_FAILED`,
+`PROXY_REFUSED`, `PROXY_UNREACHABLE`, `DNS_FAILED`, `CONNECT_FAILED`,
+`TLS_UNTRUSTED`, `TLS_HOSTNAME_MISMATCH`, `TLS_FAILED`, `TIMEOUT`,
+`NETWORK_ERROR`. Enrolment maps them to `enrollmentError`
+`PROXY_AUTH_FAILED` / `PROXY_UNREACHABLE` / `TLS_CERTIFICATE_REJECTED` /
+`BACKEND_UNREACHABLE`; TLS and proxy-auth failures are not retried. The local
+status block includes `network`: `proxy` (`none`/`config`/`environment`),
+`proxyAuthentication`, `noProxyRules`, `customTrust`, `tlsTrust` counts,
+`proxyCredentialsError`, and the latest heartbeat `lastErrorCode`. Startup
+logs one line each for the proxy source and the trust sources, without hosts
+or paths.
+
+Timeouts are undici's defaults (connect 10 s, headers/body 300 s), unchanged
+from Node's global `fetch` used before. Known upstream issue worked around in
+`transport.ts`: undici 6.x reconnects forever when a proxy closes the socket
+before answering CONNECT; the transport makes that fail once.
 
 ## What Phase 3B deliberately does NOT do
 

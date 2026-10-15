@@ -130,6 +130,9 @@ foreach ($name in @('src', '.turbo', 'Dockerfile', '.env.example', 'eslint.confi
   if (Test-Path $p) { Remove-Item -Recurse -Force $p }
 }
 Remove-Matching (Join-Path $AgentStage 'dist') @('*.spec.js', '*.spec.d.ts', '*.spec.js.map', '*.d.ts', '*.js.map', '*.d.ts.map')
+# Test-only helpers and TEST-ONLY TLS keys/certificates (src\__fixtures__).
+$fixtures = Join-Path $AgentStage 'dist\__fixtures__'
+if (Test-Path $fixtures) { Remove-Item -Recurse -Force $fixtures }
 
 # --- 2. Pinned runtime + service wrapper ----------------------------------------
 $nodeZip = Get-VerifiedDownload $NodeZipUrl $NodeZipSha256 "node-v$NodeVersion-win-x64.zip" "Node.js v$NodeVersion"
@@ -154,7 +157,7 @@ Remove-Matching (Join-Path $OutDir 'gateway-app\app') @('*.test.js')
 $forbidden = @(Get-ChildItem -LiteralPath $OutDir -Recurse -Force -File | Where-Object {
     $n = $_.Name.ToLowerInvariant()
     ($n -eq '.env') -or ($n -like '.env.*') -or ($n -like '*.pem') -or ($n -like '*.key') -or ($n -like '*.pfx') -or ($n -like '*.p12') -or
-    (($_.FullName -notmatch '\\node_modules\\') -and ($n -in @('device-credential.json', 'sources.json', 'pending-sources.json', 'pending-enrollment.json', 'pending-deenroll.json', 'agent.lock', 'config.json')))
+    (($_.FullName -notmatch '\\node_modules\\') -and ($n -in @('device-credential.json', 'sources.json', 'pending-sources.json', 'pending-enrollment.json', 'pending-deenroll.json', 'proxy-credentials.json', 'agent.lock', 'config.json')))
   })
 if ($forbidden.Count -gt 0) {
   throw "Release audit failed -- these must not ship:`n$($forbidden.FullName -join "`n")"

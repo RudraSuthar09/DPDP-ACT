@@ -88,6 +88,8 @@ Source: "service\uninstall-service.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; The ONLY script the Gateway Setup app elevates (UAC). It locates itself,
 ; so it must live in {app}.
 Source: "service\elevated-helper.ps1"; DestDir: "{app}"; Flags: ignoreversion
+; Read-only, redacting evidence collector for administrators/support (run elevated).
+Source: "service\collect-diagnostics.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagingDir}\gateway-app\electron\*"; DestDir: "{app}\gateway-app\electron"; Flags: recursesubdirs ignoreversion
 Source: "{#StagingDir}\gateway-app\app\*"; DestDir: "{app}\gateway-app\app"; Flags: recursesubdirs ignoreversion
 Source: "{#StagingDir}\MANIFEST.sha256"; DestDir: "{app}"; Flags: ignoreversion

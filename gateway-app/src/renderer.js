@@ -106,8 +106,24 @@ const ENROLLMENT_ERROR_TEXT = {
   BACKEND_UNREACHABLE: 'The Gateway could not reach your DPDP workspace. Check the URL and this computer\'s internet/proxy settings.',
   CREDENTIAL_UNREADABLE: 'The saved Gateway credential cannot be read on this computer. Use Remove Gateway, then pair again with a new code.',
   CREDENTIAL_REVOKED: 'This Gateway was revoked or its credential expired in DPDP. Use Remove Gateway, then pair again with a new code.',
+  PROXY_AUTH_FAILED:
+    'Your network\'s proxy server rejected the Gateway\'s proxy credentials. An administrator needs to check proxy-credentials.json (see the DPDP Gateway README) and restart the service.',
+  PROXY_UNREACHABLE:
+    'The proxy server configured for the Gateway could not be reached or refused the connection. The Gateway never bypasses a configured proxy; an administrator needs to check the proxy settings.',
+  TLS_CERTIFICATE_REJECTED:
+    'The DPDP workspace\'s security certificate was not trusted. If your network inspects HTTPS traffic, an administrator must add your organisation\'s CA certificate to the Gateway configuration (see the DPDP Gateway README).',
   PROTECTION_UNAVAILABLE:
     'Windows credential protection (DPAPI) is not working for the Gateway service account, so credentials cannot be stored. Reinstall DPDP Gateway; if it persists, contact support.',
+};
+// Heartbeat failure codes (agent transport.ts) that need an administrator.
+// Transient ones (timeouts, DNS, HTTP 5xx) are deliberately not shown.
+const NETWORK_ERROR_TO_TEXT_KEY = {
+  PROXY_AUTH_FAILED: 'PROXY_AUTH_FAILED',
+  PROXY_REFUSED: 'PROXY_UNREACHABLE',
+  PROXY_UNREACHABLE: 'PROXY_UNREACHABLE',
+  TLS_UNTRUSTED: 'TLS_CERTIFICATE_REJECTED',
+  TLS_HOSTNAME_MISMATCH: 'TLS_CERTIFICATE_REJECTED',
+  TLS_FAILED: 'TLS_CERTIFICATE_REJECTED',
 };
 const SOURCES_ERROR_TEXT = {
   UNDECRYPTABLE: 'Saved source credentials cannot be decrypted (the service account changed). Re-add the affected sources.',
@@ -246,6 +262,12 @@ async function refreshStatus() {
   if (!status.reachable) problems.push(status.error);
   if (gw && gw.credentialProtection === 'unavailable') problems.push(ENROLLMENT_ERROR_TEXT.PROTECTION_UNAVAILABLE);
   if (gw && gw.enrollmentError && ENROLLMENT_ERROR_TEXT[gw.enrollmentError]) problems.push(ENROLLMENT_ERROR_TEXT[gw.enrollmentError]);
+  const net = gw && gw.network;
+  if (net && net.proxyCredentialsError) {
+    problems.push('The Gateway\'s proxy credentials file could not be used. An administrator needs to write it again in plain form and restart the service (see the DPDP Gateway README).');
+  }
+  const heartbeatProblem = net && NETWORK_ERROR_TO_TEXT_KEY[net.lastErrorCode];
+  if (heartbeatProblem && heartbeatProblem !== gw.enrollmentError) problems.push(ENROLLMENT_ERROR_TEXT[heartbeatProblem]);
   if (gw && gw.sourcesError) problems.push(SOURCES_ERROR_TEXT[gw.sourcesError] || 'Data sources could not be loaded.');
   setError('status-error', problems.length ? problems.join(' ') : null);
 

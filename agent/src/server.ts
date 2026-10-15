@@ -23,7 +23,7 @@ import type { AgentConfig } from './config';
 import { evaluateOrigin } from './origin';
 import { evaluateHost } from './host-auth';
 import { inspectAuthHeader, GATEWAY_AUTH_HEADER } from './auth';
-import { buildHealth, type GatewayStatusSummary } from './health';
+import { buildHealth, DEFAULT_NETWORK_SUMMARY, type GatewayStatusSummary } from './health';
 import { DATA_PLANE_PATHS, handleDataPlaneRequest, type DataPlane } from './data-plane';
 import { STORAGE_PLANE_PATHS, handleStoragePlaneRequest, type StoragePlane } from './storage/storage-plane';
 
@@ -67,6 +67,7 @@ const DISABLED_GATEWAY_STATUS: GatewayStatusSummary = {
   enrollmentError: null,
   sourcesError: null,
   credentialProtection: 'none',
+  network: DEFAULT_NETWORK_SUMMARY,
 };
 
 /** Read a bounded JSON body. The oversized guard already capped content-length,

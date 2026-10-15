@@ -13,6 +13,7 @@ import { hasDeenrollRequest, readPendingEnrollment, writeDeenrollRequest, writeP
 import { appendPendingSource, readSourcesFile, writeSourcesFile, type SecretProtector } from './sources-file';
 import { classifyEnrollmentFailure, isRetryableEnrollmentError, prepareSources, processDeenrollRequest } from './startup-tasks';
 import type { GatewaySourceConfig } from './connectors/registry';
+import { TransportError } from './transport';
 
 const CRED: PersistedCredential = { tenantId: 't', deviceId: 'd', deviceToken: 'device-TOKEN-xyz', enrolledAt: '2026-01-01T00:00:00Z' };
 
@@ -43,6 +44,14 @@ describe('enrollment failure classification', () => {
     [new TypeError('fetch failed'), 'BACKEND_UNREACHABLE', true],
     [new DpapiError('x'), 'CREDENTIAL_UNREADABLE', false],
     [new Error('Corrupt Gateway credential file at C:\\x'), 'CREDENTIAL_UNREADABLE', false],
+    // Phase 4: transport failures (see transport.ts)
+    [new TransportError('PROXY_AUTH_FAILED', 'm', true, false, 'HTTP 407'), 'PROXY_AUTH_FAILED', false],
+    [new TransportError('PROXY_UNREACHABLE', 'm', true, true, 'ECONNREFUSED'), 'PROXY_UNREACHABLE', true],
+    [new TransportError('PROXY_REFUSED', 'm', true, false, 'HTTP 403'), 'PROXY_UNREACHABLE', false],
+    [new TransportError('TLS_UNTRUSTED', 'm', false, false, 'SELF_SIGNED_CERT_IN_CHAIN'), 'TLS_CERTIFICATE_REJECTED', false],
+    [new TransportError('TLS_HOSTNAME_MISMATCH', 'm', true, false, null), 'TLS_CERTIFICATE_REJECTED', false],
+    [new TransportError('DNS_FAILED', 'm', false, true, 'ENOTFOUND'), 'BACKEND_UNREACHABLE', true],
+    [new TransportError('TIMEOUT', 'm', false, true, 'ETIMEDOUT'), 'BACKEND_UNREACHABLE', true],
   ])('%p -> %s (retryable: %s)', (err, code, retryable) => {
     expect(classifyEnrollmentFailure(err)).toBe(code);
     expect(isRetryableEnrollmentError(err)).toBe(retryable);

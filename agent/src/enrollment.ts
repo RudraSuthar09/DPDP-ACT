@@ -31,6 +31,8 @@ import { randomUUID, generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import type { GatewayAgentPlatform } from '@dpdp/shared';
+import { fetch } from 'undici';
+import { classifyTransportError, TransportError, type Transport } from './transport';
 
 export interface PersistedCredential {
   tenantId: string;
@@ -215,24 +217,37 @@ export type ClaimedSubmission =
 // The ONE outbound HTTP call site for the whole control-plane client (see
 // data-plane.spec.ts's boundary guard) — postJson/getJson are both thin
 // wrappers over this, never a second independent fetch() call site.
-async function requestJson(method: 'GET' | 'POST', url: string, headers: Record<string, string>, body?: unknown): Promise<unknown> {
-  const res = await fetch(url, {
-    method,
-    headers: body === undefined ? headers : { 'content-type': 'application/json', ...headers },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
+//
+// undici's fetch, not the global one, so the request uses the transport's
+// dispatcher (proxy tunnel and CA trust; see transport.ts). A failure with no
+// HTTP response becomes a TransportError with a redacted, actionable message;
+// nothing here retries it on a different route.
+async function requestJson(
+  transport: Transport,
+  method: 'GET' | 'POST',
+  url: string,
+  headers: Record<string, string>,
+  body?: unknown,
+): Promise<unknown> {
+  let status: number;
+  let ok: boolean;
+  let text: string;
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: body === undefined ? headers : { 'content-type': 'application/json', ...headers },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      dispatcher: transport.dispatcherFor(url),
+    });
+    status = res.status;
+    ok = res.ok;
+    text = await res.text();
+  } catch (err) {
+    throw classifyTransportError(err, transport.usesProxy(url));
+  }
   const json = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new ControlPlaneHttpError(res.status, json);
+  if (!ok) throw new ControlPlaneHttpError(status, json);
   return json;
-}
-
-async function postJson(url: string, headers: Record<string, string>, body: unknown): Promise<unknown> {
-  return requestJson('POST', url, headers, body);
-}
-
-async function getJson(url: string, headers: Record<string, string>): Promise<unknown> {
-  return requestJson('GET', url, headers);
 }
 
 /** Reads claims from a JWT WITHOUT verifying its signature. Safe only because
@@ -256,7 +271,10 @@ function decodeJwtPayloadUnsafe(token: string): Record<string, unknown> {
  * customer value; the routes themselves enforce this server-side
  * (backend/src/modules/gateway/gateway.dto.ts's rejectSecretFields).
  */
-export function createControlPlaneClient(controlPlaneUrl: string): GatewayControlPlaneClient {
+export function createControlPlaneClient(controlPlaneUrl: string, transport: Transport): GatewayControlPlaneClient {
+  const postJson = (url: string, headers: Record<string, string>, body: unknown): Promise<unknown> =>
+    requestJson(transport, 'POST', url, headers, body);
+  const getJson = (url: string, headers: Record<string, string>): Promise<unknown> => requestJson(transport, 'GET', url, headers);
   return {
     async enroll(input) {
       const json = (await postJson(
@@ -411,6 +429,9 @@ export type HeartbeatConnectionState = 'connecting' | 'connected' | 'degraded' |
 export type HeartbeatHandle = (() => void) & {
   getState: () => HeartbeatConnectionState;
   getLastSuccessAt: () => string | null;
+  /** Stable code of the most recent failure (a NetworkErrorCode, or
+   *  HTTP_<status> for a backend error response); null after a success. */
+  getLastErrorCode: () => string | null;
 };
 
 /**
@@ -440,6 +461,7 @@ export function startHeartbeat(
 ): HeartbeatHandle {
   let state: HeartbeatConnectionState = 'connecting';
   let lastSuccessAt: string | null = null;
+  let lastErrorCode: string | null = null;
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
 
@@ -449,8 +471,11 @@ export function startHeartbeat(
       .then(() => {
         state = 'connected';
         lastSuccessAt = new Date().toISOString();
+        lastErrorCode = null;
       })
       .catch((err: unknown) => {
+        lastErrorCode =
+          err instanceof TransportError ? err.code : err instanceof ControlPlaneHttpError ? `HTTP_${err.status}` : 'NETWORK_ERROR';
         if (err instanceof ControlPlaneHttpError && (err.status === 401 || err.status === 403)) {
           state = 'auth_failed';
           // Terminal: the token is dead, so stop calling the backend with it
@@ -480,6 +505,7 @@ export function startHeartbeat(
   }) as HeartbeatHandle;
   handle.getState = () => state;
   handle.getLastSuccessAt = () => lastSuccessAt;
+  handle.getLastErrorCode = () => lastErrorCode;
   return handle;
 }
 

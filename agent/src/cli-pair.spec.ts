@@ -73,7 +73,7 @@ describe('pair input parsing', () => {
 
 describe('parseStdinJson', () => {
   it('tolerates a UTF-8 BOM at either end (Windows StreamWriter/PowerShell artefact)', () => {
-    expect(parseStdinJson('﻿{"a":1}﻿')).toEqual({ a: 1 });
+    expect(parseStdinJson('\uFEFF{"a":1}\uFEFF')).toEqual({ a: 1 });
   });
 
   it('rejects input over 64 KiB and non-JSON input', () => {
@@ -98,6 +98,18 @@ describe('runPairAction', () => {
     writeFileSync(path.join(ctx.stateDir, 'device-credential.json'), '{"dpapi":"00"}');
     expect(() => runPairAction({ enrollmentCode: CODE, controlPlaneUrl: 'https://acme.example.com' }, ctx.env, 'linux')).toThrow(/already paired/);
     expect(readPendingEnrollment(ctx.stateDir)).toBeNull();
+  });
+
+  it('(Phase 4) keeps an administrator\'s proxy/tls settings (and a BOM-prefixed file) when it records the workspace URL', () => {
+    const cfg = path.join(ctx.configDir, 'config.json');
+    writeFileSync(cfg, `\uFEFF${JSON.stringify({ controlPlaneUrl: 'https://old.example.com', proxy: { url: 'http://proxy.corp:8080', noProxy: ['intranet.corp'] }, tls: { useWindowsCertificateStore: true }, logLevel: 'debug' })}`);
+    runPairAction({ enrollmentCode: CODE, controlPlaneUrl: 'https://acme.example.com' }, ctx.env, 'linux');
+    expect(loadConfigFile(cfg)).toEqual({
+      controlPlaneUrl: 'https://acme.example.com',
+      proxy: { url: 'http://proxy.corp:8080', noProxy: ['intranet.corp'] },
+      tls: { useWindowsCertificateStore: true },
+      logLevel: 'debug',
+    });
   });
 
   it('rejects http for a production host and writes nothing', () => {

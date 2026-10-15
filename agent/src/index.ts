@@ -53,9 +53,14 @@ import {
   createControlPlaneClient,
   EnrollmentRequiredError,
   type CredentialStore,
+  type GatewayControlPlaneClient,
   type PersistedCredential,
   type HeartbeatHandle,
 } from './enrollment';
+import { resolveProxySettings, type FileProxyConfig, type ProxyCredentials } from './network-config';
+import { loadProxyCredentials, ProxyCredentialsError, type ProxyCredentialsErrorCode } from './proxy-credentials';
+import { buildTrustedCaList, summarizeTlsTrust, type TlsTrustSettings } from './tls-trust';
+import { createTransport, type Transport } from './transport';
 
 /** The one place that decides how secrets are stored: DPAPI on Windows,
  *  plain files elsewhere (development/CI/Docker only). */
@@ -66,7 +71,53 @@ function resolveSecretStorage(stateDir: string): { credentialStore: CredentialSt
   return { credentialStore: createFileCredentialStore(stateDir), protector: null };
 }
 
-async function runDeenroll(config: AgentConfig, logger: Logger, credentialStore: CredentialStore): Promise<void> {
+/**
+ * Builds the ONE outbound transport every control-plane call uses (proxy and
+ * CA trust; see transport.ts). Throws AgentConfigError for an invalid proxy
+ * setting. Unusable proxy credentials are reported, not fatal: requests then
+ * fail at the proxy (407) and are never sent around it.
+ */
+function setUpTransport(
+  fileProxy: FileProxyConfig | undefined,
+  tlsTrust: TlsTrustSettings,
+  stateDir: string,
+  protector: SecretProtector | null,
+  logger: Logger,
+): { transport: Transport; proxyCredentialsError: ProxyCredentialsErrorCode | null } {
+  let credentials: ProxyCredentials | null = null;
+  let proxyCredentialsError: ProxyCredentialsErrorCode | null = null;
+  try {
+    const loaded = loadProxyCredentials(stateDir, protector);
+    credentials = loaded.credentials;
+    if (loaded.migrated) logger.info('proxy-credentials.json was converted to the DPAPI-protected format.');
+    if (credentials && !protector) {
+      logger.warn('proxy-credentials.json is a plain file: no OS credential protection on this platform (development only).');
+    }
+  } catch (err) {
+    if (!(err instanceof ProxyCredentialsError)) throw err;
+    proxyCredentialsError = err.code;
+    logger.error(err.message);
+  }
+
+  const proxy = resolveProxySettings(fileProxy, process.env, credentials);
+  proxy.warnings.forEach((w) => logger.warn(w));
+  const transport = createTransport({ proxy, ca: buildTrustedCaList(tlsTrust) });
+
+  const s = transport.summary;
+  const trust = summarizeTlsTrust(tlsTrust, process.env);
+  logger.info(
+    `outbound proxy: ${s.proxy === 'none' ? 'none (direct)' : `from ${s.proxy === 'config' ? 'config.json' : 'environment'}`}` +
+      `${s.proxyAuthentication ? ', with Basic authentication' : ''}; NO_PROXY rules: ${s.noProxyRules}; loopback always direct`,
+  );
+  logger.info(
+    `TLS trust: Node.js bundled CAs${trust.nodeExtraCaCerts ? ' + NODE_EXTRA_CA_CERTS' : ''}` +
+      `${trust.windowsCertificateStore ? ' + Windows certificate store' : ''}` +
+      `${trust.extraCaCertificates ? ` + ${trust.extraCaCertificates} CA certificate(s) from tls.extraCaCertsFile` : ''}; verification always on`,
+  );
+  return { transport, proxyCredentialsError };
+}
+
+async function runDeenroll(config: AgentConfig, logger: Logger, credentialStore: CredentialStore, transport: Transport): Promise<void> {
   if (!config.controlPlaneUrl) {
     logger.error('--deenroll requires GATEWAY_CONTROL_PLANE_URL to be set.');
     process.exit(1);
@@ -76,7 +127,7 @@ async function runDeenroll(config: AgentConfig, logger: Logger, credentialStore:
     logger.info('No persisted Gateway credential found — nothing to de-enroll.');
     return;
   }
-  const client = createControlPlaneClient(config.controlPlaneUrl);
+  const client = createControlPlaneClient(config.controlPlaneUrl, transport);
   const { backendNotified } = await deenroll(client, existing, config.stateDir, credentialStore);
   if (backendNotified) {
     logger.info('De-enrolled: the backend has removed this device, and the local credential was cleared.');
@@ -103,8 +154,9 @@ async function tryEnroll(
   config: AgentConfig,
   logger: Logger,
   credentialStore: CredentialStore,
+  client: GatewayControlPlaneClient | null,
 ): Promise<{ credential: PersistedCredential | null; error: EnrollmentErrorCode | null }> {
-  if (!config.controlPlaneUrl) {
+  if (!config.controlPlaneUrl || !client) {
     logger.info('GATEWAY_CONTROL_PLANE_URL is not set — enrollment/heartbeat/pairing are unavailable.');
     return { credential: null, error: null };
   }
@@ -117,7 +169,6 @@ async function tryEnroll(
     clearPendingEnrollment(config.stateDir);
   }
 
-  const client = createControlPlaneClient(config.controlPlaneUrl);
   try {
     const credential = await withRetry(
       () =>
@@ -170,11 +221,15 @@ async function main(): Promise<void> {
   let deliveryConfig: DeliveryConfig;
   let configFilePath: string;
   let fileLogLevel: ReturnType<typeof resolveAgentConfig>['logLevel'];
+  let fileProxy: FileProxyConfig | undefined;
+  let tlsTrust: TlsTrustSettings;
   try {
     const resolved = resolveAgentConfig();
     config = resolved.config;
     configFilePath = resolved.configFilePath;
     fileLogLevel = resolved.logLevel;
+    fileProxy = resolved.fileConfig?.proxy;
+    tlsTrust = resolved.tlsTrust;
     deliveryConfig = loadDeliveryConfig();
   } catch (err) {
     // Sanitized: print only the (secret-free) message, then exit non-zero.
@@ -191,8 +246,19 @@ async function main(): Promise<void> {
 
   const { credentialStore, protector } = resolveSecretStorage(config.stateDir);
 
+  let transport: Transport;
+  let proxyCredentialsError: ProxyCredentialsErrorCode | null;
+  try {
+    ({ transport, proxyCredentialsError } = setUpTransport(fileProxy, tlsTrust, config.stateDir, protector, logger));
+  } catch (err) {
+    logger.error(`configuration error: ${err instanceof AgentConfigError ? err.message : 'invalid outbound network configuration.'}`);
+    process.exit(1);
+    return;
+  }
+  const client = config.controlPlaneUrl ? createControlPlaneClient(config.controlPlaneUrl, transport) : null;
+
   if (process.argv.includes('--deenroll')) {
-    await runDeenroll(config, logger, credentialStore);
+    await runDeenroll(config, logger, credentialStore, transport);
     process.exit(0);
     return;
   }
@@ -226,11 +292,11 @@ async function main(): Promise<void> {
   await processDeenrollRequest({
     stateDir: config.stateDir,
     credentialStore,
-    client: config.controlPlaneUrl ? createControlPlaneClient(config.controlPlaneUrl) : null,
+    client,
     log,
   });
 
-  const enrollment = await tryEnroll(config, logger, credentialStore);
+  const enrollment = await tryEnroll(config, logger, credentialStore, client);
   const credential = enrollment.credential;
   let enrollmentError: EnrollmentErrorCode | null = enrollment.error;
 
@@ -240,17 +306,15 @@ async function main(): Promise<void> {
   // CREDENTIAL_REVOKED — no further calls are made with that token.
   let heartbeatHandle: HeartbeatHandle | undefined;
   let stopDeliveryPoller: (() => void) | undefined;
-  let heartbeatClient: ReturnType<typeof createControlPlaneClient> | undefined;
-  if (credential && config.controlPlaneUrl) {
-    heartbeatClient = createControlPlaneClient(config.controlPlaneUrl);
-    heartbeatHandle = startHeartbeat(heartbeatClient, credential, AGENT_VERSION, config.heartbeatIntervalSeconds, log, () => {
+  if (credential && client) {
+    heartbeatHandle = startHeartbeat(client, credential, AGENT_VERSION, config.heartbeatIntervalSeconds, log, () => {
       stopDeliveryPoller?.();
       stopDeliveryPoller = undefined;
       credentialStore.clear();
       enrollmentError = 'CREDENTIAL_REVOKED';
     });
     stopDeliveryPoller = startDeliveryPoller({
-      client: heartbeatClient,
+      client,
       deviceToken: credential.deviceToken,
       pollIntervalSeconds: deliveryConfig.pollIntervalSeconds,
       log,
@@ -270,8 +334,7 @@ async function main(): Promise<void> {
     const sources = prepared.sources;
     sourcesConfigured = sources.length;
     sourceKinds = sources.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.kind]: (acc[s.kind] ?? 0) + 1 }), {});
-    if (sources.length > 0 && credential && config.controlPlaneUrl) {
-      const client = heartbeatClient ?? createControlPlaneClient(config.controlPlaneUrl);
+    if (sources.length > 0 && credential && client) {
       dataPlane = new DataPlane(
         new ConnectorRegistry(sources),
         new SessionStore(),
@@ -294,8 +357,7 @@ async function main(): Promise<void> {
   try {
     const storageRoots = loadStorageRootConfig();
     storageRootsConfiguredCount = storageRoots.length;
-    if (storageRoots.length > 0 && credential && config.controlPlaneUrl) {
-      const client = heartbeatClient ?? createControlPlaneClient(config.controlPlaneUrl);
+    if (storageRoots.length > 0 && credential && client) {
       storagePlane = new StoragePlane(
         new StorageRegistry(storageRoots),
         new StorageSessionStore(),
@@ -324,6 +386,12 @@ async function main(): Promise<void> {
     enrollmentError,
     sourcesError,
     credentialProtection,
+    network: {
+      ...transport.summary,
+      tlsTrust: summarizeTlsTrust(tlsTrust, process.env),
+      proxyCredentialsError,
+      lastErrorCode: heartbeatHandle?.getLastErrorCode() ?? null,
+    },
   });
 
   const server = createAgentServer(config, { dataPlane, storagePlane, log, getGatewayStatus });
@@ -355,6 +423,7 @@ async function main(): Promise<void> {
     heartbeatHandle?.();
     stopDeliveryPoller?.();
     instanceLock.release();
+    void transport.close();
     server.close(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);

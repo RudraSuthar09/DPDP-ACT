@@ -79,11 +79,13 @@ export function runPairAction(
   platform: NodeJS.Platform = process.platform,
 ): void {
   const controlPlaneUrl = normalizeWorkspaceUrl(input.controlPlaneUrl);
-  const { config, configFilePath } = resolveAgentConfig(env, platform);
+  const { config, configFilePath, fileConfig } = resolveAgentConfig(env, platform);
   if (hasPersistedCredentialFile(config.stateDir)) {
     throw new CliInputError('This Gateway is already paired. Remove it first (Gateway Setup -> Remove Gateway), then pair again.');
   }
-  writeConfigFile(configFilePath, { controlPlaneUrl });
+  // Merge, never replace: an administrator may already have set "proxy" and
+  // "tls" (needed before pairing can even reach DPDP on such networks).
+  writeConfigFile(configFilePath, { ...(fileConfig ?? {}), controlPlaneUrl });
   writePendingEnrollment(config.stateDir, {
     enrollmentCode: input.enrollmentCode,
     ...(input.displayName ? { displayName: input.displayName } : {}),

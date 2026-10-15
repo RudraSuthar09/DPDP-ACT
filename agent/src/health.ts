@@ -13,6 +13,9 @@ import type { NetworkMode } from './config';
 import type { HeartbeatConnectionState } from './enrollment';
 import type { EnrollmentErrorCode } from './startup-tasks';
 import type { SourcesFileErrorCode } from './sources-file';
+import type { TransportSummary } from './transport';
+import type { TlsTrustSummary } from './tls-trust';
+import type { ProxyCredentialsErrorCode } from './proxy-credentials';
 
 /**
  * Local-only Gateway status (Phase 2 of the production build-out) — added
@@ -46,7 +49,29 @@ export interface GatewayStatusSummary {
    *  'unavailable' if it failed (credentials cannot be stored); 'none' on
    *  platforms without OS credential protection (development only). */
   credentialProtection: 'dpapi' | 'unavailable' | 'none';
+  /** Outbound network settings and the latest connectivity failure. Labels
+   *  and counts only: never a proxy host, credential or certificate path. */
+  network: GatewayNetworkSummary;
 }
+
+export interface GatewayNetworkSummary extends TransportSummary {
+  tlsTrust: TlsTrustSummary;
+  /** Set when proxy-credentials.json exists but could not be used. */
+  proxyCredentialsError: ProxyCredentialsErrorCode | null;
+  /** Latest heartbeat failure (NetworkErrorCode or HTTP_<status>); null once a heartbeat succeeds. */
+  lastErrorCode: string | null;
+}
+
+/** Defaults: direct connection, Node's default trust, no failures. */
+export const DEFAULT_NETWORK_SUMMARY: GatewayNetworkSummary = {
+  proxy: 'none',
+  proxyAuthentication: false,
+  noProxyRules: 0,
+  customTrust: false,
+  tlsTrust: { windowsCertificateStore: false, extraCaCertificates: 0, nodeExtraCaCerts: false },
+  proxyCredentialsError: null,
+  lastErrorCode: null,
+};
 
 /** Extends the Phase-3A GatewayHealthResponse with the skeleton's extra fields. */
 export interface AgentHealth extends GatewayHealthResponse {

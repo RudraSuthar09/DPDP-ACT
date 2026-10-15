@@ -37,6 +37,13 @@ import { join } from 'node:path';
  *     read through a connector. It was moved OUT of connectors/registry.ts
  *     precisely so connectors/ never has a file-write path (see
  *     data-plane.spec.ts's raw-data guard, which no longer exempts it).
+ *   - proxy-credentials.ts (Phase 4) reads/writes ONLY proxy-credentials.json
+ *     in the state directory: the outbound proxy's Basic credentials, which
+ *     must not live in the every-user-readable config.json. Same DPAPI model
+ *     as sources.json; never customer data.
+ *   - transport.ts (Phase 4) builds the undici dispatchers (proxy tunnel, CA
+ *     trust) that enrollment.ts's single fetch() uses. It never calls fetch
+ *     itself, and only it and enrollment.ts may import undici.
  *   - single-instance.ts (Phase 2) reads/writes ONLY agent.lock, a PID-only
  *     lock file preventing two agent processes from running against the same
  *     state directory — never customer data.
@@ -91,6 +98,11 @@ describe('Phase 3B — the agent skeleton has no data capability (boundary guard
     const DB = ["from 'pg'", 'require(\'pg\')', 'new Pool', '.query(', 'INSERT ', 'UPDATE ', 'DELETE FROM', 'pg-boss', 'Repository', 'apply_tenant_rls', 'node-pg-migrate'];
     for (const [file, src] of Object.entries(code)) {
       for (const token of DB) {
+        // Narrow Phase 4 exception: transport.ts's `new Pool` is undici's HTTP
+        // connection pool to the outbound proxy (see tunnelFailsFast), not a
+        // database pool. Allowed ONLY there, and only while Pool is imported
+        // from 'undici' (pg itself stays banned by the "from 'pg'" token).
+        if (token === 'new Pool' && file.endsWith('transport.ts') && /import \{[^}]*\bPool\b[^}]*\} from 'undici'/.test(src)) continue;
         expect({ file, token, hit: src.includes(token) }).toEqual({ file, token, hit: false });
       }
     }
@@ -120,6 +132,7 @@ describe('Phase 3B — the agent skeleton has no data capability (boundary guard
       'single-instance.ts',
       'atomic-write.ts',
       'sources-file.ts',
+      'proxy-credentials.ts',
     ];
     for (const [file, src] of Object.entries(code)) {
       if (EXEMPT.some((name) => file.endsWith(name))) continue;
@@ -143,6 +156,42 @@ describe('Phase 3B — the agent skeleton has no data capability (boundary guard
     for (const [file, src] of Object.entries(code)) {
       if (file.endsWith('data-plane.ts') || file.endsWith('enrollment.ts')) continue;
       for (const token of OUT) {
+        expect({ file, token, hit: src.includes(token) }).toEqual({ file, token, hit: false });
+      }
+    }
+  });
+
+  it('(Phase 4) only enrollment.ts and transport.ts touch the HTTP client library, and no file opens raw sockets', () => {
+    for (const [file, src] of Object.entries(code)) {
+      const usesUndici = src.includes("from 'undici'") || src.includes("require('undici')");
+      const allowed = file.endsWith('enrollment.ts') || file.endsWith('transport.ts');
+      expect({ file, usesUndici: usesUndici && !allowed }).toEqual({ file, usesUndici: false });
+      for (const token of ['net.connect', 'tls.connect', 'createConnection', 'new Socket']) {
+        expect({ file, token, hit: src.includes(token) }).toEqual({ file, token, hit: false });
+      }
+    }
+  });
+
+  it('(Phase 4) the transport.ts "new Pool" exception is undici-only and that file has no database capability', () => {
+    const transport = Object.entries(code).find(([f]) => f.endsWith('transport.ts'))![1];
+    expect(transport).toMatch(/import \{[^}]*\bPool\b[^}]*\} from 'undici'/);
+    for (const token of ["from 'pg'", 'mssql', 'mysql', '.query(', 'database']) {
+      expect({ token, hit: transport.includes(token) }).toEqual({ token, hit: false });
+    }
+  });
+
+  it('(Phase 4) the single control-plane fetch() is undici\'s, with the transport dispatcher (never the global fetch)', () => {
+    const enroll = Object.entries(code).find(([f]) => f.endsWith('enrollment.ts'))![1];
+    expect(enroll).toContain("import { fetch } from 'undici'");
+    expect(enroll).toMatch(/dispatcher:\s*transport\.dispatcherFor\(url\)/);
+    expect(enroll).not.toContain('globalThis.fetch');
+  });
+
+  it('(Phase 4) TLS certificate verification is never weakened', () => {
+    // No setting, env override or callback that disables or loosens checks.
+    const BANNED = ['rejectUnauthorized', 'NODE_TLS_REJECT_UNAUTHORIZED', 'checkServerIdentity', 'setGlobalDispatcher', 'insecure'];
+    for (const [file, src] of Object.entries(code)) {
+      for (const token of BANNED) {
         expect({ file, token, hit: src.includes(token) }).toEqual({ file, token, hit: false });
       }
     }
