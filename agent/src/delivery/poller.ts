@@ -37,11 +37,24 @@ export interface DeliveryPollerOptions {
   log: (line: string) => void;
 }
 
-/** Starts the poller; returns a stop function. Never throws out of the
- *  interval — every failure is logged and retried on the next tick. */
+/**
+ * Starts the poller; returns a stop function. Never throws out of the loop —
+ * every failure is logged and retried on the next tick.
+ *
+ * Deliberately a RECURSIVE setTimeout (Phase 1 overlap-safety — same fix as
+ * enrollment.ts's startHeartbeat, same reasoning): the next tick is only
+ * ever SCHEDULED once the current one (which can itself drain up to
+ * MAX_CLAIMS_PER_TICK submissions, each a network round-trip) has fully
+ * settled, so two ticks can never run concurrently. The previous
+ * implementation (`setInterval` PLUS a separate immediate `tick()` call)
+ * could overlap the immediate call with the first interval firing if that
+ * immediate call was still draining a backlog — structurally impossible now.
+ */
 export function startDeliveryPoller(options: DeliveryPollerOptions): () => void {
   const localRootConfig = options.localRootConfig ?? loadLocalRootConfig();
   let notConfiguredWarned = false;
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
 
   const tick = async (): Promise<void> => {
     const root = resolveLocalStorageRoot(localRootConfig);
@@ -85,15 +98,25 @@ export function startDeliveryPoller(options: DeliveryPollerOptions): () => void 
     }
   };
 
-  const timer = setInterval(() => {
-    tick().catch((err: unknown) => options.log(`[Agent] Delivery poll tick failed unexpectedly: ${describeError(err)}`));
-  }, options.pollIntervalSeconds * 1000);
-  timer.unref?.();
-  // Also run once immediately, so a backlog starts draining without waiting
-  // for the first interval to elapse.
-  void tick().catch((err: unknown) => options.log(`[Agent] Delivery poll tick failed unexpectedly: ${describeError(err)}`));
+  const runTick = (): void => {
+    tick()
+      .catch((err: unknown) => options.log(`[Agent] Delivery poll tick failed unexpectedly: ${describeError(err)}`))
+      .finally(() => {
+        if (stopped) return;
+        timer = setTimeout(runTick, options.pollIntervalSeconds * 1000);
+        timer.unref?.();
+      });
+  };
 
-  return () => clearInterval(timer);
+  // Runs once immediately (so a backlog starts draining without waiting for
+  // the first interval), then recursively reschedules — see this function's
+  // own header for why that makes overlap impossible rather than just rare.
+  runTick();
+
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
 }
 
 async function writeClaimedSubmission(root: string, claimed: Extract<ClaimedSubmission, { ready: true }>): Promise<void> {

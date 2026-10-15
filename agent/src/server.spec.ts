@@ -75,15 +75,45 @@ describe('Phase 3B — the Local Agent HTTP boundary', () => {
     expect(typeof r.json?.protocolVersion).toBe('string');
   });
 
+  it('(Phase 2) GET /health reports a disabled gateway status when no status provider is wired', async () => {
+    const r = await httpReq(port, { path: '/health' });
+    expect(r.json?.gateway).toEqual({
+      enrolled: false,
+      deviceId: null,
+      heartbeat: null,
+      lastHeartbeatAt: null,
+      sourcesConfigured: 0,
+      storageRootsConfigured: 0,
+      sourceKinds: {},
+      enrollmentError: null,
+      sourcesError: null,
+      credentialProtection: 'none',
+    });
+  });
+
   it('7/8. health response contains no secrets and no customer data', async () => {
     const r = await httpReq(port, { path: '/health' });
-    // exactly the four safe metadata keys — nothing else leaks
+    // exactly the five safe metadata keys — nothing else leaks
     expect(Object.keys(r.json ?? {}).sort()).toEqual([
       'agentVersion',
+      'gateway',
       'networkMode',
       'protocolVersion',
       'status',
     ]);
+    // the gateway sub-object is non-secret metadata too, same discipline
+    expect(Object.keys((r.json?.gateway ?? {}) as Record<string, unknown>).sort()).toEqual([
+      'credentialProtection',
+      'deviceId',
+      'enrolled',
+      'enrollmentError',
+      'heartbeat',
+      'lastHeartbeatAt',
+      'sourceKinds',
+      'sourcesConfigured',
+      'sourcesError',
+      'storageRootsConfigured',
+    ].sort());
     // and no forbidden token appears anywhere in the raw body
     for (const forbidden of ['token', 'secret', 'password', 'allowedOrigins', 'controlPlane', 'privateKey', 'env', 'aadhaar']) {
       expect(r.text.toLowerCase()).not.toContain(forbidden.toLowerCase());
@@ -158,5 +188,137 @@ describe('Phase 3B — the Local Agent HTTP boundary', () => {
     expect(r.status).toBe(403);
     expect(r.text).not.toContain('evil.example');
     expect(r.text).not.toContain('secret-path');
+  });
+});
+
+describe('(Phase 2) GET /health — live gateway status provider wiring', () => {
+  it('reflects whatever getGatewayStatus() returns, called fresh on every request (never cached)', async () => {
+    const config = loadAgentConfig({ GATEWAY_ALLOWED_ORIGINS: ALLOWED });
+    let calls = 0;
+    const server = createAgentServer(config, {
+      getGatewayStatus: () => {
+        calls += 1;
+        return {
+          enrolled: true,
+          deviceId: 'device-123',
+          heartbeat: calls === 1 ? 'connecting' : 'connected',
+          lastHeartbeatAt: calls === 1 ? null : '2026-01-01T00:00:00.000Z',
+          sourcesConfigured: 2,
+          storageRootsConfigured: 1,
+          sourceKinds: { postgresql: 1, csv: 1 },
+          enrollmentError: null,
+          sourcesError: null,
+          credentialProtection: 'dpapi' as const,
+        };
+      },
+    });
+    await new Promise<void>((resolve) => server.listen(0, config.bindHost, resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const first = await httpReq(port, { path: '/health' });
+      expect(first.json?.gateway).toMatchObject({ enrolled: true, deviceId: 'device-123', heartbeat: 'connecting', lastHeartbeatAt: null });
+
+      const second = await httpReq(port, { path: '/health' });
+      expect(second.json?.gateway).toMatchObject({ heartbeat: 'connected', lastHeartbeatAt: '2026-01-01T00:00:00.000Z' });
+      expect(calls).toBe(2);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe('(Phase 3) adversarial requests against the local listener', () => {
+  let server: Server;
+  let port: number;
+  const status = jest.fn(() => ({
+    enrolled: true,
+    deviceId: 'device-SENSITIVE-1',
+    heartbeat: 'connected' as const,
+    lastHeartbeatAt: null,
+    sourcesConfigured: 1,
+    storageRootsConfigured: 0,
+    sourceKinds: { postgresql: 1 },
+    enrollmentError: null,
+    sourcesError: null,
+    credentialProtection: 'dpapi' as const,
+  }));
+
+  beforeAll(async () => {
+    const config = loadAgentConfig({ GATEWAY_ALLOWED_ORIGINS: ALLOWED });
+    server = createAgentServer(config, { getGatewayStatus: status });
+    await new Promise<void>((resolve) => server.listen(0, config.bindHost, resolve));
+    port = (server.address() as AddressInfo).port;
+  });
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it('DNS rebinding: a request whose Host is an attacker hostname is refused (403) on /health', async () => {
+    const r = await httpReq(port, { path: '/health', headers: { host: `rebind.attacker.example:${port}` } });
+    expect(r.status).toBe(403);
+    expect(r.json?.error).toBe('INVALID_HOST');
+    expect(r.text).not.toContain('device-SENSITIVE-1');
+  });
+
+  it('DNS rebinding: the Host check also guards data-plane routes, before any routing', async () => {
+    const r = await httpReq(port, { path: '/session/establish', method: 'POST', headers: { host: 'rebind.attacker.example' }, body: '{}' });
+    expect(r.status).toBe(403);
+    expect(r.json?.error).toBe('INVALID_HOST');
+  });
+
+  it('a request with NO Host header at all is refused (raw HTTP/1.0)', async () => {
+    const { connect } = await import('node:net');
+    const raw = await new Promise<string>((resolve, reject) => {
+      const sock = connect(port, '127.0.0.1', () => sock.write('GET /health HTTP/1.0\r\n\r\n'));
+      let data = '';
+      sock.on('data', (c) => (data += c.toString()));
+      sock.on('end', () => resolve(data));
+      sock.on('error', reject);
+    });
+    expect(raw).toMatch(/^HTTP\/1\.[01] 403/);
+    expect(raw).not.toContain('device-SENSITIVE-1');
+  });
+
+  it('a browser caller (Origin present, even an allowlisted one) gets liveness only — no device status', async () => {
+    const r = await httpReq(port, { path: '/health', headers: { origin: ALLOWED } });
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ status: 'ok' });
+    expect(r.json?.gateway).toBeUndefined();
+    expect(r.text).not.toContain('device-SENSITIVE-1');
+  });
+
+  it('a hostile cross-origin caller is refused outright', async () => {
+    const r = await httpReq(port, { path: '/health', headers: { origin: 'https://evil.example' } });
+    expect(r.status).toBe(403);
+    expect(r.text).not.toContain('device-SENSITIVE-1');
+  });
+
+  it('the local non-browser caller (no Origin, loopback Host) does get status', async () => {
+    const r = await httpReq(port, { path: '/health' });
+    expect((r.json?.gateway as Record<string, unknown>)?.deviceId).toBe('device-SENSITIVE-1');
+  });
+
+  it.each(['PUT', 'DELETE', 'PATCH', 'TRACE', 'POST'])('%s /health is not allowed (405)', async (method) => {
+    const r = await httpReq(port, { path: '/health', method, ...(method === 'POST' ? { body: '{}' } : {}) });
+    expect(r.status).toBe(405);
+  });
+
+  it.each(['/pair', '/enroll', '/gateway/enroll', '/deenroll', '/config', '/sources', '/source/add', '/admin', '/restart', '/shutdown'])(
+    'no privileged/control route exists over HTTP: %s -> 404 (GET and POST)',
+    async (p) => {
+      expect((await httpReq(port, { path: p })).status).toBe(404);
+      expect((await httpReq(port, { path: p, method: 'POST', body: '{}' })).status).toBe(404);
+    },
+  );
+
+  it('an oversized body is refused before routing (413), even on an unknown route', async () => {
+    const r = await httpReq(port, { path: '/anything', method: 'POST', body: 'x'.repeat(10_000) });
+    expect(r.status).toBe(413);
+  });
+
+  it('query strings and path tricks do not reach a different handler', async () => {
+    expect((await httpReq(port, { path: '/health/../pair' })).status).toBe(404);
+    expect((await httpReq(port, { path: '/HEALTH' })).status).toBe(404);
+    expect((await httpReq(port, { path: '/health?gateway=1' })).status).toBe(200);
   });
 });

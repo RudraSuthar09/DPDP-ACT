@@ -21,8 +21,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { GatewayErrorCode } from '@dpdp/shared';
 import type { AgentConfig } from './config';
 import { evaluateOrigin } from './origin';
+import { evaluateHost } from './host-auth';
 import { inspectAuthHeader, GATEWAY_AUTH_HEADER } from './auth';
-import { buildHealth } from './health';
+import { buildHealth, type GatewayStatusSummary } from './health';
 import { DATA_PLANE_PATHS, handleDataPlaneRequest, type DataPlane } from './data-plane';
 import { STORAGE_PLANE_PATHS, handleStoragePlaneRequest, type StoragePlane } from './storage/storage-plane';
 
@@ -31,6 +32,7 @@ const MAX_CONTENT_LENGTH = 4096;
 
 const ERROR_MESSAGE: Record<string, string> = {
   INVALID_ORIGIN: 'Origin not allowed.',
+  INVALID_HOST: 'Host not allowed.',
   INVALID_TOKEN: 'Authentication header is malformed.',
   NOT_FOUND: 'Not found.',
   RATE_LIMITED: 'Request too large.',
@@ -47,7 +49,25 @@ export interface AgentServerOptions {
    *  browse/create/verify — a SEPARATE capability from the data plane). */
   storagePlane?: StoragePlane;
   log?: LogFn;
+  /** Phase 2 of the production build-out: a getter (not a static value) so
+   *  every /health call reports LIVE state — called fresh per request,
+   *  never cached. Absent only in tests that don't care about it; index.ts
+   *  always supplies one. */
+  getGatewayStatus?: () => GatewayStatusSummary;
 }
+
+const DISABLED_GATEWAY_STATUS: GatewayStatusSummary = {
+  enrolled: false,
+  deviceId: null,
+  heartbeat: null,
+  lastHeartbeatAt: null,
+  sourcesConfigured: 0,
+  storageRootsConfigured: 0,
+  sourceKinds: {},
+  enrollmentError: null,
+  sourcesError: null,
+  credentialProtection: 'none',
+};
 
 /** Read a bounded JSON body. The oversized guard already capped content-length,
  *  so this never buffers more than MAX_CONTENT_LENGTH bytes. */
@@ -101,11 +121,13 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
   const log: LogFn = options.log ?? (() => {});
   const dataPlane = options.dataPlane;
   const storagePlane = options.storagePlane;
+  const getGatewayStatus = options.getGatewayStatus ?? (() => DISABLED_GATEWAY_STATUS);
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     const method = req.method ?? 'GET';
     const path = (req.url ?? '/').split('?')[0] ?? '/';
     const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
     const originDecision = evaluateOrigin(origin, config.allowedOrigins);
+    const hostDecision = evaluateHost(req.headers.host, config);
 
     const done = (status: number, note: string): void => {
       // Metadata only: method, path, status, the origin DECISION (not the value),
@@ -118,6 +140,14 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
     if (Number.isFinite(contentLength) && contentLength > MAX_CONTENT_LENGTH) {
       sendError(res, 413, 'RATE_LIMITED');
       return done(413, 'oversized');
+    }
+
+    // 0b. Host: the DNS-rebinding defense (see host-auth.ts). Applies to EVERY
+    //     route, before any routing, and is independent of the Origin check:
+    //     a rebinding page's same-origin requests carry no Origin header.
+    if (!hostDecision.allowed) {
+      sendError(res, 403, 'INVALID_HOST');
+      return done(403, 'host-denied');
     }
 
     // 1. Origin: a presented Origin must be an exact allowlist match.
@@ -204,7 +234,12 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
     }
 
     // 5. Success — metadata only.
-    sendJson(res, 200, buildHealth(config.networkMode), corsHeaders);
+    // Detailed local status only for a non-browser caller on a loopback Host
+    // (the Gateway Setup app's main process). Browsers — including an
+    // allowlisted dashboard origin — get liveness only; the dashboard needs
+    // nothing more (frontend/src/lib/gateway-connection.ts).
+    const localStatusCaller = originDecision === 'no-origin' && hostDecision.loopback;
+    sendJson(res, 200, buildHealth(config.networkMode, localStatusCaller ? getGatewayStatus() : null), corsHeaders);
     return done(200, 'health');
   });
 }

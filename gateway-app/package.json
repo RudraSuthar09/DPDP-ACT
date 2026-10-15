@@ -1,0 +1,14 @@
+{
+  "name": "@dpdp/gateway-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DPDP Gateway Setup -- a small Electron wizard/status app for the Gateway-only product. It walks a client through pairing the installed Windows Service with their DPDP workspace, and afterward shows connection status. No business logic lives here: it writes config.json/sources.json through the SAME validated agent modules the service itself uses (via a one-time elevated helper -- see gateway-installer/service/elevated-helper.ps1) and reads status from the agent's own loopback /health. It never calls the DPDP backend directly and never sees a device token.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node src/workspace-url.test.js && node src/elevated-command.test.js && node src/request-file.test.js && node src/config-path.test.js && node src/wiring.test.js"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

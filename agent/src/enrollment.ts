@@ -28,7 +28,7 @@
  *      re-enrollment requires a brand-new code, exactly as a first install.
  */
 import { randomUUID, generateKeyPairSync } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import type { GatewayAgentPlatform } from '@dpdp/shared';
 
@@ -109,12 +109,44 @@ export function savePersistedCredential(stateDir: string, cred: PersistedCredent
   }
 }
 
+/** Whether a device credential FILE exists, without reading it. For callers
+ *  that cannot decrypt it (the elevated helper runs as a different Windows
+ *  account than the service that encrypted it). */
+export function hasPersistedCredentialFile(stateDir: string): boolean {
+  return existsSync(credentialFilePath(stateDir));
+}
+
 export function clearPersistedCredential(stateDir: string): void {
   try {
     rmSync(credentialFilePath(stateDir), { force: true });
   } catch {
     // Best-effort — de-enrollment must not fail just because local cleanup did.
   }
+}
+
+/**
+ * The credential-storage boundary (Phase 1 of the production build-out) —
+ * REPLACEABLE so a later OS-specific phase can swap in Windows Credential
+ * Manager / a Linux keyring/libsecret backend without touching
+ * `ensureEnrolled`/`deenroll` at all. `createFileCredentialStore` below is
+ * the one implementation that exists today, wrapping the exact three
+ * functions above (not a second storage mechanism — the free functions
+ * stay exactly as they were, including for existing tests that call them
+ * directly) — it is what every caller gets unless a future caller injects
+ * something else.
+ */
+export interface CredentialStore {
+  load(): PersistedCredential | null;
+  save(cred: PersistedCredential): void;
+  clear(): void;
+}
+
+export function createFileCredentialStore(stateDir: string): CredentialStore {
+  return {
+    load: () => loadPersistedCredential(stateDir),
+    save: (cred) => savePersistedCredential(stateDir, cred),
+    clear: () => clearPersistedCredential(stateDir),
+  };
 }
 
 // --- the control-plane HTTP client ------------------------------------------
@@ -304,6 +336,10 @@ export interface EnsureEnrolledOptions {
   agentVersion: string;
   displayName: string;
   log: (line: string) => void;
+  /** Defaults to `createFileCredentialStore(stateDir)` — pass a different
+   *  implementation (e.g. an OS-keychain-backed one, once built) to change
+   *  WHERE the credential lives without changing this function at all. */
+  credentialStore?: CredentialStore;
 }
 
 /**
@@ -312,7 +348,8 @@ export interface EnsureEnrolledOptions {
  * for a code on a run where a credential already exists.
  */
 export async function ensureEnrolled(options: EnsureEnrolledOptions): Promise<PersistedCredential> {
-  const existing = loadPersistedCredential(options.stateDir);
+  const store = options.credentialStore ?? createFileCredentialStore(options.stateDir);
+  const existing = store.load();
   if (existing) {
     options.log(`Using persisted Gateway credential (device ${existing.deviceId}).`);
     return existing;
@@ -324,13 +361,15 @@ export async function ensureEnrolled(options: EnsureEnrolledOptions): Promise<Pe
 
   options.log('No persisted credential found — enrolling with the supplied one-time code...');
 
-  // A real keypair is generated so the enrollment DTO receives a genuine PEM
-  // public key (its validation requires one) — the private half is discarded
-  // immediately. Nothing in the current protocol verifies a signature made
-  // with it (see shared/src/gateway.ts §3: "the actual key generation,
-  // storage and proof happen in a later phase"); persisting an unused private
-  // key here would be exactly the kind of unused infrastructure this project
-  // avoids building ahead of need.
+  // A keypair is generated because the enrollment DTO REQUIRES a genuine PEM
+  // public key (backend/src/modules/gateway/gateway.dto.ts's parseEnrollDevice
+  // rejects an empty one, and gateway_devices.public_key is NOT NULL) — this
+  // is not dead weight, the protocol depends on this value existing. What IS
+  // still a placeholder: nothing verifies a SIGNATURE made with it yet (see
+  // shared/src/gateway.ts §3), so the private half is discarded immediately
+  // rather than persisted for a capability that doesn't exist. Wiring real
+  // signature verification is a backend+protocol change, out of this phase's
+  // scope (see the Phase 1 report) — tracked, not silently dropped.
   const { publicKey } = generateKeyPairSync('ed25519', {
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
@@ -351,17 +390,45 @@ export async function ensureEnrolled(options: EnsureEnrolledOptions): Promise<Pe
     deviceToken: result.deviceToken,
     enrolledAt: new Date().toISOString(),
   };
-  savePersistedCredential(options.stateDir, credential);
+  store.save(credential);
   options.log(`Enrolled and persisted Gateway credential (device ${credential.deviceId}).`);
   return credential;
 }
 
+/** The heartbeat's own internal view of connectivity — "clear internal
+ *  connection states" (Phase 1 of the production build-out). Exposed as
+ *  `.getState()` on the handle `startHeartbeat` returns, never as a second
+ *  return value — see that function's own comment for why. */
+export type HeartbeatConnectionState = 'connecting' | 'connected' | 'degraded' | 'auth_failed' | 'stopped';
+
+/** A stop function (unchanged call signature — `handle()` stops the
+ *  heartbeat exactly as it always has) that ALSO exposes `.getState()` and
+ *  `.getLastSuccessAt()`, additively — nothing that already calls
+ *  `startHeartbeat()` and invokes the returned function needs to change.
+ *  `getLastSuccessAt` (Phase 2 of the production build-out) lets the local
+ *  /health endpoint report "last successful heartbeat" without a round trip
+ *  to the backend — the agent already knows this from its own loop. */
+export type HeartbeatHandle = (() => void) & {
+  getState: () => HeartbeatConnectionState;
+  getLastSuccessAt: () => string | null;
+};
+
 /**
- * Runs heartbeat on an interval. Returns a stop function. A transient failure
- * is logged, never thrown out of the interval — a network blip must not crash
+ * Runs heartbeat on an interval. Returns a handle: call it to stop, or read
+ * `.getState()` for the current connection state. A transient failure is
+ * logged, never thrown out of the interval — a network blip must not crash
  * the process. `onAuthFailure` fires only for a definitive rejection (401/403
  * — the token itself is no longer accepted, e.g. revoked centrally), so the
  * caller can decide whether to clear the local credential.
+ *
+ * Deliberately a RECURSIVE setTimeout, not setInterval: the next call is
+ * only ever scheduled once the current one has fully settled, so two
+ * heartbeat calls overlapping in flight is structurally impossible, not
+ * just discouraged — "no duplicate pollers, concurrent initialization
+ * races" (Phase 1). The tradeoff (and it's the right one here) is that the
+ * interval becomes "N seconds after the PREVIOUS call finished" rather than
+ * a fixed wall-clock cadence — fine for a heartbeat, where "don't pile up
+ * requests behind a slow network" matters far more than exact timing.
  */
 export function startHeartbeat(
   client: GatewayControlPlaneClient,
@@ -370,19 +437,50 @@ export function startHeartbeat(
   intervalSeconds: number,
   log: (line: string) => void,
   onAuthFailure: () => void,
-): () => void {
-  const timer = setInterval(() => {
-    client.heartbeat(credential.deviceToken, agentVersion).catch((err: unknown) => {
-      if (err instanceof ControlPlaneHttpError && (err.status === 401 || err.status === 403)) {
-        log('Gateway heartbeat rejected — this device credential is no longer valid (revoked or expired).');
-        onAuthFailure();
-        return;
-      }
-      log(`Gateway heartbeat failed (will retry): ${err instanceof Error ? err.message : String(err)}`);
-    });
-  }, intervalSeconds * 1000);
+): HeartbeatHandle {
+  let state: HeartbeatConnectionState = 'connecting';
+  let lastSuccessAt: string | null = null;
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const tick = (): void => {
+    client
+      .heartbeat(credential.deviceToken, agentVersion)
+      .then(() => {
+        state = 'connected';
+        lastSuccessAt = new Date().toISOString();
+      })
+      .catch((err: unknown) => {
+        if (err instanceof ControlPlaneHttpError && (err.status === 401 || err.status === 403)) {
+          state = 'auth_failed';
+          // Terminal: the token is dead, so stop calling the backend with it
+          // rather than retrying forever. Pairing again starts a new loop.
+          stopped = true;
+          log('Gateway heartbeat rejected — this device credential is no longer valid (revoked or expired). Heartbeat stopped.');
+          onAuthFailure();
+          return;
+        }
+        state = 'degraded';
+        log(`Gateway heartbeat failed (will retry): ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
+        if (stopped) return;
+        timer = setTimeout(tick, intervalSeconds * 1000);
+        timer.unref?.();
+      });
+  };
+
+  timer = setTimeout(tick, intervalSeconds * 1000);
   timer.unref?.();
-  return () => clearInterval(timer);
+
+  const handle = (() => {
+    stopped = true;
+    state = 'stopped';
+    if (timer) clearTimeout(timer);
+  }) as HeartbeatHandle;
+  handle.getState = () => state;
+  handle.getLastSuccessAt = () => lastSuccessAt;
+  return handle;
 }
 
 /**
@@ -392,11 +490,19 @@ export function startHeartbeat(
  * revoking the device centrally instead (item 8/9: re-enrollment afterward
  * still requires a new code either way, since this device's local credential
  * is gone regardless of which half succeeded).
+ *
+ * `credentialStore` defaults to `createFileCredentialStore(stateDir)` — same
+ * pattern as `EnsureEnrolledOptions` (Phase 1) — so every existing call site
+ * (including every test that passes just a bare `stateDir`) keeps working
+ * unchanged; a caller using the Windows DPAPI store (Phase 2) passes its own
+ * instance instead, and clear() still just removes the file regardless of
+ * which implementation produced it.
  */
 export async function deenroll(
   client: GatewayControlPlaneClient,
   credential: PersistedCredential,
   stateDir: string,
+  credentialStore: CredentialStore = createFileCredentialStore(stateDir),
 ): Promise<{ backendNotified: boolean }> {
   let backendNotified = false;
   try {
@@ -404,8 +510,8 @@ export async function deenroll(
     backendNotified = true;
   } catch {
     // Swallowed deliberately: a clean local uninstall must not be blocked by
-    // connectivity. clearPersistedCredential still runs below either way.
+    // connectivity. The local clear still runs below either way.
   }
-  clearPersistedCredential(stateDir);
+  credentialStore.clear();
   return { backendNotified };
 }

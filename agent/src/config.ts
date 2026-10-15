@@ -29,6 +29,11 @@ export interface AgentConfig {
   bindPort: number;
   /** Exact origins allowed to call the agent. Empty until configured. */
   allowedOrigins: readonly string[];
+  /** Extra hostnames accepted in the HTTP Host header, beyond the loopback
+   *  names and the bind host (GATEWAY_ALLOWED_HOSTS, comma-separated). Only
+   *  needed when browsers reach the agent through a DNS name (an Enterprise
+   *  Gateway endpoint); the Host check is what defeats DNS rebinding. */
+  allowedHosts: readonly string[];
   /** Where the agent reaches the central DPDP control plane (enrollment,
    *  heartbeat, pairing, de-enrollment). Required for any of that; a data-only
    *  local test setup can still omit it (data-plane calls don't need it). */
@@ -158,6 +163,16 @@ export function loadAgentConfig(
 
   const allowedOrigins = parseAllowedOrigins(env.GATEWAY_ALLOWED_ORIGINS);
 
+  const allowedHosts = (env.GATEWAY_ALLOWED_HOSTS ?? '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase())
+    .filter((h) => h.length > 0);
+  for (const h of allowedHosts) {
+    if (!isValidBindHost(h)) {
+      throw new AgentConfigError('GATEWAY_ALLOWED_HOSTS contains an invalid hostname. List bare hostnames, no ports or wildcards.');
+    }
+  }
+
   let controlPlaneUrl: string | null = null;
   const cp = env.GATEWAY_CONTROL_PLANE_URL?.trim();
   if (cp) {
@@ -195,6 +210,7 @@ export function loadAgentConfig(
     bindHost,
     bindPort,
     allowedOrigins,
+    allowedHosts,
     controlPlaneUrl,
     networkMode: isLoopbackHost(bindHost) ? 'loopback' : 'non-loopback',
     stateDir,

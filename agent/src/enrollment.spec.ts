@@ -163,35 +163,93 @@ describe('Phase 3C — heartbeat lifecycle', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
 
-  it('6. heartbeat fires on the configured interval using the persisted credential', () => {
+  it('6. heartbeat fires on the configured interval using the persisted credential', async () => {
     const client = fakeClient();
     const stop = startHeartbeat(client, CRED, '1.0.0', 30, () => {}, () => {});
     expect(client.heartbeat).not.toHaveBeenCalled();
-    jest.advanceTimersByTime(30_000);
+    await jest.advanceTimersByTimeAsync(30_000);
     expect(client.heartbeat).toHaveBeenCalledWith(CRED.deviceToken, '1.0.0');
-    jest.advanceTimersByTime(30_000);
+    // Recursive setTimeout (Phase 1 overlap-safety fix): the NEXT call is
+    // only scheduled once the first one's promise chain has settled, so the
+    // second tick needs the async variant to actually land within this
+    // window — advanceTimersByTimeAsync drains microtasks between timer
+    // advances for exactly this reason.
+    await jest.advanceTimersByTimeAsync(30_000);
     expect(client.heartbeat).toHaveBeenCalledTimes(2);
     stop();
-    jest.advanceTimersByTime(60_000);
+    await jest.advanceTimersByTimeAsync(60_000);
     expect(client.heartbeat).toHaveBeenCalledTimes(2); // no more ticks after stop()
+  });
+
+  it('never overlaps: a heartbeat call still in flight is not joined by a second concurrent call', async () => {
+    let resolveFirst: (() => void) | undefined;
+    const slowHeartbeat = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    const client = fakeClient({ heartbeat: slowHeartbeat });
+    const stop = startHeartbeat(client, CRED, '1.0.0', 10, () => {}, () => {});
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(slowHeartbeat).toHaveBeenCalledTimes(1);
+
+    // Even though two more full intervals elapse while the first call is
+    // still unresolved, no second/third call is made — the next tick is
+    // only ever SCHEDULED after the in-flight one settles.
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(slowHeartbeat).toHaveBeenCalledTimes(1);
+
+    resolveFirst?.();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(slowHeartbeat).toHaveBeenCalledTimes(2);
+    stop();
   });
 
   it('a revoked/expired credential (401/403) triggers onAuthFailure; a transient failure does not', async () => {
     const authFailure = jest.fn();
     const rejecting = fakeClient({ heartbeat: jest.fn().mockRejectedValue(new ControlPlaneHttpError(403, { error: 'AGENT_REVOKED' })) });
-    startHeartbeat(rejecting, CRED, '1.0.0', 10, () => {}, authFailure);
-    jest.advanceTimersByTime(10_000);
-    await Promise.resolve(); // let the rejected promise's .catch() run
-    await Promise.resolve();
+    const handle = startHeartbeat(rejecting, CRED, '1.0.0', 10, () => {}, authFailure);
+    await jest.advanceTimersByTimeAsync(10_000);
     expect(authFailure).toHaveBeenCalledTimes(1);
+    expect(handle.getState()).toBe('auth_failed');
 
     const authFailure2 = jest.fn();
     const flaky = fakeClient({ heartbeat: jest.fn().mockRejectedValue(new Error('network blip')) });
-    startHeartbeat(flaky, CRED, '1.0.0', 10, () => {}, authFailure2);
-    jest.advanceTimersByTime(10_000);
-    await Promise.resolve();
-    await Promise.resolve();
+    const handle2 = startHeartbeat(flaky, CRED, '1.0.0', 10, () => {}, authFailure2);
+    await jest.advanceTimersByTimeAsync(10_000);
     expect(authFailure2).not.toHaveBeenCalled();
+    expect(handle2.getState()).toBe('degraded');
+  });
+
+  it('getState() reports connecting before the first tick and connected after a successful one', async () => {
+    const client = fakeClient();
+    const handle = startHeartbeat(client, CRED, '1.0.0', 10, () => {}, () => {});
+    expect(handle.getState()).toBe('connecting');
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(handle.getState()).toBe('connected');
+    handle();
+    expect(handle.getState()).toBe('stopped');
+  });
+
+  it('getLastSuccessAt() is null before any successful heartbeat, then an ISO timestamp after one — and is never cleared by a later transient failure', async () => {
+    const heartbeat = jest.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('network blip'));
+    const client = fakeClient({ heartbeat });
+    const handle = startHeartbeat(client, CRED, '1.0.0', 10, () => {}, () => {});
+    expect(handle.getLastSuccessAt()).toBeNull();
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    const firstSuccess = handle.getLastSuccessAt();
+    expect(firstSuccess).not.toBeNull();
+    expect(() => new Date(firstSuccess!).toISOString()).not.toThrow();
+
+    // A later transient failure must not erase the last KNOWN-good timestamp
+    // — that is exactly what a status UI needs to show "last seen at ..."
+    // through a degraded patch, not null.
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(handle.getState()).toBe('degraded');
+    expect(handle.getLastSuccessAt()).toBe(firstSuccess);
   });
 });
 

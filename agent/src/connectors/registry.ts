@@ -88,22 +88,22 @@ function createConnector(cfg: GatewaySourceConfig, dbClientFactory: DbClientFact
   throw new ConnectorError('UNSUPPORTED_SOURCE');
 }
 
-/** Parse agent source config from an env var (JSON). Network-agnostic; the
- *  operator supplies sourceId/kind/roots. Empty if unset. */
-export function loadSourceConfig(env: NodeJS.ProcessEnv = process.env): GatewaySourceConfig[] {
-  const raw = env.GATEWAY_SOURCES?.trim();
-  if (!raw) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error('GATEWAY_SOURCES must be valid JSON: [{ "sourceId", "kind", "roots": [] }].');
-  }
-  if (!Array.isArray(parsed)) throw new Error('GATEWAY_SOURCES must be a JSON array.');
+/**
+ * The shared validation body — used by BOTH the env-var path (loadSourceConfig,
+ * unchanged, still the only thing Docker/dev ever sets) and the file-based
+ * path (sources-file.ts, which also handles the encrypted on-disk format and
+ * deliberately lives outside connectors/ so this directory never gains a
+ * file-write path). One parser, two places entries can come from — not a
+ * second, divergent implementation of "what a valid source entry looks
+ * like". `label` is only used in error messages, so a failure names WHICH
+ * source actually had the problem (the env var, or the exact file path).
+ */
+export function parseSourceConfigEntries(parsed: unknown, label: string): GatewaySourceConfig[] {
+  if (!Array.isArray(parsed)) throw new Error(`${label} must be a JSON array.`);
   return parsed.map((entry) => {
     const e = entry as Record<string, unknown>;
     if (typeof e.sourceId !== 'string' || typeof e.kind !== 'string') {
-      throw new Error('Each GATEWAY_SOURCES entry needs { sourceId, kind }.');
+      throw new Error(`Each entry in ${label} needs { sourceId, kind }.`);
     }
     const kind = e.kind as DataSourceKind;
     const cfg: GatewaySourceConfig = { sourceId: e.sourceId, kind };
@@ -123,6 +123,21 @@ export function loadSourceConfig(env: NodeJS.ProcessEnv = process.env): GatewayS
     }
     return cfg;
   });
+}
+
+/** Parse agent source config from an env var (JSON). Network-agnostic; the
+ *  operator supplies sourceId/kind/roots. Empty if unset. Unchanged — still
+ *  exactly what Docker/dev/CI have always set via GATEWAY_SOURCES. */
+export function loadSourceConfig(env: NodeJS.ProcessEnv = process.env): GatewaySourceConfig[] {
+  const raw = env.GATEWAY_SOURCES?.trim();
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('GATEWAY_SOURCES must be valid JSON: [{ "sourceId", "kind", "roots": [] }].');
+  }
+  return parseSourceConfigEntries(parsed, 'GATEWAY_SOURCES');
 }
 
 function parseConnection(c: Record<string, unknown>): DbConnection {
