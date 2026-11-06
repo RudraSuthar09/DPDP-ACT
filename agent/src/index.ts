@@ -25,11 +25,10 @@ import { withRetry } from './retry';
 import { createAgentServer } from './server';
 import { type GatewayStatusSummary } from './health';
 import { AGENT_VERSION, PROTOCOL_VERSION } from './version';
-import { ConnectorRegistry } from './connectors/registry';
+import { ConnectorRegistry, canRead } from './connectors/registry';
 import { SessionStore } from './session-store';
 import { DataPlane } from './data-plane';
-import { StorageRegistry, loadStorageRootConfig } from './storage/registry';
-import { StorageSessionStore } from './storage/storage-session-store';
+import { StorageRegistry, loadStorageRootConfig, mergeStorageRoots, storageRootsFromSources, type GatewayStorageRootConfig } from './storage/registry';import { StorageSessionStore } from './storage/storage-session-store';
 import { StoragePlane } from './storage/storage-plane';
 import { startDeliveryPoller } from './delivery/poller';
 import { loadDeliveryConfig, type DeliveryConfig } from './delivery/delivery-config';
@@ -37,10 +36,13 @@ import { acquireSingleInstanceLock, SingleInstanceError, type SingleInstanceLock
 import { createDpapiCredentialStore } from './credential-store-windows';
 import { readPendingEnrollment, clearPendingEnrollment } from './pending-enrollment';
 import { dpapiSelfTest, isDpapiPlatform } from './dpapi';
-import { createDpapiSecretProtector, SOURCES_FILE_NAME, type SecretProtector, type SourcesFileErrorCode } from './sources-file';
+import { createDpapiSecretProtector, SOURCES_FILE_NAME, type SecretProtector } from './sources-file';
+import { RevokedFolders } from './revoked-folders';
 import {
   classifyEnrollmentFailure,
   isRetryableEnrollmentError,
+  applyFolderRevocations,
+  applyPendingAuthorizations,
   prepareSources,
   processDeenrollRequest,
   type EnrollmentErrorCode,
@@ -61,6 +63,12 @@ import { resolveProxySettings, type FileProxyConfig, type ProxyCredentials } fro
 import { loadProxyCredentials, ProxyCredentialsError, type ProxyCredentialsErrorCode } from './proxy-credentials';
 import { buildTrustedCaList, summarizeTlsTrust, type TlsTrustSettings } from './tls-trust';
 import { createTransport, type Transport } from './transport';
+import { resolveSourceTls } from './source-tls';
+import { localListenerEndpoint, sanitizeDashboardOrigins } from './dashboard-link';
+
+/** Process exit code when the local listener cannot bind (port in use by
+ *  another program or account). Distinct from 1 (configuration/other). */
+const EXIT_LOCAL_PORT_UNAVAILABLE = 3;
 
 /** The one place that decides how secrets are stored: DPAPI on Windows,
  *  plain files elsewhere (development/CI/Docker only). */
@@ -306,37 +314,119 @@ async function main(): Promise<void> {
   // CREDENTIAL_REVOKED — no further calls are made with that token.
   let heartbeatHandle: HeartbeatHandle | undefined;
   let stopDeliveryPoller: (() => void) | undefined;
-  if (credential && client) {
-    heartbeatHandle = startHeartbeat(client, credential, AGENT_VERSION, config.heartbeatIntervalSeconds, log, () => {
-      stopDeliveryPoller?.();
-      stopDeliveryPoller = undefined;
-      credentialStore.clear();
-      enrollmentError = 'CREDENTIAL_REVOKED';
-    });
-    stopDeliveryPoller = startDeliveryPoller({
+  // Folders removed in DPDP. Both registries below consult this on every
+  // lookup, so a removal takes effect in this running process rather than at
+  // the next restart. It only ever grows, and only with ids DPDP itself
+  // reported as revoked.
+  const revokedFolders = new RevokedFolders();
+  const sourcesFilePath = path.join(config.stateDir, SOURCES_FILE_NAME);
+  /** Fetches the removals DPDP has recorded and applies them BOTH in memory
+   *  (effective immediately) and in sources.json (so they survive a restart).
+   *  Safe to call repeatedly; a failure changes nothing. */
+  const syncRevokedFolders = async (): Promise<void> => {
+    if (!credential || !client) return;
+    const before = revokedFolders.size;
+    try {
+      const revoked = await client.listFolderRevocations(credential.deviceToken);
+      revokedFolders.add(...revoked.revokedSourceIds, ...revoked.revokedStorageRootIds);
+    } catch {
+      // Logged by applyFolderRevocations below; nothing to undo here.
+    }
+    await applyFolderRevocations({
+      sourcesFilePath,
+      protector,
       client,
       deviceToken: credential.deviceToken,
-      pollIntervalSeconds: deliveryConfig.pollIntervalSeconds,
       log,
     });
+    if (revokedFolders.size > before) {
+      logger.info(`${revokedFolders.size - before} folder(s) removed in DPDP are no longer served by this Gateway.`);
+    }
+  };
+  // Dashboard origins learned from the authenticated heartbeat (dashboard-link.ts);
+  // the local listener accepts them in addition to config.allowedOrigins.
+  let dashboardOrigins: readonly string[] = [];
+  if (credential && client) {
+    heartbeatHandle = startHeartbeat(
+      client,
+      credential,
+      AGENT_VERSION,
+      config.heartbeatIntervalSeconds,
+      log,
+      () => {
+        stopDeliveryPoller?.();
+        stopDeliveryPoller = undefined;
+        credentialStore.clear();
+        enrollmentError = 'CREDENTIAL_REVOKED';
+        dashboardOrigins = [];
+      },
+      {
+        localEndpoint: localListenerEndpoint(config),
+        // Every successful check-in is also when removals are picked up —
+        // which is what makes a removal recorded while this Gateway was
+        // offline apply by itself on reconnect.
+        onCheckIn: () => {
+          void syncRevokedFolders();
+        },
+        onDashboardOrigins: (raw) => {
+          const next = sanitizeDashboardOrigins(raw);
+          if (next.join(' ') !== dashboardOrigins.join(' ')) {
+            logger.info(`DPDP dashboard origins accepted by the local listener: ${next.length}`);
+          }
+          dashboardOrigins = next;
+        },
+      },
+    );
+  }
+
+  // Folders an administrator approved in Gateway Setup: exchange each one for
+  // its DPDP record ids BEFORE the sources are loaded, so a folder approved a
+  // moment ago is already serving when this start finishes. Nobody copies an
+  // id by hand; the local path never leaves this computer.
+  let pendingFolderAuthorizations = 0;
+  if (!process.env.GATEWAY_SOURCES?.trim()) {
+    const authResult = await applyPendingAuthorizations({
+      stateDir: config.stateDir,
+      sourcesFilePath,
+      protector,
+      client,
+      deviceToken: credential?.deviceToken ?? null,
+      log,
+    });
+    pendingFolderAuthorizations = authResult.pending;
+    if (authResult.applied > 0) logger.info(`Registered ${authResult.applied} authorized folder(s) with DPDP.`);
+    // ...and in the other direction, BEFORE the registries are built, so a
+    // folder removed while this Gateway was off is never served even once.
+    await syncRevokedFolders();
   }
 
   // Sources: queued changes, legacy migration, then load (see startup-tasks.ts).
   // An invalid GATEWAY_SOURCES env var is still a fatal configuration error.
-  const sourcesFilePath = path.join(config.stateDir, SOURCES_FILE_NAME);
-  let sourcesError: SourcesFileErrorCode | null = null;
+  let sourcesError: GatewayStatusSummary['sourcesError'] = null;
   let dataPlane: DataPlane | undefined;
   let sourceKinds: Record<string, number> = {};
   let sourcesConfigured = 0;
+  // Manage-sources entries whose folder the administrator explicitly allowed
+  // DPDP to WRITE to (access 'write'/'both'); they feed the storage plane below.
+  let writeGrants: GatewayStorageRootConfig[] = [];
   try {
     const prepared = prepareSources({ stateDir: config.stateDir, sourcesFilePath, env: process.env, protector, log });
     sourcesError = prepared.error;
-    const sources = prepared.sources;
-    sourcesConfigured = sources.length;
-    sourceKinds = sources.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.kind]: (acc[s.kind] ?? 0) + 1 }), {});
+    // Read and write are separate grants: only readable entries are data
+    // sources (counted, listed, and served by the data plane).
+    const readable = prepared.sources.filter(canRead);
+    writeGrants = storageRootsFromSources(prepared.sources);
+    sourcesConfigured = readable.length;
+    sourceKinds = readable.reduce<Record<string, number>>((acc, s) => ({ ...acc, [s.kind]: (acc[s.kind] ?? 0) + 1 }), {});
+    // Database TLS trust (PostgreSQL sslCaFile): a source whose CA cannot be
+    // loaded is left out rather than connected without it.
+    const tlsResolved = resolveSourceTls(readable, configFilePath);
+    tlsResolved.messages.forEach((m) => logger.error(m));
+    if (tlsResolved.rejected > 0 && !sourcesError) sourcesError = 'TLS_CA_INVALID';
+    const sources = tlsResolved.sources;
     if (sources.length > 0 && credential && client) {
       dataPlane = new DataPlane(
-        new ConnectorRegistry(sources),
+        new ConnectorRegistry(sources, undefined, revokedFolders),
         new SessionStore(),
         { tenantId: credential.tenantId, deviceId: credential.deviceId },
         { redeemPairing: (input) => client.redeemPairing(credential.deviceToken, input) },
@@ -352,14 +442,24 @@ async function main(): Promise<void> {
   }
 
   // Storage plane: same gating as the data plane, separate config/registry.
+  // Its roots = GATEWAY_STORAGE_ROOTS (unchanged) + the explicit write grants
+  // from Manage sources. The SAME registry is the only way the delivery
+  // poller below can reach a folder to write, so write authorization is
+  // enforced in this process for both paths.
   let storagePlane: StoragePlane | undefined;
+  let storageRegistry: StorageRegistry | undefined;
   let storageRootsConfiguredCount = 0;
   try {
-    const storageRoots = loadStorageRootConfig();
+    const merged = mergeStorageRoots(loadStorageRootConfig(), writeGrants);
+    for (const id of merged.conflicts) {
+      logger.error(`Storage location ${id} is authorized for two different folders; only the GATEWAY_STORAGE_ROOTS folder is used.`);
+    }
+    const storageRoots = merged.roots;
     storageRootsConfiguredCount = storageRoots.length;
     if (storageRoots.length > 0 && credential && client) {
+      storageRegistry = new StorageRegistry(storageRoots, revokedFolders);
       storagePlane = new StoragePlane(
-        new StorageRegistry(storageRoots),
+        storageRegistry,
         new StorageSessionStore(),
         { tenantId: credential.tenantId, deviceId: credential.deviceId },
         { redeemStoragePairing: (input) => client.redeemStoragePairing(credential.deviceToken, input) },
@@ -373,6 +473,18 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Started after the storage plane, so it knows which write-authorized
+  // storage locations this Gateway can deliver Enterprise copies into.
+  if (credential && client) {
+    stopDeliveryPoller = startDeliveryPoller({
+      client,
+      deviceToken: credential.deviceToken,
+      pollIntervalSeconds: deliveryConfig.pollIntervalSeconds,
+      storageRegistry,
+      log,
+    });
+  }
+
   // Live local status, served only to non-browser loopback callers (see
   // server.ts). Read fresh on every request.
   const getGatewayStatus = (): GatewayStatusSummary => ({
@@ -382,6 +494,7 @@ async function main(): Promise<void> {
     lastHeartbeatAt: heartbeatHandle?.getLastSuccessAt() ?? null,
     sourcesConfigured,
     storageRootsConfigured: storageRootsConfiguredCount,
+    pendingFolderAuthorizations,
     sourceKinds,
     enrollmentError,
     sourcesError,
@@ -394,7 +507,31 @@ async function main(): Promise<void> {
     },
   });
 
-  const server = createAgentServer(config, { dataPlane, storagePlane, log, getGatewayStatus });
+  const server = createAgentServer(config, { dataPlane, storagePlane, log, getGatewayStatus, getDashboardOrigins: () => dashboardOrigins });
+
+  // Without this handler a busy port crashed the process with an unexplained
+  // exit code 1 (Phase 6: the full-stack Docker "agent" container publishes
+  // 0.0.0.0:7071 as the desktop user, and Windows refuses another ACCOUNT --
+  // the service's -- a bind to 127.0.0.1:7071 with EACCES). Exit with a
+  // distinct code (recorded by WinSW in the Windows Application event log,
+  // readable without admin) and say what to do. The service's recovery
+  // settings restart it, so it comes up by itself once the port is free.
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE' || err.code === 'EACCES') {
+      logger.error(
+        `Cannot open the local Gateway port ${config.bindHost}:${config.bindPort} (${err.code}): another program is already using port ${config.bindPort}` +
+          ' (for example the DPDP Docker "agent" container, which publishes the same port). Only one DPDP Gateway can run on a computer:' +
+          ` stop the other program, or set "bindPort" in config.json. Exiting with code ${EXIT_LOCAL_PORT_UNAVAILABLE}; the service restarts automatically.`,
+      );
+    } else {
+      logger.error(`Cannot open the local Gateway port ${config.bindHost}:${config.bindPort} (${err.code ?? 'error'}).`);
+    }
+    heartbeatHandle?.();
+    stopDeliveryPoller?.();
+    instanceLock.release();
+    void transport.close();
+    process.exit(EXIT_LOCAL_PORT_UNAVAILABLE);
+  });
 
   server.listen(config.bindPort, config.bindHost, () => {
     logger.info(

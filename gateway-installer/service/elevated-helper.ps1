@@ -9,6 +9,7 @@
     Actions:
       pair        queue a pairing code + workspace URL for the service
       add-source  queue one data source (may contain a database password)
+      authorize-folder  queue one folder the administrator approved (no secret)
       remove      ask the service to de-enrol and clear its credential
       restart     restart the service
 
@@ -35,7 +36,7 @@
 #Requires -RunAsAdministrator
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('pair', 'add-source', 'remove', 'restart')]
+  [ValidateSet('pair', 'add-source', 'authorize-folder', 'remove', 'restart')]
   [string]$Action,
 
   [Parameter(Mandatory = $true)]
@@ -133,6 +134,7 @@ try {
   switch ($Action) {
     'pair'       { Invoke-Cli 'pair' $requestText; Restart-Gateway }
     'add-source' { Invoke-Cli 'add-source' $requestText; Restart-Gateway }
+    'authorize-folder' { Invoke-Cli 'authorize-folder' $requestText; Restart-Gateway }
     'remove'     { Invoke-Cli 'remove' $null; Restart-Gateway }
     'restart'    { Restart-Gateway }
   }

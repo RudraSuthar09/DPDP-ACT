@@ -1,22 +1,26 @@
 <!--
   WinSW (https://github.com/winsw/winsw) service descriptor for the
-  Gateway-only product (Phase 2 of the production build-out). This is a
-  SEPARATE packaging path from the existing installer/ (Docker Compose,
-  no Windows service) -- do not confuse the two.
+  Gateway-only product. This is a SEPARATE packaging path from the existing
+  installer/ (Docker Compose, no Windows service); do not confuse the two.
+
+  NOTE: XML comments must never contain two consecutive hyphens (the XML
+  spec forbids it, and WinSW refuses to load the file). Write ";" or ":"
+  instead. gateway-installer/tests/validate-service-xml.ps1 and the release
+  build check this with a real XML parser and with WinSW itself.
 
   WinSW wraps a plain `node.exe dist/index.js` as a real Windows Service:
   restart-on-failure, structured log redirection, clean stop semantics. The
-  agent itself is UNCHANGED by this -- it is still just a Node process that
+  agent itself is UNCHANGED by this: it is still just a Node process that
   reads config.json/env exactly as it always has (see agent/README.md); it
   has no idea it is running under a service wrapper.
 
   This file is copied into the install directory next to DPDPGatewayAgent.exe
-  (a renamed copy of WinSW-x64.exe -- WinSW matches its own exe's basename to
+  (a renamed copy of WinSW-x64.exe; WinSW matches its own exe's basename to
   find its config) by scripts/build-agent-bundle.ps1. Paths below are relative
   to the install directory, matching Inno Setup's {app} layout:
-    {app}\runtime\node.exe        -- vendored Node.js runtime (no system install)
-    {app}\agent\dist\index.js     -- the built agent (pnpm deploy --prod output)
-    {app}\DPDPGatewayAgent.exe    -- WinSW itself (service entry point)
+    {app}\runtime\node.exe        = vendored Node.js runtime (no system install)
+    {app}\agent\dist\index.js     = the built agent (pnpm deploy, production deps)
+    {app}\DPDPGatewayAgent.exe    = WinSW itself (service entry point)
 -->
 <service>
   <id>DPDPGatewayAgent</id>
@@ -29,25 +33,24 @@
   <workingdirectory>%BASE%</workingdirectory>
 
   <!--
-    No GATEWAY_* environment variables are set here on purpose -- Phase 1's
-    config.json / sources.json (both resolved from OS-conventional
-    %PROGRAMDATA%-based paths -- see agent/src/config-paths.ts) are the
-    install-time configuration surface; this keeps the service definition
-    itself free of anything that changes between installs, so re-running
-    this exact XML after an upgrade never needs edits.
+    No GATEWAY_* environment variables are set here on purpose: config.json /
+    sources.json (both resolved from OS-conventional %PROGRAMDATA%-based
+    paths; see agent/src/config-paths.ts) are the install-time configuration
+    surface. This keeps the service definition itself free of anything that
+    changes between installs, so re-running this exact XML after an upgrade
+    never needs edits.
   -->
 
   <!--
-    Logs: WinSW's own stdout/stderr capture (NOT a second logger -- the agent
-    already redacts secrets before writing any line, see agent/src/logger.ts;
-    WinSW only redirects that already-safe output to disk). Rotated by size
+    Logs: WinSW's own stdout/stderr capture (NOT a second logger; the agent
+    already redacts secrets before writing any line, see agent/src/logger.ts,
+    and WinSW only redirects that already-safe output to disk). Rotated by size
     so a long-running service never fills the disk. Lives under
-    %ProgramData%\DPDP Gateway\state\logs (see agent/src/config-paths.ts's
-    header and install-service.ps1's ACL section for why state is under
-    %ProgramData%, not under {app}/%BASE% -- {app} / Program Files is
-    read-only for the service account by design) -- NOT a relative path
-    under %BASE%, since the state directory is a SIBLING of the install
-    directory, not nested inside it.
+    %ProgramData%\DPDP Gateway\state\logs (see install-service.ps1's ACL
+    section for why state is under %ProgramData%: {app} / Program Files is
+    read-only for the service account by design). NOT a relative path under
+    %BASE%, since the state directory is a SIBLING of the install directory,
+    not nested inside it.
   -->
   <log mode="roll-by-size">
     <logpath>%ProgramData%\DPDP Gateway\state\logs</logpath>
@@ -57,10 +60,10 @@
 
   <!--
     Restart-on-failure: WinSW restarts the wrapped node.exe process itself
-    (the FIRST line of defence -- faster and finer-grained than the SCM's
-    own "sc failure" recovery, which only sees WinSW.exe as a whole). Reset
-    the failure counter after an hour of healthy running, so an old crash
-    from days ago never counts against today's budget, and a genuinely
+    (the FIRST line of defence: faster and finer-grained than the SCM's own
+    "sc failure" recovery, which only sees WinSW.exe as a whole). Reset the
+    failure counter after an hour of healthy running, so an old crash from
+    days ago never counts against today's budget, and a genuinely
     crash-looping install is still capped rather than restarting forever.
   -->
   <onfailure action="restart" delay="5 sec"/>
@@ -84,7 +87,7 @@
     No password to store or rotate; isolated from other services and users.
 
     Outbound proxy and corporate CA trust are configured in config.json
-    ("proxy", "tls") and proxy-credentials.json, NOT with <env> entries here:
+    ("proxy", "tls") and proxy-credentials.json, NOT with env entries here:
     this file is replaced on every upgrade, and environment variables set
     here would be visible to every local user.
   -->

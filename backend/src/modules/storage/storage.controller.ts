@@ -19,6 +19,8 @@ import { STORAGE_MODULE_KEYS, type StorageModuleKey } from '@dpdp/shared';
 import { TenantGuard } from '../../tenancy/tenant.guard';
 import { Roles, AllowGatewayDevice } from '../identity/rbac/roles.decorator';
 import { Audited } from '../audit/audited.decorator';
+import { CapabilityGuard } from '../capability/capability.guard';
+import { RequireCapability } from '../capability/capability.decorator';
 import type { RequestWithGatewayDevice } from '../../tenancy/gateway-device.middleware';
 import { StorageService } from './storage.service';
 import { StorageGatewayService } from './storage-gateway.service';
@@ -112,6 +114,8 @@ export class StorageController {
    * is derived from the root's own binding, never a caller-supplied id.
    */
   @Post('roots/:id/gateway-pairings')
+  @UseGuards(CapabilityGuard)
+  @RequireCapability('enterpriseGateway')
   @Roles(...MANAGE)
   @Audited('storage.gateway_pairing.created')
   @HttpCode(HttpStatus.OK)

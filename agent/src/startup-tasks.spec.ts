@@ -5,6 +5,7 @@ import { DpapiError } from './dpapi';
 import {
   ControlPlaneHttpError,
   EnrollmentRequiredError,
+  UnexpectedServerResponseError,
   createFileCredentialStore,
   type GatewayControlPlaneClient,
   type PersistedCredential,
@@ -52,6 +53,11 @@ describe('enrollment failure classification', () => {
     [new TransportError('TLS_HOSTNAME_MISMATCH', 'm', true, false, null), 'TLS_CERTIFICATE_REJECTED', false],
     [new TransportError('DNS_FAILED', 'm', false, true, 'ENOTFOUND'), 'BACKEND_UNREACHABLE', true],
     [new TransportError('TIMEOUT', 'm', false, true, 'ETIMEDOUT'), 'BACKEND_UNREACHABLE', true],
+    // Phase 6: the wrong address (e.g. the dashboard's) is not a bad code and not worth retrying
+    [new UnexpectedServerResponseError(404), 'WRONG_SERVER', false],
+    [new UnexpectedServerResponseError(200), 'WRONG_SERVER', false],
+    [new ControlPlaneHttpError(404, null), 'WRONG_SERVER', false],
+    [new ControlPlaneHttpError(405, null), 'WRONG_SERVER', false],
   ])('%p -> %s (retryable: %s)', (err, code, retryable) => {
     expect(classifyEnrollmentFailure(err)).toBe(code);
     expect(isRetryableEnrollmentError(err)).toBe(retryable);

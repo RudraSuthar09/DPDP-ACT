@@ -1,5 +1,12 @@
 import { BadRequestException } from '@nestjs/common';
-import { CONSENT_FORM_FIELD_TYPES } from '@dpdp/shared';
+import {
+  CONSENT_FORM_FIELD_TYPES,
+  CONSENT_FORM_FILE_KINDS,
+  DEFAULT_UPLOAD_MAX_BYTES,
+  UPLOAD_MAX_BYTES_CEILING,
+  UPLOAD_MIN_BYTES,
+  type ConsentFormFileKind,
+} from '@dpdp/shared';
 
 /** Request parsing for the new-UX consent forms — hand-written and total. */
 
@@ -220,27 +227,89 @@ export interface SaveCustomerFieldDtoInput {
    *  name (data_principals.display_name) — at most one per form, and
    *  independent of isIdentifier (may be the same field or a different one). */
   isCustomerName: boolean;
+  /** Optional instructions for the respondent. */
+  description: string | null;
+  /** `file` fields only; null for every other type. */
+  allowedFileKinds: ConsentFormFileKind | null;
+  maxFileBytes: number | null;
 }
 
 /** Parses a field save: label + type + required + isIdentifier +
- *  isCustomerName, nothing else. `fieldType` must be one of
- *  CONSENT_FORM_FIELD_TYPES (text/pdf/excel) — enforced here, not just
- *  hidden in the UI, so it cannot be bypassed by a direct API call. The
- *  one-per-form rules are enforced by the DB's partial unique indexes, not
- *  here — this function never guesses or defaults which field that should be. */
+ *  isCustomerName + optional instructions, plus the upload configuration a
+ *  `file` field needs. `fieldType` must be one of CONSENT_FORM_FIELD_TYPES —
+ *  enforced here, not just hidden in the UI, so it cannot be bypassed by a
+ *  direct API call. The one-per-form rules are enforced by the DB's partial
+ *  unique indexes, not here — this function never guesses or defaults which
+ *  field that should be.
+ *
+ *  The upload configuration is accepted ONLY for a `file` field and is
+ *  rejected outright on any other type, rather than ignored: a caller that
+ *  sends a 100 MB cap for a text field has misunderstood something, and
+ *  silently dropping it would hide that. */
 export function parseSaveCustomerField(body: unknown): SaveCustomerFieldDtoInput {
   const obj = asObject(body);
   const fieldType = requireString(obj, 'fieldType', { min: 1, max: 64 });
   if (!(CONSENT_FORM_FIELD_TYPES as readonly string[]).includes(fieldType)) {
     throw new BadRequestException(`fieldType must be one of: ${CONSENT_FORM_FIELD_TYPES.join(', ')}.`);
   }
+  const description = optionalText(obj, 'description', 500);
+  const isFileUpload = fieldType === 'file';
+  const kindsRaw = obj['allowedFileKinds'];
+  const maxRaw = obj['maxFileBytes'];
+
+  if (!isFileUpload) {
+    if (kindsRaw !== undefined && kindsRaw !== null) {
+      throw new BadRequestException('allowedFileKinds applies only to a file upload field.');
+    }
+    if (maxRaw !== undefined && maxRaw !== null) {
+      throw new BadRequestException('maxFileBytes applies only to a file upload field.');
+    }
+  }
+
+  let allowedFileKinds: ConsentFormFileKind | null = null;
+  let maxFileBytes: number | null = null;
+  if (isFileUpload) {
+    if (typeof kindsRaw !== 'string' || !(CONSENT_FORM_FILE_KINDS as readonly string[]).includes(kindsRaw)) {
+      throw new BadRequestException(`allowedFileKinds must be one of: ${CONSENT_FORM_FILE_KINDS.join(', ')}.`);
+    }
+    allowedFileKinds = kindsRaw as ConsentFormFileKind;
+    // Absent means "use the default", not "no limit" — an unbounded upload
+    // field is never a reachable state.
+    maxFileBytes = maxRaw === undefined || maxRaw === null ? DEFAULT_UPLOAD_MAX_BYTES : asInteger(maxRaw, 'maxFileBytes');
+    if (maxFileBytes < UPLOAD_MIN_BYTES || maxFileBytes > UPLOAD_MAX_BYTES_CEILING) {
+      throw new BadRequestException(
+        `maxFileBytes must be between ${UPLOAD_MIN_BYTES} and ${UPLOAD_MAX_BYTES_CEILING} bytes.`,
+      );
+    }
+  }
+
   return {
     label: requireString(obj, 'label', { min: 1, max: 200 }),
     fieldType,
     required: Boolean(obj['required']),
     isIdentifier: Boolean(obj['isIdentifier']),
     isCustomerName: Boolean(obj['isCustomerName']),
+    description,
+    allowedFileKinds,
+    maxFileBytes,
   };
+}
+
+function optionalText(obj: Record<string, unknown>, key: string, max: number): string | null {
+  const raw = obj[key];
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'string') throw new BadRequestException(`${key} must be a string.`);
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > max) throw new BadRequestException(`${key} must be at most ${max} characters.`);
+  return trimmed;
+}
+
+function asInteger(raw: unknown, key: string): number {
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) {
+    throw new BadRequestException(`${key} must be an integer number of bytes.`);
+  }
+  return raw;
 }
 
 function asObject(body: unknown): Record<string, unknown> {
@@ -281,3 +350,23 @@ function requireUuid(obj: Record<string, unknown>, field: string): string {
   }
   return value;
 }
+
+/**
+ * The export-destination body: a storage root id, or null to clear it.
+ *
+ * The id is the ONLY thing read, and it is not trusted beyond being a UUID:
+ * the service re-checks that the root is this tenant's, active and
+ * gateway-provider (therefore writable), and the database re-checks the
+ * tenant with its own trigger. No path, no folder name, no device.
+ */
+export function parseExportDestination(body: unknown): { storageRootId: string | null } {
+  const obj = asObject(body);
+  const raw = obj['storageRootId'];
+  if (raw === null || raw === undefined) return { storageRootId: null };
+  if (typeof raw !== 'string' || !UUID_PATTERN.test(raw)) {
+    throw new BadRequestException('storageRootId must be a UUID, or null to save no spreadsheet.');
+  }
+  return { storageRootId: raw };
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

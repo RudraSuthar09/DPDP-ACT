@@ -16,7 +16,8 @@
  * field value or document content — ids, folder NAMES, and outcome only,
  * matching this file's own log() calls below.
  */
-import type { ClaimedSubmission, GatewayControlPlaneClient } from '../enrollment';
+import type { ClaimedCentralSubmission, ClaimedGatewayCopy, GatewayControlPlaneClient } from '../enrollment';
+import { StorageNotConfiguredError, type StorageRegistry } from '../storage/registry';
 import { loadLocalRootConfig, resolveLocalStorageRoot, type LocalRootConfig } from './local-root';
 import { sanitizeLabel, writeJsonFile, writeRawFile, writeTextFile } from './local-fs-ops';
 
@@ -34,6 +35,9 @@ export interface DeliveryPollerOptions {
   deviceToken: string;
   pollIntervalSeconds: number;
   localRootConfig?: LocalRootConfig;
+  /** The storage plane's registry: ONLY the storage locations the Gateway
+   *  administrator explicitly authorized for writing. Absent = none. */
+  storageRegistry?: StorageRegistry;
   log: (line: string) => void;
 }
 
@@ -58,20 +62,23 @@ export function startDeliveryPoller(options: DeliveryPollerOptions): () => void 
 
   const tick = async (): Promise<void> => {
     const root = resolveLocalStorageRoot(localRootConfig);
-    if (!root) {
+    const storageRootIds = options.storageRegistry?.ids() ?? [];
+    if (!root && storageRootIds.length === 0) {
       if (!notConfiguredWarned) {
         options.log(
           '[Storage] No local storage root configured yet (waiting for Electron\'s "Select Folder", or ' +
-            'AGENT_LOCAL_STORAGE_ROOT) — pending submissions will wait.',
+            'AGENT_LOCAL_STORAGE_ROOT) and no folder is authorized for writing — pending submissions will wait.',
         );
         notConfiguredWarned = true;
       }
       return;
     }
     notConfiguredWarned = false;
+    // Only work this Gateway can actually perform is ever handed to it.
+    const capabilities = { central: root !== null, storageRootIds };
 
     for (let i = 0; i < MAX_CLAIMS_PER_TICK; i += 1) {
-      const claimed = await options.client.claimSubmission(options.deviceToken).catch((err: unknown) => {
+      const claimed = await options.client.claimSubmission(options.deviceToken, capabilities).catch((err: unknown) => {
         options.log(`[Agent] Could not reach the backend to claim a submission (will retry): ${describeError(err)}`);
         return null;
       });
@@ -84,7 +91,32 @@ export function startDeliveryPoller(options: DeliveryPollerOptions): () => void 
       }
 
       options.log(`[Agent] Claiming submission delivery=${claimed.deliveryId}`);
+      if (claimed.target === 'gateway') {
+        let r: { written: number; alreadyPresent: number };
+        try {
+          r = await writeGatewayCopy(options.storageRegistry, claimed);
+        } catch (err) {
+          const reason = describeWriteError(err);
+          options.log(`[Submission] Enterprise copy failed delivery=${claimed.deliveryId} error=${reason}`);
+          await options.client
+            .failSubmission(options.deviceToken, claimed.deliveryId, reason)
+            .catch((failErr: unknown) => options.log(`[Agent] Could not report the failure to the backend: ${describeError(failErr)}`));
+          continue;
+        }
+        // The files ARE written. If only the acknowledgement is lost, DPDP
+        // keeps reporting the copy as pending and offers it again later; the
+        // retry finds the files already there and acknowledges then — so a
+        // write is never reported as failed, nor duplicated.
+        try {
+          await options.client.ackSubmission(options.deviceToken, claimed.deliveryId);
+          options.log(`[Submission] Delivered Enterprise copy delivery=${claimed.deliveryId} written=${r.written} alreadyPresent=${r.alreadyPresent}`);
+        } catch (err) {
+          options.log(`[Agent] Enterprise copy written but not yet acknowledged delivery=${claimed.deliveryId} (will be confirmed on retry): ${describeError(err)}`);
+        }
+        continue;
+      }
       try {
+        if (!root) throw new Error('NOT_CONFIGURED'); // never offered when central=false; defensive only
         await writeClaimedSubmission(root, claimed);
         await options.client.ackSubmission(options.deviceToken, claimed.deliveryId);
         options.log(`[Submission] Delivered delivery=${claimed.deliveryId} folder="${claimed.folderName}"`);
@@ -119,7 +151,53 @@ export function startDeliveryPoller(options: DeliveryPollerOptions): () => void 
   };
 }
 
-async function writeClaimedSubmission(root: string, claimed: Extract<ClaimedSubmission, { ready: true }>): Promise<void> {
+/**
+ * Writes an Enterprise copy through the storage plane's provider, in this
+ * process (no HTTP hop). Every guarantee comes from the existing storage
+ * plane, not from this function:
+ *   - registry.get() throws STORAGE_ROOT_NOT_AUTHORIZED for any location the
+ *     administrator did not explicitly authorize for writing;
+ *   - createFolder/writeFile re-check containment (symlinks resolved), name
+ *     safety, size, and never overwrite.
+ * The mapped folder path is created if missing (createFolder is idempotent
+ * and contained). A file that already exists under its submission+field
+ * name is a previous attempt of THIS delivery that completed (writes are
+ * atomic, so an existing file is never partial) — counted, not rewritten,
+ * so a retry after a lost acknowledgement creates no duplicate.
+ */
+export async function writeGatewayCopy(
+  registry: StorageRegistry | undefined,
+  claimed: ClaimedGatewayCopy,
+): Promise<{ written: number; alreadyPresent: number }> {
+  if (!registry) throw new StorageNotConfiguredError();
+  const provider = registry.get(claimed.storageRootId);
+  let written = 0;
+  let alreadyPresent = 0;
+  for (const file of claimed.files) {
+    for (let i = 0; i < file.path.length; i += 1) {
+      await provider.createFolder(file.path.slice(0, i), file.path[i]!);
+    }
+    try {
+      await provider.writeFile(file.path, file.filename, file.contentBase64, false);
+      written += 1;
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'FILE_ALREADY_EXISTS') throw err;
+      alreadyPresent += 1;
+    }
+  }
+  return { written, alreadyPresent };
+}
+
+/** A stable code only (e.g. PERMISSION_DENIED, PATH_NOT_ALLOWED) — a Node fs
+ *  error message names the OS path, which never leaves the Gateway. */
+function describeWriteError(err: unknown): string {
+  const code = (err as { code?: unknown }).code;
+  if (code === 'EACCES' || code === 'EPERM') return 'PERMISSION_DENIED';
+  if (typeof code === 'string' && /^[A-Z_]{3,40}$/.test(code)) return code;
+  return 'WRITE_FAILED';
+}
+
+async function writeClaimedSubmission(root: string, claimed: ClaimedCentralSubmission): Promise<void> {
   const infoSegments = [CUSTOMERS_FOLDER_NAME, claimed.folderName, CUSTOMER_INFORMATION_FOLDER_NAME];
   await writeJsonFile(root, infoSegments, 'profile.json', {
     customerId: claimed.customerId,

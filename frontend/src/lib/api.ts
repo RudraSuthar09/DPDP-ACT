@@ -7,23 +7,13 @@
  * it talks to the real API from Prompt 4/5.
  */
 
+import { API_URL } from './api-base';
 import { isElectronDialogAvailable, saveBlobNative } from './electron-dialog';
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-
-/**
- * The address a Next.js SERVER COMPONENT (SSR, running inside this
- * container) must use to reach the backend — as opposed to `API_URL`, which
- * is baked in at build time for the BROWSER and is deliberately a
- * host-reachable address (e.g. http://localhost:3001), never an in-Docker-
- * network service name. Inside a container, "localhost" means the container
- * itself, not the backend's container — the SSR-side public pages
- * (form-portal-api.ts's formPortalFetchServer, portal-api.ts's
- * portalFetchServer) need a separate, container-network-reachable address.
- * Falls back to API_URL for local (non-Docker) `pnpm dev`, where both
- * resolve to the same host anyway. Read at request time (not build time) —
- * a plain server env var, never NEXT_PUBLIC_-prefixed. */
-export const SERVER_API_URL = process.env.INTERNAL_API_URL ?? API_URL;
+// API_URL / SERVER_API_URL live in api-base.ts (no DOM dependency, so
+// server-only code and Node unit tests can import them) and are re-exported
+// here so every existing importer of './api' keeps working.
+export { API_URL, SERVER_API_URL } from './api-base';
 
 const TOKEN_KEY = 'dpdp.accessToken';
 
@@ -139,6 +129,45 @@ export async function downloadFile(
 
   const blob = await res.blob();
 
+  await saveBlob(blob, filename);
+}
+
+/**
+ * The same authenticated request as downloadFile, but it HANDS BACK the blob
+ * instead of saving it — for a caller that has somewhere else to put the
+ * bytes (the submissions spreadsheet, written into a Gateway folder). Split
+ * out so there is one request path and one error shape, not two.
+ */
+export async function fetchBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options.auth !== false) {
+    const token = getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, {
+      method: options.method ?? 'POST',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+  } catch {
+    throw new ApiError(0, `Could not reach the API at ${API_URL}. Is it running?`);
+  }
+  if (!res.ok) {
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      // Non-JSON error body — fall through with data left null.
+    }
+    throw new ApiError(res.status, errorMessage(data) ?? res.statusText);
+  }
+  return res.blob();
+}
+
+async function saveBlob(blob: Blob, filename: string): Promise<void> {
   // Installed Electron app: save through the native OS save dialog (the
   // desktop replacement for <a download>). In a plain browser (dev) the
   // bridge is absent and we fall back to the anchor-download below.

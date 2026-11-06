@@ -15,8 +15,10 @@ jobs:
     name: Build · Lint · Test
     runs-on: ubuntu-latest
 
-    # Postgres + Redis so tests (and, next, the cross-tenant isolation suite)
-    # have real infrastructure to run against.
+    # Postgres so tests (and the cross-tenant isolation suite) have real
+    # infrastructure to run against. (A Redis service used to be started here
+    # too; nothing in the codebase uses Redis — jobs run on pg-boss, in
+    # Postgres — so it was removed along with REDIS_URL.)
     services:
       postgres:
         image: postgres:16
@@ -29,13 +31,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U dpdp -d dpdp_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 5s --health-retries 10
 
     env:
       # Owner/admin connection — migrations (DDL) only.
@@ -43,7 +38,6 @@ jobs:
       # Runtime connection — the least-privilege, RLS-enforced role the migrations
       # create (dpdp_app). The isolation suite connects as this.
       APP_DATABASE_URL: postgresql://dpdp_app:dpdp_app_local_dev_only@localhost:5432/dpdp_test
-      REDIS_URL: redis://localhost:6379
 
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +48,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Same major as the Docker images and the Gateway runtime (Node 22);
+          # Node 20 reached end-of-life in April 2026.
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -83,3 +79,21 @@ jobs:
       # loudly if any query returns another tenant's rows.
       - name: Cross-tenant isolation suite
         run: pnpm --filter @dpdp/api run test:isolation
+
+  # The production images (what ECR/ECS would run) must build on every change:
+  # a broken Dockerfile should fail here, not at deploy time. Build only —
+  # nothing is pushed and no credentials are involved.
+  docker-images:
+    name: Production images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image (API, worker, migrations)
+        run: docker build -f backend/Dockerfile -t dpdp-backend:ci .
+
+      - name: Backend image can read the RDS CA bundle as its runtime user
+        run: docker run --rm --entrypoint sh dpdp-backend:ci -c 'test "$(id -un)" = node && grep -q "BEGIN CERTIFICATE" /opt/dpdp/certs/rds-global-bundle.pem'
+
+      - name: Build frontend image
+        run: docker build -f frontend/Dockerfile --build-arg NEXT_PUBLIC_API_URL=https://api.example.invalid -t dpdp-frontend:ci .

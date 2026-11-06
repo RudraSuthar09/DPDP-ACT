@@ -145,6 +145,40 @@ export function verifyGatewayDeviceJwt(token: string, secret: string): GatewayDe
   return { deviceId: decoded.sub, tenantId, actorUserId };
 }
 
+/**
+ * A `platform_admin` token's claims. Deliberately NOT a `TenantJwtClaims`:
+ * this credential belongs to no tenant at all (see the platform-admin
+ * migration header) — a token that carried a `tenant_id` here would imply
+ * exactly the ambient-tenant-context scoping this tool must NOT have, since
+ * it crosses tenants by design on every request (the tenant is chosen
+ * per-call, from the route, never from the token).
+ */
+export interface PlatformAdminJwtClaims {
+  adminId: string;
+  email: string;
+}
+
+/** Verify a platform_admin token. Throws if invalid/expired/wrong type. */
+export function verifyPlatformAdminJwt(token: string, secret: string): PlatformAdminJwtClaims {
+  if (!secret) {
+    throw new Error('JWT secret is not configured');
+  }
+  const decoded = jwt.verify(token, secret, {
+    issuer: JWT_ISSUER,
+    audience: JWT_AUDIENCE,
+    algorithms: ['HS256'],
+  }) as JwtPayload;
+
+  if (decoded.typ !== 'platform_admin') {
+    throw new Error(`Expected a platform_admin token, got ${String(decoded.typ)}`);
+  }
+  const email = decoded.email;
+  if (typeof decoded.sub !== 'string' || !decoded.sub || typeof email !== 'string' || !email) {
+    throw new Error('platform_admin token is missing required claims');
+  }
+  return { adminId: decoded.sub, email };
+}
+
 /** Verify an invite token. Throws if invalid/expired/wrong type — the same
  *  fail-closed shape as `verifyTenantJwt`. */
 export function verifyInviteJwt(token: string, secret: string): InviteJwtClaims {

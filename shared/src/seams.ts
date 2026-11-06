@@ -197,10 +197,13 @@ export interface AuditReceipt {
 }
 
 /**
- * S5 — Audit sink. Written by ONE interceptor for HTTP mutations, plus exactly
- * one other sanctioned caller for entries with no HTTP request behind them at
- * all (a deadline firing in the worker) — never by an ordinary feature service
- * (R3). Stage 1: hash-chained append-only Postgres table.
+ * S5 — Audit sink. Written by ONE interceptor for HTTP mutations, plus one
+ * other sanctioned caller (SystemAuditService) for entries the interceptor
+ * cannot record against — no HTTP request at all (a deadline firing in the
+ * worker), or an HTTP request whose bearer token deliberately carries no
+ * ambient tenant (the cross-tenant platform-admin tool) — never by an
+ * ordinary feature service (R3). Stage 1: hash-chained append-only Postgres
+ * table.
  * Later: ClickHouse + daily Merkle roots in S3 Object Lock.
  *
  * This interface is intentionally not exported from the audit module's Nest

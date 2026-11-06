@@ -1,9 +1,11 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import type { StorageRoot } from '@dpdp/shared';
 import { apiFetch, ApiError } from '../../../lib/api';
 import { useAuth } from '../../../lib/auth';
+import { useCapabilities } from '../../../lib/capabilities';
 import {
   CENTRAL_STORAGE_ROOT_NAME,
   connectCentralStorage,
@@ -14,6 +16,8 @@ import {
 } from '../../../lib/central-storage';
 import type { CentralFsProvider } from '../../../lib/local-storage-provider';
 import { isElectronStorageAvailable } from '../../../lib/electron-storage';
+import { GatewayStorageLocations } from '../../../components/GatewayStorageLocations';
+import { SourceAdministration } from '../../../components/SourceAdministration';
 
 const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
 
@@ -35,6 +39,10 @@ const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
 export default function StoragePage() {
   const { user } = useAuth();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
+  // Defaults to false (hidden) while loading — see the same reasoning on the
+  // Data Sources page's EnterpriseGatewayPanel gate.
+  const { capabilities } = useCapabilities();
+  const hasEnterpriseStorage = capabilities?.features.enterpriseGateway ?? false;
 
   const [state, setState] = useState<CentralStorageState>({ status: 'checking', root: null, handle: null, fs: null, displayName: null });
   const [error, setError] = useState<string | null>(null);
@@ -289,18 +297,25 @@ export default function StoragePage() {
 
   return (
     <div>
-      <h1>DPDP Central Storage</h1>
+      <h1>Gateway &amp; storage administration</h1>
       <p className="muted">
-        Select the local folder on this organisation&apos;s own computer/server where DPDP files its
-        modules&apos; evidence. Nothing here — file contents, documents, customer data — is ever sent to or
-        stored in DPDP&apos;s central database; only this configuration (that a folder is connected) is
-        remembered centrally, so it is still here after a refresh, a new login, or a restart.
+        Technical setup, for administrators. Day to day, nobody needs this page: connected folders are listed under{' '}
+        <Link href="/data-sources">Sources &amp; Storage</Link>, and a consent form&apos;s destinations are chosen in the
+        form itself. Nothing here — file contents, documents, customer data — is ever sent to or stored in DPDP&apos;s
+        central database; only the configuration is remembered centrally.
       </p>
+
+      <div className="panel" style={{ marginBottom: 16 }}>
+        <SourceAdministration />
+      </div>
 
       {error && <div className="error">{error}</div>}
 
       <div className="panel" style={{ marginBottom: 16 }}>
-        <h2 style={{ marginTop: 0 }}>Central DPDP Storage</h2>
+        <h2 style={{ marginTop: 0 }}>Main storage folder</h2>
+        <p className="muted" style={{ fontSize: '0.85rem', marginTop: 0 }}>
+          Every consent submission is filed here. This is the only storage a customer has to set up.
+        </p>
 
         {state.status === 'checking' && <p className="muted">Checking…</p>}
 
@@ -351,13 +366,24 @@ export default function StoragePage() {
         )}
       </div>
 
+      {hasEnterpriseStorage && <GatewayStorageLocations canManage={canManage} />}
+
+      {/* Everything below is secondary: an alternative storage provider for
+          server deployments, a folder browser, and the manual sync fallback.
+          All of it still works exactly as before — it is collapsed so the
+          routine workflow above is not buried under provider choices. */}
+      <details style={{ marginBottom: 16 }}>
+        <summary className="muted" style={{ fontSize: '0.85rem', marginBottom: 8 }}>
+          Advanced storage settings
+        </summary>
+
       {/* The backend/worker `server`-provider path (Docker bind-mount deployment
           model). Hidden inside the installed Electron desktop app, where the
-          "Central DPDP Storage" panel above IS Enterprise Storage and writes
+          "Main storage folder" panel above IS Enterprise Storage and writes
           natively to the chosen folder via the Electron main process — no
           manual path typing, no browser folder handle. Still shown in a plain
           browser / dev environment, where that native bridge is absent. */}
-      {!isElectron && (
+      {!isElectron && hasEnterpriseStorage && (
       <div className="panel" style={{ marginBottom: 16 }}>
         <h2 style={{ marginTop: 0 }}>Enterprise Server Storage</h2>
         <p className="muted" style={{ fontSize: '0.85rem' }}>
@@ -491,6 +517,7 @@ export default function StoragePage() {
           </button>
         </div>
       )}
+      </details>
     </div>
   );
 }

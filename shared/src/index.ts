@@ -12,6 +12,7 @@ export * from './gateway';
 export * from './storage';
 export * from './consent';
 export * from './consent-notices';
+export * from './consent-uploads';
 export * from './dashboard';
 export * from './request';
 export * from './grievance';

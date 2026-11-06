@@ -1,13 +1,29 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Patch, Post, Put, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Put,
+  StreamableFile,
+  UseGuards,
+} from '@nestjs/common';
 import { TenantGuard } from '../../tenancy/tenant.guard';
 import { Roles } from '../identity/rbac/roles.decorator';
 import { Audited } from '../audit/audited.decorator';
 import { ConsentFormsService } from './consent-forms.service';
+import { ConsentFormExportService } from './consent-form-export.service';
 import {
   parseActiveFlag,
   parseAddRowInput,
   parseSaveCustomerField,
   parseSaveFormInput,
+  parseExportDestination,
   parseUpdateRowInput,
 } from './consent-forms.dto';
 
@@ -22,7 +38,10 @@ const MANAGE = ['owner', 'dpo', 'compliance_officer'] as const;
 @Controller('consent/forms')
 @UseGuards(TenantGuard)
 export class ConsentFormsController {
-  constructor(private readonly forms: ConsentFormsService) {}
+  constructor(
+    private readonly forms: ConsentFormsService,
+    private readonly exports: ConsentFormExportService,
+  ) {}
 
   @Get()
   async list() {
@@ -132,5 +151,42 @@ export class ConsentFormsController {
   @HttpCode(HttpStatus.OK)
   async markSubmissionSynced(@Param('id') id: string, @Param('submissionId') submissionId: string) {
     return this.forms.markSubmissionSynced(id, submissionId);
+  }
+
+  // --- submissions export ----------------------------------------------------
+  //
+  // POST, not GET, for the download: it is @Audited, and this codebase's audit
+  // interceptor records mutations — a GET would hand out a full submissions
+  // register with no entry in the chain saying who took it. Same convention as
+  // the audit evidence bundle and the proof-of-consent certificate.
+
+  @Post(':id/submissions/export')
+  @Roles(...MANAGE)
+  @Audited('consent.form.submissions_exported')
+  @HttpCode(HttpStatus.OK)
+  async exportSubmissions(@Param('id', ParseUUIDPipe) id: string): Promise<StreamableFile> {
+    const { filename, buffer } = await this.exports.renderXlsx(id);
+    return new StreamableFile(buffer, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      // The filename is built from the form's name with everything but plain
+      // characters stripped (exportFilename), so client-authored text cannot
+      // reach this header unescaped.
+      disposition: `attachment; filename="${filename}"`,
+    });
+  }
+
+  /** Where this form's spreadsheet is saved, as a NAME plus whether it can be
+   *  written right now. Never an id the customer has to handle. */
+  @Get(':id/submissions/export-destination')
+  @Roles(...MANAGE)
+  async exportDestination(@Param('id', ParseUUIDPipe) id: string) {
+    return this.exports.exportDestination(id);
+  }
+
+  @Put(':id/submissions/export-destination')
+  @Roles(...MANAGE)
+  @Audited('consent.form.export_destination_set')
+  async setExportDestination(@Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
+    return this.exports.setExportDestination(id, parseExportDestination(body).storageRootId);
   }
 }

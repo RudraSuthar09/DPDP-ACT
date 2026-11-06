@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ContactChannel } from '@dpdp/shared';
 import { NotificationDeliveriesRepository } from './notification-deliveries.repository';
+import { maskRecipient } from '../../logging/redact';
 
 /**
  * Transactional email/SMS — real providers behind the same seam Prompt 25 laid
@@ -294,12 +295,28 @@ export class NotificationDispatcher {
    * NODE_ENV is production regardless of configuration.
    */
   private sendConsole(message: NotificationMessage): NotificationResult {
-    this.logger.log(
-      `[notify:${message.kind}] ${message.channel} -> ${message.to}\n` +
-        `  subject: ${message.subject}\n` +
-        `  body:    ${message.body}`,
-    );
+    // In production the log is not a developer's terminal: it is a log
+    // aggregator that outlives the message, the body carries one-time codes,
+    // and the recipient is a person's address. So production logs the fact of
+    // the message only. Development and CI keep the full text, which is what
+    // makes this transport useful there.
+    if (this.isProduction()) {
+      this.logger.warn(
+        `[notify:${message.kind}] ${message.channel} -> ${maskRecipient(message.to)} ` +
+          '(console transport: NOT delivered to anyone; content redacted in production)',
+      );
+    } else {
+      this.logger.log(
+        `[notify:${message.kind}] ${message.channel} -> ${message.to}\n` +
+          `  subject: ${message.subject}\n` +
+          `  body:    ${message.body}`,
+      );
+    }
     return { delivered: true, transport: 'console' };
+  }
+
+  private isProduction(): boolean {
+    return (this.config.get<string>('NODE_ENV') ?? 'development').trim().toLowerCase() === 'production';
   }
 
   private async sendHttp(message: NotificationMessage): Promise<NotificationResult> {

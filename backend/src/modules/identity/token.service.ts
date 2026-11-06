@@ -57,10 +57,12 @@ export class TokenService {
     this.gatewayDeviceTtlSeconds = Number(config.get('GATEWAY_DEVICE_TOKEN_TTL_SECONDS') ?? 30 * 24 * 60 * 60);
     // There is no revocation list in Stage 1, so this number IS the blast
     // radius of a leaked token, and how long a just-suspended user can still
-    // act — the shorter the more secure. Set to a day by product decision, so
-    // a normal working session is never interrupted by expiry; tighten it via
-    // ACCESS_TOKEN_TTL_SECONDS if that tradeoff changes.
-    this.accessTtlSeconds = Number(config.get('ACCESS_TOKEN_TTL_SECONDS') ?? 86400);
+    // act — the shorter the more secure. Set to ~6 months by product decision
+    // (matching DEFAULT_LICENSE_VALIDITY_MONTHS in licensing.service.ts) —
+    // like a desktop antivirus license, a client shouldn't be dropped back to
+    // a password+MFA prompt before their license term itself is up; tighten
+    // it via ACCESS_TOKEN_TTL_SECONDS if that tradeoff changes.
+    this.accessTtlSeconds = Number(config.get('ACCESS_TOKEN_TTL_SECONDS') ?? 180 * 24 * 60 * 60);
     // Long enough to open an authenticator app, short enough that a stolen
     // half-login is worthless by the time it is used.
     this.mfaChallengeTtlSeconds = Number(config.get('MFA_CHALLENGE_TTL_SECONDS') ?? 300);

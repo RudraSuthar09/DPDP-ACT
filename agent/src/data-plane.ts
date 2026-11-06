@@ -45,6 +45,8 @@ export const DATA_PLANE_PATHS = new Set([
   '/source/customer/write',
   '/source/customer/create',
   '/source/column/create',
+  // File picker: one folder level by opaque handle (filesystem sources only).
+  '/source/browse',
 ]);
 
 export class DataPlane {
@@ -77,6 +79,15 @@ export class DataPlane {
   async discover(sessionToken: string, sourceId: string) {
     const res = await this.connectorFor(sessionToken, sourceId).discover();
     return { ...res, sourceId };
+  }
+
+  /** File picker: one level of the source's authorized folder(s), by opaque
+   *  folder handle (null = top). Same session binding as discover(). Database
+   *  sources have no folders: UNSUPPORTED_SOURCE. */
+  async browse(sessionToken: string, sourceId: string, folderHandle: string | null) {
+    const connector = this.connectorFor(sessionToken, sourceId);
+    if (!connector.browse) throw Object.assign(new Error('UNSUPPORTED_SOURCE'), { code: 'UNSUPPORTED_SOURCE' });
+    return connector.browse(folderHandle);
   }
 
   async search(sessionToken: string, sourceId: string, term: string, opts: GatewayReadOptions) {
@@ -161,6 +172,13 @@ function str(obj: Record<string, unknown>, field: string): string {
   if (typeof v !== 'string' || v.length === 0) throw new Error('BAD_REQUEST');
   return v;
 }
+/** An optional opaque handle: absent/null = top level; otherwise a non-empty string. */
+function optionalHandle(obj: Record<string, unknown>, field: string): string | null {
+  const v = obj[field];
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'string' || v.length === 0 || v.length > 128) throw new Error('BAD_REQUEST');
+  return v;
+}
 function opts(obj: Record<string, unknown>): GatewayReadOptions {
   return {
     limit: typeof obj.limit === 'number' ? obj.limit : undefined,
@@ -214,6 +232,8 @@ export async function handleDataPlaneRequest(
     switch (ctx.path) {
       case '/source/discover':
         return ok(await dp.discover(token, sourceId));
+      case '/source/browse':
+        return ok(await dp.browse(token, sourceId, optionalHandle(body, 'folder')));
       case '/source/search':
         return ok(await dp.search(token, sourceId, str(body, 'term'), opts(body)));
       case '/source/read':

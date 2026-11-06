@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { validateEnv } from './config/env.validation';
 
 import { TenancyModule } from './tenancy/tenancy.module';
 import { DatabaseModule } from './database/database.module';
@@ -24,15 +25,17 @@ import { DataSourceModule } from './modules/datasource/data-source.module';
 import { GatewayModule } from './modules/gateway/gateway.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { SubmissionDeliveryModule } from './modules/delivery/submission-delivery.module';
+import { GatewayFolderModule } from './modules/gateway-folders/gateway-folder.module';
 import { LicensingModule } from './modules/licensing/licensing.module';
 import { CapabilityModule } from './modules/capability/capability.module';
 import { InstallationModule } from './modules/installation/installation.module';
+import { PlatformAdminModule } from './modules/platform-admin/platform-admin.module';
 
 @Module({
   imports: [
     // Reads process.env (Docker/CI) and, in local dev, the repo-root .env
     // (the app's cwd is backend/, so the root file is one level up).
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env', '../.env'] }),
+    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env', '../.env'], validate: validateEnv('api') }),
     // Seam S1 foundations — must load before any feature module that queries.
     TenancyModule,
     DatabaseModule,
@@ -65,6 +68,11 @@ import { InstallationModule } from './modules/installation/installation.module';
     LicensingModule,
     CapabilityModule,
     InstallationModule,
+    // Cross-tenant support tool (/admin/licenses): issue/view license keys
+    // for any client org without that client's own owner/dpo credentials.
+    // Its own auth (PlatformAdminGuard), never TenantGuard/RBAC — see the
+    // platform-admin migration for why.
+    PlatformAdminModule,
     // Phase 3C: the Gateway CONTROL PLANE (enrolment/pairing/session/heartbeat/
     // revocation). Ids, hashes and metadata only — still no connector, no raw
     // read, no customer data (I1). Data plane is a separate, later capability.
@@ -79,6 +87,7 @@ import { InstallationModule } from './modules/installation/installation.module';
     // Deliberate, documented CLAUDE.md I1/R6 exception — see
     // submission-delivery.service.ts's header.
     SubmissionDeliveryModule,
+    GatewayFolderModule,
   ],
 })
 export class AppModule {}

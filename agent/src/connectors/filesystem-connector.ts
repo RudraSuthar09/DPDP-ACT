@@ -12,6 +12,7 @@ import {
   type GatewayHealthResponse,
   type GatewayReadOptions,
   type GatewayResolveCustomerResponse,
+  type GatewaySourceBrowseResponse,
   type GatewaySourceDiscoverResponse,
   type GatewaySourceFieldsResponse,
   type GatewaySourceMetadataResponse,
@@ -22,7 +23,7 @@ import {
   type ResourceHandle,
 } from '@dpdp/shared';
 import { AGENT_VERSION } from '../version';
-import { isApprovedFile, resolveWithinRoots } from './path-safety';
+import { isApprovedFile, resolveDirWithinRoots, resolveWithinRoots } from './path-safety';
 import { MAX_ROWS, parseCsv, parseXlsx } from './parsers';
 
 /** A connector error carrying a stable, value-free GatewayErrorCode. */
@@ -143,6 +144,80 @@ export class FilesystemConnector implements DataConnector {
       nextCursor: start + limit < all.length ? String(start + limit) : null,
       truncated: all.length > start + limit,
     };
+  }
+
+  // --- file picker: one folder level at a time -------------------------------
+
+  private readonly folderHandleToPath = new Map<string, string>();
+  private readonly folderPathToHandle = new Map<string, string>();
+
+  /** Folder handles live in their own map, so a folder handle can never be
+   *  used with read()/metadata() (and a file handle never browsed). */
+  private issueFolderHandle(absPath: string): string {
+    const existing = this.folderPathToHandle.get(absPath);
+    if (existing) return existing;
+    const handle = randomUUID();
+    this.folderHandleToPath.set(handle, absPath);
+    this.folderPathToHandle.set(absPath, handle);
+    return handle;
+  }
+
+  /**
+   * One level of an authorized folder: sub-folders and approved (.csv/.xlsx)
+   * files, by NAME with opaque handles -- never a path. `folderHandle` null =
+   * the top: the single root's contents, or one folder entry per root when
+   * several are configured. Every folder is re-validated to be a real
+   * directory inside the roots (symlinks resolved first) on every call.
+   */
+  async browse(folderHandle: string | null): Promise<GatewaySourceBrowseResponse> {
+    let dir: string;
+    if (folderHandle === null) {
+      if (this.roots.length !== 1) {
+        const entries = this.roots
+          .map((root) => {
+            try {
+              const real = resolveDirWithinRoots(root, this.roots);
+              return { handle: this.issueFolderHandle(real), entryKind: 'folder' as const, label: basename(real) || real, sizeBytes: null };
+            } catch {
+              return null; // a configured root that is missing is simply not shown
+            }
+          })
+          .filter((e): e is NonNullable<typeof e> => e !== null);
+        return { entries, truncated: false };
+      }
+      dir = resolveDirWithinRoots(this.roots[0]!, this.roots);
+    } else {
+      const path = this.folderHandleToPath.get(folderHandle);
+      if (!path) throw new ConnectorError('FILE_NOT_FOUND'); // unknown/forged handle
+      dir = resolveDirWithinRoots(path, this.roots);
+    }
+
+    let dirents: import('node:fs').Dirent[];
+    try {
+      dirents = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      throw new ConnectorError('FILE_NOT_FOUND');
+    }
+    const folders: GatewaySourceBrowseResponse['entries'] = [];
+    const files: GatewaySourceBrowseResponse['entries'] = [];
+    for (const entry of dirents) {
+      if (folders.length + files.length >= MAX_DISCOVER) break;
+      if (entry.name.startsWith('.')) continue; // hidden/system, as in discover()
+      const full = join(dir, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          // Containment again: a symlinked folder pointing outside is dropped.
+          folders.push({ handle: this.issueFolderHandle(resolveDirWithinRoots(full, this.roots)), entryKind: 'folder', label: entry.name, sizeBytes: null });
+        } else if (entry.isFile() && isApprovedFile(entry.name)) {
+          const real = resolveWithinRoots(full, this.roots);
+          files.push({ handle: this.issueHandle(real), entryKind: 'file', label: entry.name, sizeBytes: statSync(real).size });
+        }
+      } catch {
+        /* outside the roots, unreadable or vanished -- not listed */
+      }
+    }
+    const byName = (a: { label: string }, b: { label: string }) => a.label.localeCompare(b.label);
+    return { entries: [...folders.sort(byName), ...files.sort(byName)], truncated: folders.length + files.length >= MAX_DISCOVER };
   }
 
   /** Resolve an opaque handle to a re-validated real path (fail closed). */

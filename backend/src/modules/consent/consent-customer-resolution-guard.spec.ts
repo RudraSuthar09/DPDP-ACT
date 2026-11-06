@@ -49,15 +49,36 @@ describe('Consent Form Builder simplification — Customer Data Source / staff-a
   it('the consent-forms DTO/controller no longer name the removed destination/mapped-column concepts', () => {
     const dto = codeOnly(readFileSync(FORMS_DTO, 'utf8'));
     const controller = codeOnly(readFileSync(FORMS_CONTROLLER, 'utf8'));
-    for (const forbidden of ['destination', 'mappedColumn', 'newColumnName', 'newColumnType', 'CONSENT_FIELD_DESTINATIONS', 'setFormSource', 'sourceId']) {
+    // 'destination' alone is no longer a useful term to ban: a consent-form
+    // FIELD can be pointed at a storage folder, and a form's submissions
+    // spreadsheet at a writable location — both legitimate, both unrelated to
+    // the removed Customer Data Source concept. What must stay gone is that
+    // concept's own vocabulary, including its two destination VALUES.
+    for (const forbidden of [
+      "'customer_field'",
+      "'consent_record'",
+      'mappedColumn',
+      'newColumnName',
+      'newColumnType',
+      'CONSENT_FIELD_DESTINATIONS',
+      'setFormSource',
+      'sourceId',
+    ]) {
       expect({ file: 'dto', forbidden, hit: dto.includes(forbidden) }).toEqual({ file: 'dto', forbidden, hit: false });
       expect({ file: 'controller', forbidden, hit: controller.includes(forbidden) }).toEqual({ file: 'controller', forbidden, hit: false });
     }
   });
 
-  it('the simplified field-type allowlist is exactly text/pdf/excel', () => {
+  it('the field-type allowlist is exactly text + the upload types, and nothing from the old wider list', () => {
     const shared = readFileSync(SHARED_CONSENT, 'utf8');
-    expect(shared).toContain(`CONSENT_FORM_FIELD_TYPES = ['text', 'pdf', 'excel']`);
+    // 'file' is the general upload field (its own allowed-kinds + size
+    // configuration); 'pdf'/'excel' predate it and are kept because live
+    // forms use them. The point of this guard is unchanged: the pre-
+    // simplification types stay gone, and the list is closed.
+    expect(shared).toContain(`CONSENT_FORM_FIELD_TYPES = ['text', 'file', 'pdf', 'excel']`);
+    for (const removed of ['number', 'date', 'document_upload', 'signature', 'checkbox']) {
+      expect({ removed, present: shared.includes(`'${removed}'`) }).toEqual({ removed, present: false });
+    }
   });
 
   it('the consent-forms controller route list is exact — no /source route, field CRUD present', () => {
@@ -80,6 +101,11 @@ describe('Consent Form Builder simplification — Customer Data Source / staff-a
       "Get ':id/submissions'",
       "Get ':id/submissions/pending-local-sync'",
       "Post ':id/submissions/:submissionId/mark-synced'",
+      // The submissions spreadsheet. POST for the download because it is
+      // @Audited — handing out a submissions register is recorded.
+      "Post ':id/submissions/export'",
+      "Get ':id/submissions/export-destination'",
+      "Put ':id/submissions/export-destination'",
     ]);
   });
 

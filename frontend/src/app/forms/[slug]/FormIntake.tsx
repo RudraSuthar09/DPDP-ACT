@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { formPortalFetch, FormPortalApiError } from '../../../lib/form-portal-api';
 import { apiFetch } from '../../../lib/api';
+import type { ConsentFormFileKind } from '@dpdp/shared';
+import { FileUploadField } from './FileUploadField';
 import {
   getAdditionalStorageMapping,
   getCentralStorageStatus,
@@ -39,8 +41,13 @@ interface PublicFormRow {
 interface PublicFormField {
   id: string;
   label: string;
-  fieldType: 'text' | 'pdf' | 'excel';
+  fieldType: 'text' | 'file' | 'pdf' | 'excel';
   required: boolean;
+  /** Client-authored instructions shown under the label, or null. */
+  description: string | null;
+  /** 'file' fields only — which kinds this question accepts, and the cap. */
+  allowedFileKinds: ConsentFormFileKind | null;
+  maxFileBytes: number | null;
   /** Whether this field's value is the raw identity hashed into subject_ref
    *  and used to resolve/reuse the customer's Central DPDP Storage folder —
    *  rendered exactly like any other field; nothing about the public form
@@ -371,7 +378,27 @@ export function FormIntake({
     <form onSubmit={onSubmit}>
       {error && <div className="error">{error}</div>}
 
-      {fields.map((field) => (
+      {fields.map((field) =>
+        field.fieldType === 'file' ? (
+          <FileUploadField
+            key={field.id}
+            fieldId={field.id}
+            label={field.label}
+            required={field.required}
+            description={field.description}
+            kind={field.allowedFileKinds ?? 'image_pdf'}
+            maxFileBytes={field.maxFileBytes}
+            file={fieldFiles[field.id]}
+            onPick={(picked) =>
+              setFieldFiles((prev) => {
+                const next = { ...prev };
+                if (picked) next[field.id] = picked;
+                else delete next[field.id];
+                return next;
+              })
+            }
+          />
+        ) : (
         <div key={field.id} style={{ margin: '0.75em 0' }}>
           <label htmlFor={`field-${field.id}`}>
             {field.label}
@@ -385,10 +412,13 @@ export function FormIntake({
               required={field.required}
             />
           ) : (
+            // The two LEGACY upload types keep the plain input they always
+            // had; only 'file' carries the configuration the richer control
+            // needs. Nothing migrates a live form behind its owner's back.
             <input
               id={`field-${field.id}`}
               type="file"
-              accept={ACCEPT[field.fieldType]}
+              accept={ACCEPT[field.fieldType as 'pdf' | 'excel']}
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 setFieldFiles((prev) => (file ? { ...prev, [field.id]: file } : prev));
@@ -397,7 +427,8 @@ export function FormIntake({
             />
           )}
         </div>
-      ))}
+        ),
+      )}
 
       <h3>Your choices</h3>
       {rows.map((r) => (

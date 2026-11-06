@@ -1,0 +1,22 @@
+{
+  "serviceName": "dpdp-worker",
+  "cluster": "dpdp-prod",
+  "taskDefinition": "dpdp-worker",
+  "launchType": "FARGATE",
+  "desiredCount": 1,
+  "deploymentConfiguration": {
+    "minimumHealthyPercent": 0,
+    "maximumPercent": 100,
+    "deploymentCircuitBreaker": { "enable": true, "rollback": true }
+  },
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": ["<PRIVATE_SUBNET_A>", "<PRIVATE_SUBNET_B>"],
+      "securityGroups": ["<WORKER_SECURITY_GROUP>"],
+      "assignPublicIp": "DISABLED"
+    }
+  },
+  "enableExecuteCommand": false,
+  "propagateTags": "SERVICE",
+  "tags": [{ "key": "dpdp-role", "value": "worker-exactly-one" }]
+}

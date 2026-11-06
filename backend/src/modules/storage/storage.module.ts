@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { GatewayModule } from '../gateway/gateway.module';
+import { CapabilityModule } from '../capability/capability.module';
 import { StorageController } from './storage.controller';
 import { StorageService } from './storage.service';
 import { StorageRepository } from './storage.repository';
@@ -20,6 +21,12 @@ import { StorageGatewayRepository } from './storage-gateway.repository';
  * during its own referential-integrity check, so this lookup is load-bearing,
  * not a redundant nicety; see storage.service.ts).
  *
+ * Imports CapabilityModule so a 'gateway'-provider root requires the
+ * `enterpriseGateway` capability (StorageService.createRoot) and the
+ * staff-facing pairing route is gated the same way (StorageController) —
+ * locked architecture §10, same enforcement primitive GatewayModule itself
+ * uses for linking a device to a client_server installation.
+ *
  * Everything else it needs is @Global: TenantDatabaseService/TenantGuard
  * (Seam S1), AuditContextService (S5). Registered in the API root module
  * only. Exported so an owning module (Consent Register today; Data
@@ -27,7 +34,7 @@ import { StorageGatewayRepository } from './storage-gateway.repository';
  * this service (R2 — never its own SQL against these tables).
  */
 @Module({
-  imports: [GatewayModule],
+  imports: [GatewayModule, CapabilityModule],
   controllers: [StorageController],
   providers: [StorageService, StorageRepository, StorageGatewayService, StorageGatewayRepository],
   exports: [StorageService],

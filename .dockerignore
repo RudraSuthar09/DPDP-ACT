@@ -4,7 +4,7 @@ node_modules
 .git
 .github
 .turbo
-.localdb
+**/.turbo
 dist
 **/dist
 .next
@@ -22,8 +22,41 @@ coverage
 *.tsbuildinfo
 **/*.tsbuildinfo
 *.log
+**/*.log
+# Playwright output from the scripts/*.spec.mjs runs.
+**/test-results
+**/playwright-report
+# Secrets. The root patterns alone only matched the REPO ROOT — nested files
+# such as installer/config/.env were still sent into every build context. No
+# Dockerfile copies them, but nothing should be one COPY away from a secret.
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
+!.env.production.example
+*.pem
+*.key
 .vscode
 .idea
+.claude
+
+# Not used by any image, and large: the full-stack installer's own build
+# output (~1.7 GB of image tarballs and an Electron runtime), the Windows
+# Gateway installer's staging/output, the desktop and Gateway Setup apps, and
+# local databases/state. Excluding them is what keeps `docker build` from
+# uploading gigabytes to the daemon before it starts.
+installer/dist
+installer/config
+gateway-installer/build
+gateway-installer/dist
+gateway-app/dist
+desktop
+docs
+deploy
+.localdb
+backend/var
+scripts/.seed-demo-state.json
+# A stray directory created on this machine by a mis-quoted shell command; it
+# holds a .env. Never part of the product.
+$generatedMfaKey*

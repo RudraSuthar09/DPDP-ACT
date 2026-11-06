@@ -11,6 +11,8 @@ import {
   GATEWAY_SESSION_TTL_SECONDS,
 } from '@dpdp/shared';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
+import { GATEWAY_LOOPBACK_HOST } from '@dpdp/shared';
+import { webOrigins } from '../../web-origins';
 import { AuditContextService } from '../audit/audit-context.service';
 import { TokenService } from '../identity/token.service';
 import { DataSourceService } from '../datasource/data-source.service';
@@ -131,10 +133,24 @@ export class GatewayService {
 
   // --- device: heartbeat ----------------------------------------------------
 
-  async heartbeat(deviceId: string, agentVersion: string): Promise<{ deviceStatus: string; boundSourceIds: string[] }> {
+  async heartbeat(
+    deviceId: string,
+    agentVersion: string,
+    localEndpoint: string | null = null,
+  ): Promise<{ deviceStatus: string; boundSourceIds: string[]; dashboardOrigins: string[] }> {
     const device = await this.repo.findDevice(deviceId);
     assertOk(evaluateDeviceStatus(device));
     await this.repo.touchHeartbeat(deviceId, agentVersion);
+    // Self-registration of the Gateway's local (loopback) endpoint, so the
+    // dashboard needs no manually entered address. Only fills an EMPTY
+    // endpoint or replaces one that is itself loopback (e.g. a port change);
+    // a staff-configured network endpoint is never overwritten. The DTO has
+    // already restricted localEndpoint to http on the loopback host.
+    let endpointNote = '';
+    if (localEndpoint && device!.endpoint !== localEndpoint && (device!.endpoint === null || isLoopbackEndpoint(device!.endpoint))) {
+      await this.repo.setEndpoint(deviceId, localEndpoint);
+      endpointNote = ` Local endpoint registered: ${localEndpoint}.`;
+    }
     // Locked architecture §12: a linked Installation's heartbeat/version is
     // metadata derived from its Gateway's — never a second, divergent signal.
     // Best-effort: a missing/decommissioned installation must never fail the
@@ -145,9 +161,11 @@ export class GatewayService {
     this.audit.annotate({
       targetType: 'gateway_device',
       targetId: deviceId,
-      reason: `Gateway heartbeat (agent ${agentVersion}).`,
+      reason: `Gateway heartbeat (agent ${agentVersion}).${endpointNote}`,
     });
-    return { deviceStatus: 'active', boundSourceIds: [] };
+    // The dashboard origins the Gateway's local listener must accept from
+    // browsers -- the SAME list the API's own CORS policy uses (web-origins.ts).
+    return { deviceStatus: 'active', boundSourceIds: [], dashboardOrigins: webOrigins() };
   }
 
   // --- staff: create a pairing nonce ---------------------------------------
@@ -388,6 +406,16 @@ function toDeviceView(row: GatewayDeviceRow): DeviceView {
     enrolledAt: row.enrolled_at.toISOString(),
     lastHeartbeatAt: row.last_heartbeat_at ? row.last_heartbeat_at.toISOString() : null,
   };
+}
+
+/** Whether a stored endpoint is a self-registered loopback one (and so may be
+ *  refreshed by the Gateway itself). */
+export function isLoopbackEndpoint(endpoint: string): boolean {
+  try {
+    return new URL(endpoint).hostname === GATEWAY_LOOPBACK_HOST;
+  } catch {
+    return false;
+  }
 }
 
 /** A high-entropy opaque token/code/nonce. Base64url, ~256 bits. */

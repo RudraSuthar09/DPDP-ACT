@@ -2,6 +2,7 @@ import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/commo
 import type { DataSource } from '@dpdp/shared';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
+import { CapabilityService } from '../capability/capability.service';
 import { DataSourceRepository, type DataSourceRow } from './data-source.repository';
 import type { CreateDataSourceInput, GatewayCustomerEventAction, UpdateDataSourceInput } from './data-source.dto';
 
@@ -24,6 +25,7 @@ export class DataSourceService {
     private readonly repo: DataSourceRepository,
     private readonly tenantContext: TenantContextService,
     private readonly audit: AuditContextService,
+    private readonly capability: CapabilityService,
   ) {}
 
   async create(input: CreateDataSourceInput): Promise<DataSource> {
@@ -73,6 +75,12 @@ export class DataSourceService {
    */
   async setMode(id: string, enabled: boolean): Promise<DataSource> {
     const ctx = this.tenantContext.getOrThrow();
+    // Turning the mode ON presupposes a Gateway that can eventually fulfil
+    // it; turning it OFF never does — a tenant that lost the capability
+    // (e.g. a plan change) must still be able to clean up existing state.
+    if (enabled) {
+      await this.capability.assertCapability('enterpriseGateway');
+    }
     const before = await this.repo.findOne(id);
     if (!before || before.status !== 'active') {
       throw new NotFoundException('Data source not found or has been removed.');

@@ -92,6 +92,8 @@ export interface RecordedRequest {
   method: string;
   path: string;
   headers: IncomingMessage['headers'];
+  /** Raw request body (JSON text), for asserting what the agent sent. */
+  body: string;
 }
 
 export interface MockBackend {
@@ -103,7 +105,20 @@ export interface MockBackend {
 
 /** A minimal DPDP backend: enroll, heartbeat and deenroll. */
 export async function startMockBackend(
-  opts: { tls?: 'localhost' | 'wrong-host' | null; host?: string; statusFor?: Record<string, number> } = {},
+  opts: {
+    tls?: 'localhost' | 'wrong-host' | null;
+    host?: string;
+    /** Listen on this port (e.g. to come back after a simulated outage). */
+    port?: number;
+    statusFor?: Record<string, number>;
+    /** Answer every request with an HTML 404 page, like a web front end. */
+    htmlSite?: boolean;
+    /** JSON body for POST /gateway/heartbeat (default {}). */
+    heartbeatReply?: unknown;
+    /** Replies to POST /gateway/submissions/claim, consumed in order; then
+     *  "nothing pending". */
+    claimReplies?: unknown[];
+  } = {},
 ): Promise<MockBackend> {
   const requests: RecordedRequest[] = [];
   const sockets = new Set<Socket>();
@@ -111,9 +126,15 @@ export async function startMockBackend(
   const deviceToken = `${b64({ alg: 'none' })}.${b64({ tenant_id: 'tenant-test' })}.sig`;
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
-    requests.push({ method: req.method ?? '', path: req.url ?? '', headers: req.headers });
-    req.resume();
+    const recorded: RecordedRequest = { method: req.method ?? '', path: req.url ?? '', headers: req.headers, body: '' };
+    requests.push(recorded);
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => (recorded.body += chunk));
     req.on('end', () => {
+      if (opts.htmlSite) {
+        res.writeHead(404, { 'content-type': 'text/html' }).end('<!DOCTYPE html><html><body>This page could not be found.</body></html>');
+        return;
+      }
       res.setHeader('content-type', 'application/json');
       const forced = opts.statusFor?.[req.url ?? ''];
       if (forced) {
@@ -121,6 +142,16 @@ export async function startMockBackend(
         res.end('{"message":"forced"}');
       } else if (req.url === '/gateway/enroll') {
         res.end(JSON.stringify({ device: { id: 'device-test' }, deviceToken }));
+      } else if (req.url === '/gateway/pair/redeem') {
+        // Pairing redemption: a short-lived data-plane session for the source.
+        res.end(JSON.stringify({ sessionToken: `mock-session-${requests.length}`, expiresAt: new Date(Date.now() + 300_000).toISOString() }));
+      } else if (req.url === '/gateway/submissions/claim') {
+        const next = opts.claimReplies?.shift();
+        res.end(JSON.stringify(next ?? { ready: false, reason: 'NOTHING_PENDING' }));
+      } else if (req.url?.startsWith('/gateway/submissions/') && req.url.endsWith('/ack')) {
+        res.end('{"ok":true}');
+      } else if (req.url === '/gateway/heartbeat' && opts.heartbeatReply !== undefined) {
+        res.end(JSON.stringify(opts.heartbeatReply));
       } else {
         res.end('{}');
       }
@@ -136,7 +167,7 @@ export async function startMockBackend(
     sockets.add(s);
     s.on('close', () => sockets.delete(s));
   });
-  await new Promise<void>((r) => server.listen(0, opts.host ?? '127.0.0.1', r));
+  await new Promise<void>((r) => server.listen(opts.port ?? 0, opts.host ?? '127.0.0.1', r));
   return { port: (server.address() as AddressInfo).port, requests, deviceToken, close: () => closeServer(server, sockets) };
 }
 

@@ -15,6 +15,9 @@ export interface ConsentFormRow {
   /** Central DPDP Storage simplification: months to retain this template's
    *  consent data in the client's local storage. Configuration only. */
   retention_months: number | null;
+  /** The authorized writable location this form's submissions spreadsheet is
+   *  saved into, or null for dashboard download only. */
+  export_storage_root_id: string | null;
   created_by: string | null;
   created_at: Date;
   updated_at: Date;
@@ -33,6 +36,23 @@ export interface CustomerFieldRow {
   is_customer_name: boolean;
   display_order: number;
   status: 'active' | 'removed';
+  /** Client-authored instructions for the respondent, or null. */
+  description: string | null;
+  /** Upload fields only — see the file-fields migration header. */
+  allowed_file_kinds: string | null;
+  max_file_bytes: number | null;
+}
+
+export interface SubmissionFileRow {
+  id: string;
+  submission_id: string;
+  field_id: string;
+  field_label: string;
+  filename: string;
+  byte_size: number;
+  content_type: string;
+  storage_root_id: string | null;
+  created_at: Date;
 }
 
 export interface FormRow {
@@ -183,7 +203,7 @@ export class ConsentFormsRepository {
   listCustomerFields(formId: string): Promise<CustomerFieldRow[]> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
-        `SELECT id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status
+        `SELECT id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status, description, allowed_file_kinds, max_file_bytes
            FROM consent_form_customer_fields
           WHERE form_id = $1 AND status = 'active'
           ORDER BY display_order, label`,
@@ -211,13 +231,21 @@ export class ConsentFormsRepository {
     isIdentifier: boolean;
     isCustomerName: boolean;
     displayOrder: number;
+    description: string | null;
+    allowedFileKinds: string | null;
+    maxFileBytes: number | null;
   }): Promise<CustomerFieldRow> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
-        `INSERT INTO consent_form_customer_fields (form_id, label, field_type, required, is_identifier, is_customer_name, display_order)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status`,
-        [input.formId, input.label, input.fieldType, input.required, input.isIdentifier, input.isCustomerName, input.displayOrder],
+        `INSERT INTO consent_form_customer_fields
+           (form_id, label, field_type, required, is_identifier, is_customer_name, display_order,
+            description, allowed_file_kinds, max_file_bytes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status, description, allowed_file_kinds, max_file_bytes`,
+        [
+          input.formId, input.label, input.fieldType, input.required, input.isIdentifier, input.isCustomerName,
+          input.displayOrder, input.description, input.allowedFileKinds, input.maxFileBytes,
+        ],
       );
       return rows[0]!;
     });
@@ -225,15 +253,28 @@ export class ConsentFormsRepository {
 
   updateCustomerField(
     fieldId: string,
-    input: { label: string; fieldType: string; required: boolean; isIdentifier: boolean; isCustomerName: boolean },
+    input: {
+      label: string;
+      fieldType: string;
+      required: boolean;
+      isIdentifier: boolean;
+      isCustomerName: boolean;
+      description: string | null;
+      allowedFileKinds: string | null;
+      maxFileBytes: number | null;
+    },
   ): Promise<CustomerFieldRow | null> {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<CustomerFieldRow>(
         `UPDATE consent_form_customer_fields
-            SET label = $2, field_type = $3, required = $4, is_identifier = $5, is_customer_name = $6, updated_at = now()
+            SET label = $2, field_type = $3, required = $4, is_identifier = $5, is_customer_name = $6,
+                description = $7, allowed_file_kinds = $8, max_file_bytes = $9, updated_at = now()
           WHERE id = $1 AND status = 'active'
-          RETURNING id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status`,
-        [fieldId, input.label, input.fieldType, input.required, input.isIdentifier, input.isCustomerName],
+          RETURNING id, form_id, label, field_type, required, is_identifier, is_customer_name, display_order, status, description, allowed_file_kinds, max_file_bytes`,
+        [
+          fieldId, input.label, input.fieldType, input.required, input.isIdentifier, input.isCustomerName,
+          input.description, input.allowedFileKinds, input.maxFileBytes,
+        ],
       );
       return rows[0] ?? null;
     });
@@ -467,6 +508,70 @@ export class ConsentFormsRepository {
     return this.db.withTenant(async (client) => {
       const { rows } = await client.query<{ id: string }>(`SELECT id FROM consent_forms WHERE is_active = true`);
       return rows.map((r) => r.id);
+    });
+  }
+
+  // --- submissions export ---------------------------------------------------
+
+  /** Point this form's submissions spreadsheet at an authorized writable
+   *  location, or clear it (null). The SERVICE checks the root is this
+   *  tenant's, active, gateway-provider and therefore writable; the DB's own
+   *  trigger re-checks the tenant (a plain FK does not apply RLS). */
+  setExportStorageRoot(formId: string, storageRootId: string | null): Promise<ConsentFormRow | null> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<ConsentFormRow>(
+        `UPDATE consent_forms SET export_storage_root_id = $2, updated_at = now()
+          WHERE id = $1 RETURNING *`,
+        [formId, storageRootId],
+      );
+      return rows[0] ?? null;
+    });
+  }
+
+  /**
+   * Records that an upload field produced a file. METADATA ONLY — label, the
+   * filename THIS SERVER generated, a byte count, the content type proved
+   * from the bytes, and the destination. No bytes and no customer path ever
+   * reach this table.
+   *
+   * Idempotent per (submission, field): a retried delivery of the same
+   * submission must not double-count a file in the export.
+   */
+  recordSubmissionFile(input: {
+    submissionId: string;
+    formId: string;
+    fieldId: string;
+    fieldLabel: string;
+    filename: string;
+    byteSize: number;
+    contentType: string;
+    storageRootId: string | null;
+  }): Promise<void> {
+    return this.db.withTenant(async (client) => {
+      await client.query(
+        `INSERT INTO consent_form_submission_files
+           (submission_id, form_id, field_id, field_label, filename, byte_size, content_type, storage_root_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (submission_id, field_id) DO NOTHING`,
+        [
+          input.submissionId, input.formId, input.fieldId, input.fieldLabel,
+          input.filename, input.byteSize, input.contentType, input.storageRootId,
+        ],
+      );
+    });
+  }
+
+  /** Every file collected for this form, for the export. Metadata only. */
+  listSubmissionFiles(formId: string): Promise<SubmissionFileRow[]> {
+    return this.db.withTenant(async (client) => {
+      const { rows } = await client.query<SubmissionFileRow>(
+        `SELECT id, submission_id, field_id, field_label, filename, byte_size, content_type, storage_root_id, created_at
+           FROM consent_form_submission_files
+          WHERE form_id = $1
+          ORDER BY created_at`,
+        [formId],
+      );
+      return rows;
     });
   }
 }

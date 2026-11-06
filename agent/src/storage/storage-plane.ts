@@ -6,8 +6,9 @@ import { StorageSessionStore } from './storage-session-store';
  * The Gateway STORAGE data plane. It authorizes a browser request against a
  * local storage session (established via the storage-plane control-plane
  * pairing, see storage-gateway.service.ts) and dispatches to the
- * StorageProvider for the named storage root. Folders only — no read/write
- * of file content, ever.
+ * StorageProvider for the named storage root. Folders, plus one narrow
+ * write (/storage/write -> StorageConnector.writeFile). Never a file-content
+ * READ.
  */
 
 /** The one outbound call the storage plane makes: redeem a storage pairing ->
@@ -29,7 +30,17 @@ export const STORAGE_PLANE_PATHS = new Set([
   '/storage/browse',
   '/storage/folder/create',
   '/storage/folder/verify',
+  '/storage/write',
 ]);
+
+/** Body size cap for /storage/write specifically — the server's global
+ *  MAX_CONTENT_LENGTH (server.ts) stays 4096 for every other route (health,
+ *  data-plane control messages); raising that global cap would weaken a
+ *  resource guard that protects routes with no legitimate reason to carry a
+ *  large body. Write's own request body is base64 file content, so it alone
+ *  gets a larger, EXPLICIT cap, enforced here before the body is even read
+ *  (see server.ts's per-route oversized check). */
+export const STORAGE_WRITE_MAX_CONTENT_LENGTH = Math.ceil((15 * 1024 * 1024 * 4) / 3) + 4096;
 
 export class StoragePlane {
   constructor(
@@ -68,6 +79,19 @@ export class StoragePlane {
   async verifyFolder(sessionToken: string, storageRootId: string, path: GatewayStoragePath) {
     return this.providerFor(sessionToken, storageRootId).verifyFolder(path);
   }
+
+  /** Same session-bound authorization as browse/createFolder/verifyFolder —
+   *  there is no separate "write-enabled" permission bit; an established
+   *  storage session for a root may write within it, exactly as it may
+   *  already browse and create folders within it (a storage root IS a write
+   *  destination by design — see the storage-configuration migration's own
+   *  header). Fails closed (UNSUPPORTED_SOURCE) if this provider has no
+   *  writeFile at all — defensive only; GatewayStorageProvider always has one. */
+  async writeFile(sessionToken: string, storageRootId: string, path: GatewayStoragePath, filename: string, contentBase64: string, overwrite: boolean) {
+    const provider = this.providerFor(sessionToken, storageRootId);
+    if (!provider.writeFile) throw Object.assign(new Error('UNSUPPORTED_SOURCE'), { code: 'UNSUPPORTED_SOURCE' });
+    return provider.writeFile(path, filename, contentBase64, overwrite);
+  }
 }
 
 // --- HTTP glue (kept out of server.ts; unit-testable without sockets) --------
@@ -84,6 +108,9 @@ const STATUS: Partial<Record<GatewayErrorCode, number>> = {
   FILE_NOT_FOUND: 404,
   RATE_LIMITED: 413,
   TIMEOUT: 504,
+  FILE_ALREADY_EXISTS: 409,
+  INVALID_FILENAME: 400,
+  UNSUPPORTED_SOURCE: 404,
 };
 
 export interface StoragePlaneReply {
@@ -111,6 +138,17 @@ function str(obj: Record<string, unknown>, field: string): string {
  *  that isn't a flat string array at the HTTP edge, before path-safety's own
  *  per-segment validation ever runs — defence in depth, same layering as
  *  data-plane.ts's fieldsObject()/columnType(). */
+/** Raw base64 text, bounded (defence in depth ahead of the provider's own
+ *  byte-length check against MAX_WRITE_BYTES) — not decoded here, so a
+ *  malformed value is the connector's INVALID_FILENAME, not a crash here. */
+function contentBase64(obj: Record<string, unknown>): string {
+  const v = obj['contentBase64'];
+  if (typeof v !== 'string' || v.length === 0 || v.length > STORAGE_WRITE_MAX_CONTENT_LENGTH) throw new Error('BAD_REQUEST');
+  return v;
+}
+function overwriteFlag(obj: Record<string, unknown>): boolean {
+  return obj['overwrite'] === true;
+}
 function storagePath(obj: Record<string, unknown>): GatewayStoragePath {
   const raw = obj['path'];
   if (!Array.isArray(raw)) throw new Error('BAD_REQUEST');
@@ -149,6 +187,8 @@ export async function handleStoragePlaneRequest(
         return ok(await sp.createFolder(token, storageRootId, storagePath(body), str(body, 'name')));
       case '/storage/folder/verify':
         return ok(await sp.verifyFolder(token, storageRootId, storagePath(body)));
+      case '/storage/write':
+        return ok(await sp.writeFile(token, storageRootId, storagePath(body), str(body, 'filename'), contentBase64(body), overwriteFlag(body)));
       default:
         return fail('NOT_FOUND');
     }

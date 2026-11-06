@@ -34,6 +34,8 @@ function fakeClient(overrides: Partial<GatewayControlPlaneClient> = {}): Gateway
     deenroll: jest.fn().mockResolvedValue(undefined),
     redeemPairing: jest.fn().mockResolvedValue({ sessionToken: 'x', expiresAt: '2026-01-01T00:00:00.000Z' }),
     redeemStoragePairing: jest.fn().mockResolvedValue({ sessionToken: 'x', expiresAt: '2026-01-01T00:00:00.000Z' }),
+    authorizeFolder: jest.fn().mockResolvedValue({ sourceId: 'src-1', storageRootId: null, label: 'Folder' }),
+    listFolderRevocations: jest.fn().mockResolvedValue({ revokedSourceIds: [], revokedStorageRootIds: [] }),
     listPendingSubmissions: jest.fn().mockResolvedValue({ submissions: [] }),
     claimSubmission: jest.fn().mockResolvedValue({ ready: false, reason: 'NOTHING_PENDING' }),
     ackSubmission: jest.fn().mockResolvedValue({ ok: true }),
@@ -164,22 +166,57 @@ describe('Phase 3C — heartbeat lifecycle', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
 
-  it('6. heartbeat fires on the configured interval using the persisted credential', async () => {
+  it('6. heartbeat fires immediately (Phase 6), then on the configured interval, using the persisted credential', async () => {
     const client = fakeClient();
     const stop = startHeartbeat(client, CRED, '1.0.0', 30, () => {}, () => {});
-    expect(client.heartbeat).not.toHaveBeenCalled();
-    await jest.advanceTimersByTimeAsync(30_000);
-    expect(client.heartbeat).toHaveBeenCalledWith(CRED.deviceToken, '1.0.0');
+    expect(client.heartbeat).not.toHaveBeenCalled(); // asynchronous: never inside startHeartbeat itself
+    await jest.advanceTimersByTimeAsync(0);
+    expect(client.heartbeat).toHaveBeenCalledTimes(1);
+    expect(client.heartbeat).toHaveBeenCalledWith(CRED.deviceToken, '1.0.0', null); // no local endpoint configured
+    await jest.advanceTimersByTimeAsync(29_000);
+    expect(client.heartbeat).toHaveBeenCalledTimes(1); // nothing before the interval elapses
     // Recursive setTimeout (Phase 1 overlap-safety fix): the NEXT call is
     // only scheduled once the first one's promise chain has settled, so the
     // second tick needs the async variant to actually land within this
     // window — advanceTimersByTimeAsync drains microtasks between timer
     // advances for exactly this reason.
-    await jest.advanceTimersByTimeAsync(30_000);
+    await jest.advanceTimersByTimeAsync(1_000);
     expect(client.heartbeat).toHaveBeenCalledTimes(2);
     stop();
     await jest.advanceTimersByTimeAsync(60_000);
     expect(client.heartbeat).toHaveBeenCalledTimes(2); // no more ticks after stop()
+  });
+
+  it('(Phase 6) reports the local endpoint on every heartbeat and hands the reply\'s dashboard origins over', async () => {
+    const heartbeat = jest.fn().mockResolvedValue({ dashboardOrigins: ['https://app.dpdp.example'] });
+    const onDashboardOrigins = jest.fn();
+    const handle = startHeartbeat(fakeClient({ heartbeat }), CRED, '1.0.0', 10, () => {}, () => {}, {
+      localEndpoint: 'http://loopback.test:7071',
+      onDashboardOrigins,
+    });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(heartbeat).toHaveBeenCalledWith(CRED.deviceToken, '1.0.0', 'http://loopback.test:7071');
+    expect(onDashboardOrigins).toHaveBeenCalledWith(['https://app.dpdp.example']);
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(heartbeat).toHaveBeenCalledTimes(2);
+    handle();
+  });
+
+  it('(Phase 6) an older backend that returns nothing is fine: no origins callback, still connected', async () => {
+    const onDashboardOrigins = jest.fn();
+    const handle = startHeartbeat(fakeClient({ heartbeat: jest.fn().mockResolvedValue(undefined) }), CRED, '1.0.0', 10, () => {}, () => {}, { onDashboardOrigins });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(handle.getState()).toBe('connected');
+    expect(onDashboardOrigins).not.toHaveBeenCalled();
+    handle();
+  });
+
+  it('(Phase 6) a freshly started heartbeat reports "connected" within moments, not after a full interval', async () => {
+    const handle = startHeartbeat(fakeClient(), CRED, '1.0.0', 60, () => {}, () => {});
+    await jest.advanceTimersByTimeAsync(0);
+    expect(handle.getState()).toBe('connected');
+    expect(handle.getLastSuccessAt()).not.toBeNull();
+    handle();
   });
 
   it('never overlaps: a heartbeat call still in flight is not joined by a second concurrent call', async () => {
@@ -240,7 +277,7 @@ describe('Phase 3C — heartbeat lifecycle', () => {
     const handle = startHeartbeat(client, CRED, '1.0.0', 10, () => {}, () => {});
     expect(handle.getLastSuccessAt()).toBeNull();
 
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(0);
     const firstSuccess = handle.getLastSuccessAt();
     expect(firstSuccess).not.toBeNull();
     expect(() => new Date(firstSuccess!).toISOString()).not.toThrow();
@@ -263,7 +300,7 @@ describe('Phase 3C — heartbeat lifecycle', () => {
     const onAuthFailure = jest.fn();
     const handle = startHeartbeat(fakeClient({ heartbeat }), CRED, '1.0.0', 10, log, onAuthFailure);
 
-    await jest.advanceTimersByTimeAsync(10_000);
+    await jest.advanceTimersByTimeAsync(0);
     expect(handle.getState()).toBe('degraded');
     expect(handle.getLastErrorCode()).toBe('PROXY_UNREACHABLE');
     await jest.advanceTimersByTimeAsync(10_000);

@@ -5,6 +5,8 @@ import { Logger } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+import { webOrigins } from './web-origins';
+import { parseTrustProxy } from './config/env.validation';
 
 /**
  * HTTP application entrypoint — the "app" container (one of two in Stage 1).
@@ -19,6 +21,13 @@ async function bootstrap(): Promise<void> {
   // (see EnterpriseStorageSyncService; each file is separately capped at 8MB
   // decoded in consent-forms.dto.ts's parseLinkSubmission, well under this).
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
+  // Behind a load balancer every request arrives from the balancer, so the
+  // per-IP rate limits (public forms, request portal) would see ONE client and
+  // throttle every visitor together. TRUST_PROXY=<hop count> makes req.ip the
+  // real client again. Unset = off (Express's default), which is correct with
+  // nothing in front — locally, and for the customer installer. Validated at
+  // startup (config/env.validation.ts), so an invalid value never reaches here.
+  app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY) ?? false);
   app.use(json({ limit: '30mb' }));
   app.use(urlencoded({ extended: true, limit: '30mb' }));
   app.enableShutdownHooks();
@@ -33,8 +42,7 @@ async function bootstrap(): Promise<void> {
   //     different credential header (X-Consent-Api-Key) instead of Authorization.
   // One enableCors call with a delegate keeps this a single, explicit,
   // reviewable branch rather than two competing cors() middlewares.
-  const webOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
-  const webOrigins = webOrigin.split(',').map((o) => o.trim());
+  const dashboardOrigins = webOrigins();
   app.enableCors((req, callback) => {
     const isPublicConsentRoute = (req.url ?? '').startsWith('/consent/public/');
     callback(
@@ -46,7 +54,7 @@ async function bootstrap(): Promise<void> {
             allowedHeaders: ['Content-Type', 'X-Consent-Api-Key', 'x-correlation-id'],
           }
         : {
-            origin: webOrigins,
+            origin: dashboardOrigins,
             methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
             allowedHeaders: ['Content-Type', 'Authorization', 'x-correlation-id'],
           },
@@ -66,7 +74,10 @@ async function bootstrap(): Promise<void> {
 
   const port = Number(process.env.API_PORT ?? 3001);
   await app.listen(port);
-  Logger.log(`DPDP API listening on http://localhost:${port}`, 'Bootstrap');
+  // The port only — inside a container or behind a load balancer, a
+  // "http://localhost:..." line would point operators at an address that does
+  // not reach this process.
+  Logger.log(`DPDP API listening on port ${port}`, 'Bootstrap');
 }
 
 void bootstrap();

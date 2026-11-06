@@ -38,7 +38,7 @@ import {
   type GatewayErrorCode,
   type ResourceHandle,
 } from '@dpdp/shared';
-import { apiFetch, ApiError } from './api';
+import { openGatewaySession, GatewaySessionError, type GatewaySession } from './gateway-session';
 import { getHandle, queryHandlePermission } from './local-source-handles';
 import { parseLocalFile, LocalFileError } from './local-file';
 
@@ -210,40 +210,17 @@ async function establishGatewaySession(source: DataSource): Promise<ActiveGatewa
     return cachedSession;
   }
 
-  let device: { id: string; endpoint: string | null; status: string } | null;
+  // The shared handshake (gateway-session.ts): active device -> pairing ->
+  // /session/establish, using the endpoint the Gateway registered itself.
+  let opened: GatewaySession;
   try {
-    const res = await apiFetch<{ device: { id: string; endpoint: string | null; status: string } | null }>('/gateway/devices/active');
-    device = res.device;
+    opened = await openGatewaySession(source.id);
   } catch (err) {
-    throw new CustomerResolutionError('AGENT_NOT_ENROLLED', err instanceof ApiError ? err.message : 'Could not reach the Gateway configuration.');
+    if (err instanceof GatewaySessionError) throw new CustomerResolutionError(err.code, err.message);
+    throw err;
   }
-  if (!device || device.status !== 'active') {
-    throw new CustomerResolutionError('AGENT_NOT_ENROLLED', 'No active Enterprise Gateway is connected for this tenant.');
-  }
-  if (!device.endpoint) {
-    throw new CustomerResolutionError('NOT_CONNECTED', 'The Enterprise Gateway has no configured endpoint yet.');
-  }
-
-  let pairing: { nonce: string };
-  try {
-    pairing = await apiFetch<{ nonce: string; expiresAt: string }>('/gateway/pairings', {
-      method: 'POST',
-      body: { sourceId: source.id, deviceId: device.id },
-    });
-  } catch (err) {
-    throw new CustomerResolutionError('SOURCE_NOT_AUTHORIZED', err instanceof ApiError ? err.message : 'Could not create a Gateway pairing for this source.');
-  }
-
-  const agentUrl = device.endpoint.replace(/\/+$/, '');
-  const establishRes = await fetch(`${agentUrl}/session/establish`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sourceId: source.id, nonce: pairing.nonce }),
-  }).catch(() => null);
-  if (!establishRes || !establishRes.ok) {
-    throw new CustomerResolutionError('TIMEOUT', 'Could not establish a session with the Enterprise Gateway. Is it running and reachable?');
-  }
-  const established = (await establishRes.json()) as { sessionToken: string; expiresAt: string };
+  const { agentUrl } = opened;
+  const established = { sessionToken: opened.sessionToken };
 
   const discovered = (await gatewayFetch(agentUrl, established.sessionToken, '/source/discover', { sourceId: source.id })) as {
     handles: ResourceHandle[];
@@ -264,7 +241,7 @@ async function establishGatewaySession(source: DataSource): Promise<ActiveGatewa
     agentUrl,
     sessionToken: established.sessionToken,
     resourceHandle: tables[0]!.handle,
-    expiresAt: Date.parse(established.expiresAt),
+    expiresAt: opened.expiresAt,
   };
   return cachedSession;
 }

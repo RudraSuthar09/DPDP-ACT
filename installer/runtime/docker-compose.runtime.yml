@@ -80,6 +80,12 @@ services:
       # The backend's CONTAINER-NETWORK address (dpdp-net) — agent and
       # backend are separate containers here too, never localhost.
       GATEWAY_CONTROL_PLANE_URL: ${GATEWAY_CONTROL_PLANE_URL:-http://backend:3001}
+      # Keep agent -> backend traffic on the container network even when the
+      # Docker CLI injects HTTP(S)_PROXY / NO_PROXY into containers (a proxy in
+      # ~/.docker/config.json). ADDED to the container's NO_PROXY, never
+      # replacing it; NO_PROXY / HTTP(S)_PROXY are deliberately not set here.
+      # Same setting and reasoning as the repo-root docker-compose.yml.
+      GATEWAY_NO_PROXY: backend
       # Where the agent persists its enrollment device credential between
       # restarts — backed by the named volume below, so it survives
       # `docker compose down` + `up` but not `down -v` (which correctly

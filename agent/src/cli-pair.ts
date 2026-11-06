@@ -10,6 +10,10 @@
  * Usage (always via the vendored runtime):
  *   node dist/cli-pair.js pair --stdin        stdin: {"enrollmentCode","controlPlaneUrl","displayName"?}
  *   node dist/cli-pair.js add-source --stdin  stdin: one GatewaySourceConfig object
+ *   node dist/cli-pair.js authorize-folder --stdin
+ *                                             stdin: {"root","access","label"?} — queues a
+ *                                             folder the administrator approved; the service
+ *                                             gets its DPDP ids on its next start
  *   node dist/cli-pair.js remove              asks the service to de-enrol on its next start
  *
  * Secrets (enrolment codes, database passwords) are accepted ONLY on stdin.
@@ -23,6 +27,7 @@ import { resolveAgentConfig } from './config-resolve';
 import { writeConfigFile } from './config-file';
 import { clearPendingEnrollment, writeDeenrollRequest, writePendingEnrollment } from './pending-enrollment';
 import { appendPendingSource } from './sources-file';
+import { appendPendingAuthorization, type PendingFolderAuthorization } from './pending-authorizations';
 import { hasPersistedCredentialFile } from './enrollment';
 import type { GatewaySourceConfig } from './connectors/registry';
 
@@ -103,6 +108,55 @@ export function runAddSourceAction(
   return { pendingCount: appendPendingSource(config.stateDir, source) };
 }
 
+/**
+ * Queues one folder an administrator approved in Gateway Setup. The SERVICE
+ * exchanges it for DPDP's record ids on its next start (only it can decrypt
+ * the device credential) — see startup-tasks.ts's applyPendingAuthorizations.
+ * Nothing here contacts DPDP, and no id is invented locally.
+ */
+export function runAuthorizeFolderAction(
+  input: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): { pendingCount: number } {
+  const { config } = resolveAgentConfig(env, platform);
+  return { pendingCount: appendPendingAuthorization(config.stateDir, parseAuthorizeFolderInput(input)) };
+}
+
+/**
+ * Drops a trailing separator ("D:\Exports\" -> "D:\Exports") so the same
+ * folder picked twice is recognised as the same entry. A drive or UNC ROOT
+ * keeps its separator: "D:\" must never become "D:", which Windows reads as
+ * "the current directory on D:", a different (and relative) place.
+ */
+export function normalizeFolderRoot(root: string): string {
+  const stripped = root.replace(/[\\/]+$/, '');
+  if (/^[a-zA-Z]:$/.test(stripped)) return `${stripped}\\`; // drive root
+  if (/^\\\\[^\\]+$/.test(stripped) || stripped === '' || stripped === '\\' || stripped === '/') return root; // UNC/host-only or bare root
+  return stripped;
+}
+
+/** Validates the wizard's hand-off: an absolute folder, a label, a permission. */
+export function parseAuthorizeFolderInput(input: unknown): PendingFolderAuthorization {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new CliInputError('Input must be a JSON object.');
+  }
+  const obj = input as Record<string, unknown>;
+  const root = normalizeFolderRoot(typeof obj.root === 'string' ? obj.root.trim() : '');
+  if (!/^(\/|[a-zA-Z]:[\\/]|\\\\)/.test(root)) throw new CliInputError('A full folder path is required.');
+  const access = obj.access;
+  if (access !== 'read' && access !== 'write' && access !== 'both') {
+    throw new CliInputError('access must be "read", "write" or "both".');
+  }
+  // The label defaults to the folder's own name — never the whole path, which
+  // must not reach DPDP.
+  const fallback = root.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+  const rawLabel = typeof obj.label === 'string' && obj.label.trim() ? obj.label.trim() : fallback;
+  const label = rawLabel.replace(/[\\/:*?"<>|\0]/g, '_').slice(0, 120);
+  if (!label) throw new CliInputError('The folder has no usable name.');
+  return { root, label, access };
+}
+
 /** Asks the service to de-enrol (it alone can read the device token) and
  *  drops any not-yet-redeemed pairing code. */
 export function runRemoveAction(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): void {
@@ -159,20 +213,22 @@ async function main(): Promise<void> {
   try {
     switch (action) {
       case 'pair':
-      case 'add-source': {
+      case 'add-source':
+      case 'authorize-folder': {
         if (!flags.includes('--stdin')) return fail(`"${action}" reads its input from stdin only; pass --stdin.`);
         const input = parseStdinJson(await readStdin());
         if (action === 'pair') {
           runPairAction(parsePairInput(input));
           return succeed();
         }
+        if (action === 'authorize-folder') return succeed(runAuthorizeFolderAction(input));
         return succeed(runAddSourceAction(input as GatewaySourceConfig));
       }
       case 'remove':
         runRemoveAction();
         return succeed();
       default:
-        return fail(`Unknown action. Expected one of: pair, add-source, remove.`);
+        return fail(`Unknown action. Expected one of: pair, add-source, authorize-folder, remove.`);
     }
   } catch (err) {
     // Validation errors from this package never include input values (see

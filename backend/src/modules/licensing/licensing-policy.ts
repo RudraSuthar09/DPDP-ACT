@@ -17,6 +17,10 @@ export interface LicenseForValidation {
   deployment_type: 'hosted' | 'client_server';
   status: 'pending' | 'active' | 'expired' | 'revoked';
   expires_at: Date | null;
+  /** Platform-admin approval gate — see the license-platform-admin-approval
+   *  migration. NULL means no platform admin has approved this license yet,
+   *  regardless of how healthy it otherwise looks. */
+  approved_at: Date | null;
 }
 
 export interface RequestedDeployment {
@@ -26,11 +30,16 @@ export interface RequestedDeployment {
 
 /**
  * A license entitles the requested installation configuration iff: it exists
- * (caller checks null separately — NotFound, not this function's job), it is
- * not revoked, it is not expired, its lifecycle status is one that can still
- * be activated/re-registered (`pending` or `active` — never `expired`), and
- * its plan/deployment_type match the request EXACTLY (no mixing, no partial
- * grants — locked architecture §9).
+ * (caller checks null separately — NotFound, not this function's job), a
+ * platform admin has approved it, it is not revoked, it is not expired, its
+ * lifecycle status is one that can still be activated/re-registered
+ * (`pending` or `active` — never `expired`), and its plan/deployment_type
+ * match the request EXACTLY (no mixing, no partial grants — locked
+ * architecture §9).
+ *
+ * The approval check runs FIRST, before revocation/expiry/plan-matching:
+ * an unapproved license should read to the caller as "not reviewed yet",
+ * not as any of those other, more specific rejections.
  */
 export function evaluateLicenseForActivation(
   license: LicenseForValidation | null,
@@ -38,6 +47,7 @@ export function evaluateLicenseForActivation(
   now: Date,
 ): LicensePolicyResult {
   if (!license) return fail('license key not recognised');
+  if (!license.approved_at) return fail('license is awaiting platform approval');
   if (license.status === 'revoked') return fail('license has been revoked');
   if (license.expires_at && license.expires_at.getTime() <= now.getTime()) return fail('license has expired');
   if (license.status !== 'pending' && license.status !== 'active') return fail('license is not currently valid');

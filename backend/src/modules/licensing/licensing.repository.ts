@@ -22,32 +22,50 @@ export interface LicenseRow {
   activated_at: Date | null;
   revoked_at: Date | null;
   revoke_reason: string | null;
-  created_by: string;
+  created_by: string | null;
+  /** Set instead of created_by when issued via the cross-tenant /admin/licenses
+   *  support tool — see the platform-admin migration. Exactly one of the two
+   *  is ever set. */
+  created_by_platform_admin: string | null;
+  /** Platform-admin approval gate — see the license-platform-admin-approval
+   *  migration. NULL until a platform admin approves this license. */
+  approved_at: Date | null;
+  approved_by_platform_admin: string | null;
   created_at: Date;
   updated_at: Date;
 }
 
 const LICENSE_COLS =
   'id, tenant_id, plan, deployment_type, installation_id, license_key_prefix, status, features, ' +
-  'issued_at, expires_at, activated_at, revoked_at, revoke_reason, created_by, created_at, updated_at';
+  'issued_at, expires_at, activated_at, revoked_at, revoke_reason, created_by, created_by_platform_admin, ' +
+  'approved_at, approved_by_platform_admin, created_at, updated_at';
 
-async function insertLicenseRow(
-  client: PoolClient,
-  input: {
-    plan: 'saas' | 'enterprise';
-    deploymentType: 'hosted' | 'client_server';
-    licenseKeyHash: string;
-    licenseKeyPrefix: string;
-    features: Record<string, unknown>;
-    expiresAt: Date | null;
-    createdBy: string;
-  },
-): Promise<LicenseRow> {
+interface InsertLicenseInput {
+  plan: 'saas' | 'enterprise';
+  deploymentType: 'hosted' | 'client_server';
+  licenseKeyHash: string;
+  licenseKeyPrefix: string;
+  features: Record<string, unknown>;
+  expiresAt: Date | null;
+  createdBy: string | null;
+  createdByPlatformAdmin: string | null;
+}
+
+async function insertLicenseRow(client: PoolClient, input: InsertLicenseInput): Promise<LicenseRow> {
   const { rows } = await client.query<LicenseRow>(
-    `INSERT INTO licenses (plan, deployment_type, license_key_hash, license_key_prefix, features, expires_at, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO licenses (plan, deployment_type, license_key_hash, license_key_prefix, features, expires_at, created_by, created_by_platform_admin)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING ${LICENSE_COLS}`,
-    [input.plan, input.deploymentType, input.licenseKeyHash, input.licenseKeyPrefix, JSON.stringify(input.features), input.expiresAt, input.createdBy],
+    [
+      input.plan,
+      input.deploymentType,
+      input.licenseKeyHash,
+      input.licenseKeyPrefix,
+      JSON.stringify(input.features),
+      input.expiresAt,
+      input.createdBy,
+      input.createdByPlatformAdmin,
+    ],
   );
   return rows[0]!;
 }
@@ -65,7 +83,9 @@ export class LicensingRepository {
     expiresAt: Date | null;
     createdBy: string;
   }): Promise<LicenseRow> {
-    return this.db.withTenant((client) => insertLicenseRow(client, input));
+    return this.db.withTenant((client) =>
+      insertLicenseRow(client, { ...input, createdBy: input.createdBy, createdByPlatformAdmin: null }),
+    );
   }
 
   /**
@@ -89,7 +109,52 @@ export class LicensingRepository {
       createdBy: string;
     },
   ): Promise<LicenseRow> {
-    return this.db.withTenantId(tenantId, (client) => insertLicenseRow(client, input));
+    return this.db.withTenantId(tenantId, (client) =>
+      insertLicenseRow(client, { ...input, createdBy: input.createdBy, createdByPlatformAdmin: null }),
+    );
+  }
+
+  /**
+   * The platform-admin sibling of createLicenseForTenant: same INSERT, but
+   * attributed to a platform_admins row instead of a users row (see the
+   * platform-admin migration's reasoning on licenses.created_by_platform_admin —
+   * a support action must never be recorded as if a tenant employee did it).
+   *
+   * `recordAudit` runs on the SAME client as the insert, in the SAME
+   * transaction — the platform-admin route has no ambient tenant context for
+   * the global AuditInterceptor to record against (see PlatformAdminController's
+   * @NoAudit routes), so this is how the license issuance still lands real
+   * evidence in the target tenant's own chain, via SystemAuditService (the
+   * sanctioned non-interceptor writer — see its header).
+   */
+  createLicenseForTenantByPlatformAdmin(
+    tenantId: string,
+    input: {
+      plan: 'saas' | 'enterprise';
+      deploymentType: 'hosted' | 'client_server';
+      licenseKeyHash: string;
+      licenseKeyPrefix: string;
+      features: Record<string, unknown>;
+      expiresAt: Date | null;
+    },
+    platformAdminId: string,
+    recordAudit: (client: PoolClient, row: LicenseRow) => Promise<void>,
+  ): Promise<LicenseRow> {
+    return this.db.withTenantId(tenantId, async (client) => {
+      const row = await insertLicenseRow(client, { ...input, createdBy: null, createdByPlatformAdmin: platformAdminId });
+      await recordAudit(client, row);
+      return row;
+    });
+  }
+
+  /** The platform-admin sibling of list(): same SELECT, explicit tenant
+   *  instead of the ambient request tenant — there is no request tenant on
+   *  the platform-admin tool's token (see PlatformAdminGuard). */
+  listForTenant(tenantId: string): Promise<LicenseRow[]> {
+    return this.db.withTenantId(tenantId, async (client) => {
+      const { rows } = await client.query<LicenseRow>(`SELECT ${LICENSE_COLS} FROM licenses ORDER BY created_at DESC`);
+      return rows;
+    });
   }
 
   /**
@@ -144,6 +209,35 @@ export class LicensingRepository {
         [id, installationId],
       );
       return rows[0] ?? null;
+    });
+  }
+
+  /**
+   * The platform-admin approval gate itself: a license cannot activate an
+   * installation until this runs (see evaluateLicenseForActivation). Explicit
+   * tenant (not withTenant) for the same reason as listForTenant/
+   * createLicenseForTenantByPlatformAdmin — the platform-admin tool has no
+   * ambient request tenant. `recordAudit` mirrors
+   * createLicenseForTenantByPlatformAdmin: same client, same transaction, so
+   * the approval lands real evidence in the target tenant's own chain.
+   */
+  approveForTenant(
+    tenantId: string,
+    licenseId: string,
+    platformAdminId: string,
+    recordAudit: (client: PoolClient, row: LicenseRow) => Promise<void>,
+  ): Promise<LicenseRow | null> {
+    return this.db.withTenantId(tenantId, async (client) => {
+      const { rows } = await client.query<LicenseRow>(
+        `UPDATE licenses
+            SET approved_at = now(), approved_by_platform_admin = $2
+          WHERE id = $1 AND approved_at IS NULL
+          RETURNING ${LICENSE_COLS}`,
+        [licenseId, platformAdminId],
+      );
+      const row = rows[0];
+      if (row) await recordAudit(client, row);
+      return row ?? null;
     });
   }
 

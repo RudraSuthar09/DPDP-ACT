@@ -1,6 +1,7 @@
-import { notFound } from 'next/navigation';
+import type { ConsentFormFileKind } from '@dpdp/shared';
 import { formPortalFetchServer } from '../../../lib/form-portal-api';
 import { FormIntake } from './FormIntake';
+import { FormTemporarilyUnavailable, FormUnavailable } from './FormUnavailable';
 
 interface PublicFormRow {
   consentPurposeId: string;
@@ -10,10 +11,14 @@ interface PublicFormRow {
 interface PublicFormField {
   id: string;
   label: string;
-  fieldType: 'text' | 'pdf' | 'excel';
+  fieldType: 'text' | 'file' | 'pdf' | 'excel';
   required: boolean;
   isIdentifier: boolean;
   isCustomerName: boolean;
+  description: string | null;
+  /** Upload configuration — what the respondent has to be told anyway. */
+  allowedFileKinds: ConsentFormFileKind | null;
+  maxFileBytes: number | null;
 }
 interface PublicFormDefinition {
   formId: string;
@@ -36,14 +41,24 @@ interface PublicFormDefinition {
  * title, description and real purpose/notice text are all in the initial
  * HTML, with no client round trip needed just to see what the form asks.
  *
- * An unresolvable or unpublished slug (`formPortalFetchServer` returns null on
- * a 404 from `app.resolve_consent_form_slug` / an archived-or-draft form)
- * calls Next's `notFound()` here, server-side.
+ * A link that does not open is NOT one situation. `formPortalFetchServer`
+ * hands back which of the four it is — the slug resolves to nothing, the form
+ * is switched off, the form has no consent item yet, or our own API failed —
+ * and each gets its own honest page. Collapsing them (as the old blanket not-found page on
+ * every 404 did) told visitors their link was wrong when the form was simply
+ * unfinished, or when the backend was down.
  */
 export default async function FormPortalPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const def = await formPortalFetchServer<PublicFormDefinition>(`/forms/${encodeURIComponent(slug)}`);
-  if (!def) notFound();
+  const lookup = await formPortalFetchServer<PublicFormDefinition>(`/forms/${encodeURIComponent(slug)}`);
+  if (!lookup.ok) {
+    return lookup.kind === 'unavailable' ? (
+      <FormUnavailable reason={lookup.reason} />
+    ) : (
+      <FormTemporarilyUnavailable />
+    );
+  }
+  const def = lookup.data;
 
   return (
     <div className="portal-wrap">

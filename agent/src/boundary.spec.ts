@@ -133,6 +133,10 @@ describe('Phase 3B — the agent skeleton has no data capability (boundary guard
       'atomic-write.ts',
       'sources-file.ts',
       'proxy-credentials.ts',
+      // Same kind of reader as pending-enrollment.ts: one small state file
+      // holding a folder an administrator approved (a path + a permission),
+      // never a secret and never customer data.
+      'pending-authorizations.ts',
     ];
     for (const [file, src] of Object.entries(code)) {
       if (EXEMPT.some((name) => file.endsWith(name))) continue;

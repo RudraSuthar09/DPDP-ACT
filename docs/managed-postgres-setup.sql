@@ -51,7 +51,25 @@ grant dpdp_owner to current_user;
 --    satisfied — it is here to be explicit and to survive a hardened database
 --    where CONNECT has been revoked from PUBLIC.
 -- ---------------------------------------------------------------------------
-grant connect on database postgres to dpdp_owner, dpdp_app;
+--    The CURRENT database, whatever it is named (Supabase: `postgres`; on RDS
+--    usually the database created with the instance, e.g. `dpdp`).
+--
+--    CREATE on the database for dpdp_owner: needed ONCE, by pg-boss's first
+--    install (`node dist/pgboss-install.js` in the migration task). pg-boss
+--    issues `CREATE SCHEMA IF NOT EXISTS pgboss`, and PostgreSQL checks this
+--    right before checking whether the schema exists — so pre-creating the
+--    schema here would not help. (The hosted Supabase database got the same
+--    grant from backend/demo/provision-pgboss.js.) Without it the migration
+--    task fails with "permission denied for database". After pg-boss is
+--    installed and docs/pgboss-least-privilege.sql has handed it to
+--    dpdp_jobs, revoke it again:
+--      REVOKE CREATE ON DATABASE <db> FROM dpdp_owner;
+do $$
+begin
+  execute format('grant connect on database %I to dpdp_owner, dpdp_app', current_database());
+  execute format('grant create on database %I to dpdp_owner', current_database());
+end
+$$;
 
 -- ---------------------------------------------------------------------------
 -- 3. The `app` schema, owned by dpdp_owner.

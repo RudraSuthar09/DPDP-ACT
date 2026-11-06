@@ -35,7 +35,7 @@ import { SystemAuditService } from './system-audit.service';
  *
  * What IS exported is `AuditContextService` (annotate an HTTP-mutation entry;
  * no database access at all), `AuditVerifierService` (read-only: list +
- * verifyChain), and now `SystemAuditService` — the one addition, and worth
+ * verifyChain), and `SystemAuditService` — the one addition, and worth
  * being explicit about why it does not weaken the control above.
  * `SystemAuditService` cannot append arbitrary data to an arbitrary chain: its
  * only method takes a `PoolClient` the caller must already hold (nothing but a

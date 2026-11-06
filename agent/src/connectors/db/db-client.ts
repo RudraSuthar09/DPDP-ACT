@@ -18,9 +18,30 @@ export interface DbConnection {
   password: string;
   database: string;
   /** Enable TLS to the database where the customer requires it. Config-driven —
-   *  never hardcoded. (This is DB-connection TLS, not the browser↔Gateway TLS,
-   *  which remains a later hardening phase.) */
+   *  never hardcoded. (This is DB-connection TLS, not the browser↔Gateway TLS.)
+   *  PostgreSQL: the server certificate AND host name are verified (libpq
+   *  sslmode=verify-full); there is no plaintext fallback. */
   ssl?: boolean;
+  /** PostgreSQL: PEM bundle of the CA(s) that issued the database server's
+   *  certificate, for private deployments. A file name relative to the Gateway
+   *  config directory (and it must live there — see source-tls.ts). When set,
+   *  ONLY these CAs are trusted for this connection (libpq sslrootcert). */
+  sslCaFile?: string;
+  /** Runtime only, never persisted: the validated PEM certificates loaded
+   *  from sslCaFile at startup (source-tls.ts). */
+  sslCa?: readonly string[];
+}
+
+/**
+ * TLS options for the PostgreSQL driver. Verification is never relaxed: no
+ * option here disables certificate or host-name checks (pg passes this object
+ * to tls.connect, whose defaults verify both; pg sets `servername` for DNS
+ * names, and Node checks an IP host against the certificate's IP SANs).
+ * `undefined` means plaintext, used only when the source says ssl is off.
+ */
+export function postgresTlsOptions(conn: DbConnection): { ca?: string[] } | undefined {
+  if (!conn.ssl) return undefined;
+  return conn.sslCa && conn.sslCa.length > 0 ? { ca: [...conn.sslCa] } : {};
 }
 
 export interface DbQueryResult {
@@ -71,7 +92,7 @@ function postgresClient(conn: DbConnection): DbClient {
   let client: { query: Function; end: Function } | null = null;
   const connect = async () => {
     const pg = (await loadDriver('pg')) as { Client: new (c: unknown) => { query: Function; end: Function; connect: Function } };
-    const c = new pg.Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database, ssl: conn.ssl ? { rejectUnauthorized: false } : undefined });
+    const c = new pg.Client({ host: conn.host, port: conn.port, user: conn.user, password: conn.password, database: conn.database, ssl: postgresTlsOptions(conn) });
     await c.connect();
     return c;
   };

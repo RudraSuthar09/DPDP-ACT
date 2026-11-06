@@ -43,6 +43,13 @@ services:
       dockerfile: backend/Dockerfile
     image: dpdp-backend:local
     container_name: dpdp-backend
+    # LOCAL ONLY: runs as root, although the image itself runs as the
+    # unprivileged `node` user. Docker Desktop presents the Windows folder
+    # bind-mounted below through a 9p mount fixed at uid 0 / mode 755, so only
+    # root can write into it — the Enterprise 'server' storage feature fails
+    # otherwise. Production does not mount a host folder and keeps the image's
+    # non-root default; so does installer/runtime/docker-compose.runtime.yml.
+    user: root
     env_file: .env
     environment:
       NODE_ENV: development
@@ -63,6 +70,10 @@ services:
     networks:
       - dpdp-net
     restart: unless-stopped
+    # Time for Nest's shutdown hooks after SIGTERM (in-flight requests finish,
+    # pg-boss stops gracefully, pools close) before Docker force-kills. The
+    # 10s default cut that short. Mirror this as the ECS stopTimeout.
+    stop_grace_period: 30s
 
   worker:
     build:
@@ -70,6 +81,8 @@ services:
       dockerfile: backend/Dockerfile
     image: dpdp-backend:local
     container_name: dpdp-worker
+    # LOCAL ONLY — same reason as backend: the Windows bind mount below.
+    user: root
     command: ['node', 'dist/worker.js']
     env_file: .env
     environment:
@@ -87,6 +100,8 @@ services:
     networks:
       - dpdp-net
     restart: unless-stopped
+    # A pg-boss job in flight gets to finish. See backend's stop_grace_period.
+    stop_grace_period: 30s
 
   frontend:
     build:
@@ -139,6 +154,16 @@ services:
       # agent and backend are separate containers. Overridable for a dev
       # setup where the backend runs outside Docker instead.
       GATEWAY_CONTROL_PLANE_URL: ${GATEWAY_CONTROL_PLANE_URL:-http://backend:3001}
+      # Keep agent -> backend traffic on the container network. The agent
+      # honours HTTP(S)_PROXY / NO_PROXY (agent/README.md, "Outbound
+      # connections"), and the Docker CLI injects those into containers when a
+      # proxy is set in ~/.docker/config.json; the backend's container name
+      # would not normally be in that NO_PROXY, so the agent would send it to
+      # the external proxy. GATEWAY_NO_PROXY is ADDED to whatever NO_PROXY the
+      # container has (never replaces it), so NO_PROXY / HTTP(S)_PROXY are
+      # deliberately not set here: Docker's or the customer's values apply
+      # unchanged to every other destination.
+      GATEWAY_NO_PROXY: backend
       # Where the agent persists its enrollment device credential between
       # restarts — backed by the named volume below so it survives
       # `docker compose down` + `up` (but not `down -v`, which removes it and

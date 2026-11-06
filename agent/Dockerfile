@@ -7,7 +7,13 @@
 #
 # Build from the REPO ROOT so the workspace + shared package are in context:
 #   docker build -f agent/Dockerfile -t dpdp-agent .
-FROM node:20-bookworm-slim AS base
+# Pinned to the exact Node the Windows Gateway installer ships, so this test
+# container runs the agent on the same runtime customers do. Deliberately
+# still runs as root: it is a local/Enterprise test harness, not a production
+# deployment target (the real Gateway is the Windows service), and existing
+# `dpdp_gateway_state` volumes were created root-owned — switching user here
+# would lock it out of its own enrollment credential.
+FROM node:22.17.0-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable

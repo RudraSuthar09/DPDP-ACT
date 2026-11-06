@@ -8,15 +8,23 @@
 //      request-file.js). There is no other privileged path.
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const http = require('node:http');
 const fs = require('node:fs');
 const { validateWorkspaceUrl } = require('./workspace-url');
-const { buildElevatedCommand, EXIT_UAC_CANCELLED } = require('./elevated-command');
-const { consumeResult, createRequestFile, scrubAndDelete, validatePairPayload, validateSourcePayload } = require('./request-file');
+const { buildElevatedCommand, describeHelperExit, EXIT_UAC_CANCELLED } = require('./elevated-command');
+const {
+  consumeResult,
+  createRequestFile,
+  scrubAndDelete,
+  validateFolderApprovalPayload,
+  validatePairPayload,
+  validateSourcePayload,
+} = require('./request-file');
 const { defaultConfigFilePath, resolveInstallLayout } = require('./paths');
+const { interpretStatus, parseServiceState } = require('./status-check');
 
 const LAYOUT = resolveInstallLayout();
 const AGENT_HEALTH_URL = 'http://127.0.0.1:7071/health';
@@ -84,7 +92,23 @@ function probeHealth() {
   });
 }
 
-ipcMain.handle('gateway:get-status', () => probeHealth());
+/** 'running' | 'starting' | 'stopped' | 'missing' | 'unknown' (sc.exe query needs no elevation). */
+function queryServiceState() {
+  try {
+    const r = spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'sc.exe'), ['query', 'DPDPGatewayAgent'], {
+      windowsHide: true,
+      timeout: 10_000,
+      encoding: 'utf8',
+    });
+    return parseServiceState(r.status, r.stdout);
+  } catch {
+    return 'unknown';
+  }
+}
+
+// Status counts only if it comes from THIS computer's Gateway service (see
+// status-check.js): another program on port 7071 is reported as such.
+ipcMain.handle('gateway:get-status', async () => interpretStatus(queryServiceState(), await probeHealth()));
 
 ipcMain.handle('gateway:get-config', () => {
   try {
@@ -98,6 +122,19 @@ ipcMain.handle('gateway:get-config', () => {
 
 ipcMain.handle('gateway:validate-workspace-url', (_event, raw) => validateWorkspaceUrl(raw));
 
+// The native Windows folder picker, so an administrator never types a path.
+// The renderer gets back ONLY the chosen folder's own path, which it then
+// sends through the SAME validated add-source route as before (the elevated
+// helper and the Gateway service re-validate it) -- the dialog grants no
+// access by itself, and nothing else on this machine is exposed.
+ipcMain.handle('gateway:pick-folder', async () => {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const opts = { properties: ['openDirectory'], title: 'Choose a folder DPDP may use' };
+  const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+  if (res.canceled || res.filePaths.length === 0) return { ok: true, canceled: true };
+  return { ok: true, canceled: false, path: res.filePaths[0] };
+});
+
 ipcMain.handle('gateway:open-external', (_event, url) => {
   // Only an https workspace origin (or http on localhost) -- never file:,
   // javascript:, a UNC path, or anything else a compromised renderer might pass.
@@ -108,9 +145,23 @@ ipcMain.handle('gateway:open-external', (_event, url) => {
 
 // --- the single privileged path ----------------------------------------------
 
+/** Whether the Windows service exists. `sc.exe query` needs no elevation;
+ *  1060 = ERROR_SERVICE_DOES_NOT_EXIST. Anything unexpected is treated as
+ *  "unknown" and does not block (the helper reports its own error then). */
+function serviceMissing() {
+  return queryServiceState() === 'missing';
+}
+
 function runElevatedHelper(action, payload) {
   if (!LAYOUT.installed) {
     return Promise.resolve({ ok: false, error: 'This action is only available in an installed DPDP Gateway.' });
+  }
+  if (serviceMissing()) {
+    // Checked BEFORE asking for UAC: elevation cannot help here.
+    return Promise.resolve({
+      ok: false,
+      error: 'The DPDP Gateway service is not installed on this computer, so the installation did not finish. Run the DPDP Gateway installer again, then retry. Reference: GW-SERVICE-MISSING.',
+    });
   }
   let files;
   try {
@@ -140,7 +191,10 @@ function runElevatedHelper(action, payload) {
       const result = consumeResult(files.resultPath);
       if (code === 0 && result && result.ok) return finish({ ok: true });
       if (code === EXIT_UAC_CANCELLED) return finish({ ok: false, cancelled: true, error: 'Permission was not granted.' });
-      finish({ ok: false, error: (result && result.error) || `The setup step failed (exit code ${code}).` });
+      // With a result file, the helper ran and says what failed. Without one
+      // it never reached its own error handling: name that stage instead of
+      // showing a raw (often unsigned 32-bit) exit code.
+      finish({ ok: false, error: (result && result.error) || describeHelperExit(code) });
     });
   });
 }
@@ -155,6 +209,14 @@ ipcMain.handle('gateway:add-source', (_event, input) => {
   const checked = validateSourcePayload(input);
   if (!checked.ok) return { ok: false, error: checked.reason };
   return runElevatedHelper('add-source', checked.payload);
+});
+
+// The customer path: approve a folder. No ids are entered or invented here —
+// the service asks DPDP for them, which is why this payload has none.
+ipcMain.handle('gateway:authorize-folder', (_event, input) => {
+  const checked = validateFolderApprovalPayload(input);
+  if (!checked.ok) return { ok: false, error: checked.reason };
+  return runElevatedHelper('authorize-folder', checked.payload);
 });
 
 ipcMain.handle('gateway:remove', () => runElevatedHelper('remove', {}));

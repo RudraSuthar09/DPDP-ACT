@@ -25,7 +25,7 @@ import { evaluateHost } from './host-auth';
 import { inspectAuthHeader, GATEWAY_AUTH_HEADER } from './auth';
 import { buildHealth, DEFAULT_NETWORK_SUMMARY, type GatewayStatusSummary } from './health';
 import { DATA_PLANE_PATHS, handleDataPlaneRequest, type DataPlane } from './data-plane';
-import { STORAGE_PLANE_PATHS, handleStoragePlaneRequest, type StoragePlane } from './storage/storage-plane';
+import { STORAGE_PLANE_PATHS, STORAGE_WRITE_MAX_CONTENT_LENGTH, handleStoragePlaneRequest, type StoragePlane } from './storage/storage-plane';
 
 /** Requests larger than this are refused outright (there is no legitimate body). */
 const MAX_CONTENT_LENGTH = 4096;
@@ -54,6 +54,10 @@ export interface AgentServerOptions {
    *  never cached. Absent only in tests that don't care about it; index.ts
    *  always supplies one. */
   getGatewayStatus?: () => GatewayStatusSummary;
+  /** Phase 6: dashboard origins learned from the authenticated control-plane
+   *  heartbeat (index.ts), allowed IN ADDITION to config.allowedOrigins.
+   *  Still exact matches only; read per request. */
+  getDashboardOrigins?: () => readonly string[];
 }
 
 const DISABLED_GATEWAY_STATUS: GatewayStatusSummary = {
@@ -63,6 +67,7 @@ const DISABLED_GATEWAY_STATUS: GatewayStatusSummary = {
   lastHeartbeatAt: null,
   sourcesConfigured: 0,
   storageRootsConfigured: 0,
+  pendingFolderAuthorizations: 0,
   sourceKinds: {},
   enrollmentError: null,
   sourcesError: null,
@@ -70,15 +75,17 @@ const DISABLED_GATEWAY_STATUS: GatewayStatusSummary = {
   network: DEFAULT_NETWORK_SUMMARY,
 };
 
-/** Read a bounded JSON body. The oversized guard already capped content-length,
- *  so this never buffers more than MAX_CONTENT_LENGTH bytes. */
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
+/** Read a bounded JSON body. The oversized guard already capped content-length
+ *  (to `limit`, which defaults to MAX_CONTENT_LENGTH — only /storage/write
+ *  passes the larger, EXPLICIT limit it needs for base64 file content), so
+ *  this never buffers more than `limit` bytes. */
+function readJsonBody(req: IncomingMessage, limit: number = MAX_CONTENT_LENGTH): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = '';
     let size = 0;
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_CONTENT_LENGTH) {
+      if (size > limit) {
         reject(new Error('RATE_LIMITED'));
         req.destroy();
         return;
@@ -123,11 +130,12 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
   const dataPlane = options.dataPlane;
   const storagePlane = options.storagePlane;
   const getGatewayStatus = options.getGatewayStatus ?? (() => DISABLED_GATEWAY_STATUS);
+  const getDashboardOrigins = options.getDashboardOrigins ?? (() => []);
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     const method = req.method ?? 'GET';
     const path = (req.url ?? '/').split('?')[0] ?? '/';
     const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
-    const originDecision = evaluateOrigin(origin, config.allowedOrigins);
+    const originDecision = evaluateOrigin(origin, [...config.allowedOrigins, ...getDashboardOrigins()]);
     const hostDecision = evaluateHost(req.headers.host, config);
 
     const done = (status: number, note: string): void => {
@@ -136,9 +144,13 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
       log(`${method} ${path} -> ${status} [origin:${originDecision} mode:${config.networkMode}] ${note}`);
     };
 
-    // 0. Oversized guard — before anything else.
+    // 0. Oversized guard — before anything else. /storage/write is the ONE
+    //    route whose legitimate body (base64 file content) can exceed the
+    //    default cap; every other route, including every other storage- and
+    //    data-plane operation, keeps the default MAX_CONTENT_LENGTH.
+    const bodyLimit = path === '/storage/write' ? STORAGE_WRITE_MAX_CONTENT_LENGTH : MAX_CONTENT_LENGTH;
     const contentLength = Number(req.headers['content-length'] ?? 0);
-    if (Number.isFinite(contentLength) && contentLength > MAX_CONTENT_LENGTH) {
+    if (Number.isFinite(contentLength) && contentLength > bodyLimit) {
       sendError(res, 413, 'RATE_LIMITED');
       return done(413, 'oversized');
     }
@@ -168,9 +180,12 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
           }
         : {};
 
-    // 2. CORS preflight for the custom auth header.
+    // 2. CORS preflight for the custom auth header. A hosted (https) dashboard
+    //    calling this loopback listener triggers Chrome's Private Network
+    //    Access preflight; opt in ONLY for an exactly-allowed origin.
     if (method === 'OPTIONS') {
-      res.writeHead(204, corsHeaders);
+      const pna = originDecision === 'allowed' && req.headers['access-control-request-private-network'] === 'true';
+      res.writeHead(204, pna ? { ...corsHeaders, 'access-control-allow-private-network': 'true' } : corsHeaders);
       res.end();
       return done(204, 'preflight');
     }
@@ -202,7 +217,7 @@ export function createAgentServer(config: AgentConfig, options: AgentServerOptio
     if (storagePlane && STORAGE_PLANE_PATHS.has(path)) {
       const header = req.headers[GATEWAY_AUTH_HEADER];
       const sessionToken = typeof header === 'string' ? header : undefined;
-      void readJsonBody(req)
+      void readJsonBody(req, bodyLimit)
         .then(async (body) => {
           const reply = await handleStoragePlaneRequest(storagePlane, { method, path, sessionToken, body });
           sendJson(res, reply.status, reply.json, corsHeaders);

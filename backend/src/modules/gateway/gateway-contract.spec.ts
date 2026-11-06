@@ -279,6 +279,8 @@ describe('Phase 3A — Guard 8: data-plane read/search require source+session, n
         '/source/customer/write',
         '/source/customer/create',
         '/source/column/create',
+        // File picker: one folder level by opaque handle (metadata only).
+        '/source/browse',
       ].sort(),
     );
   });
@@ -307,7 +309,7 @@ describe('Phase 3A — Guard: the resource handle is source-agnostic and opaque'
   });
 
   it('ResourceHandle is opaque + descriptor-only — no path/SQL/table/credential/value field', () => {
-    for (const typeName of ['ResourceHandle', 'ResourceDescriptor']) {
+    for (const typeName of ['ResourceHandle', 'ResourceDescriptor', 'GatewaySourceBrowseEntry', 'GatewaySourceBrowseRequest']) {
       const body = interfaceBody(code, typeName);
       const fieldKeys = Array.from(body.matchAll(/(^|\n)\s*([a-zA-Z0-9_]+)\??\s*:/g)).map((m) => (m[2] ?? '').toLowerCase());
       for (const forbidden of [

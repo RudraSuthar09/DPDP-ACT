@@ -72,13 +72,23 @@ function Assert-AdminOnlyWritable([string]$Path) {
   # Standard users must not be able to replace anything the service (or the
   # elevated helper) executes -- that would be a privilege escalation.
   $risky = @('S-1-1-0', 'S-1-5-11', 'S-1-5-32-545', 'S-1-5-4')  # Everyone, Authenticated Users, Users, Interactive
-  $writeMask = [System.Security.AccessControl.FileSystemRights]'Write, Modify, FullControl, CreateFiles, AppendData, TakeOwnership, ChangePermissions, Delete'
+  # ONLY bits that grant writing. (The composite names Modify/FullControl also
+  # contain READ bits -- ReadData, Execute, Synchronize... -- so OR-ing them
+  # in made the ordinary "Users: Read & execute" entry on every Program Files
+  # folder look writable, and the install always failed.)
+  #   WriteData/CreateFiles 0x2, AppendData/CreateDirectories 0x4,
+  #   WriteExtendedAttributes 0x10, DeleteSubdirectoriesAndFiles 0x40,
+  #   WriteAttributes 0x100, Delete 0x10000, ChangePermissions 0x40000,
+  #   TakeOwnership 0x80000, GENERIC_ALL 0x10000000, GENERIC_WRITE 0x40000000.
+  $writeMask = [long](0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000)
   foreach ($item in @(Get-Item -LiteralPath $Path) + @(Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue)) {
     if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "Refusing to install: $($item.FullName) is a link/junction." }
     foreach ($ace in (Get-Acl -LiteralPath $item.FullName).Access) {
       if ($ace.AccessControlType -ne 'Allow') { continue }
       $sid = try { $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { '' }
-      if ($risky -contains $sid -and ($ace.FileSystemRights -band $writeMask)) {
+      # Generic rights (e.g. GENERIC_READ 0x80000000) surface as a negative Int32: take the low 32 bits as unsigned.
+      $rights = ([long][int]$ace.FileSystemRights) -band [long]4294967295
+      if ($risky -contains $sid -and ($rights -band $writeMask)) {
         throw "Refusing to install: non-administrators can modify $($item.FullName). Install under Program Files."
       }
     }
@@ -107,6 +117,12 @@ function Set-ProtectedDirectory([string]$Path, [string[]]$Grants) {
     Invoke-Native 'icacls.exe' @("$Path\*", '/reset', '/T', '/C', '/Q') | Out-Null
   }
 }
+
+# The installer shows this file's text when the script fails, so the customer
+# sees the real cause (e.g. WinSW's own error) and not just an exit code.
+# Installation messages carry no secrets; it lives in admin-only {app}.
+$ErrorFile = Join-Path $InstallDir 'install-service.error.txt'
+Remove-Item -LiteralPath $ErrorFile -Force -ErrorAction SilentlyContinue
 
 try {
   Write-Host "Installing the DPDP Gateway Agent service from $InstallDir ..."
@@ -162,6 +178,11 @@ try {
 } catch {
   Write-Host "INSTALL FAILED: $($_.Exception.Message)"
   Write-Host "Logs: $InstallDir\install-service.log and $LogsDir"
+  # Collapse to readable lines (native tools' output is appended to the
+  # message) and cap the length for the installer's dialog.
+  $summary = (($_.Exception.Message -split "`r?`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 6) -join "`r`n"
+  if ($summary.Length -gt 700) { $summary = $summary.Substring(0, 700) + ' ...' }
+  try { [IO.File]::WriteAllText($ErrorFile, $summary, (New-Object Text.UTF8Encoding $false)) } catch {}
   exit 1
 } finally {
   try { Stop-Transcript | Out-Null } catch {}

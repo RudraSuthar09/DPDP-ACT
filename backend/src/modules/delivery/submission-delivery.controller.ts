@@ -4,7 +4,7 @@ import type { RequestWithGatewayDevice } from '../../tenancy/gateway-device.midd
 import { AllowGatewayDevice } from '../identity/rbac/roles.decorator';
 import { Audited } from '../audit/audited.decorator';
 import { SubmissionDeliveryService } from './submission-delivery.service';
-import { parseFailDeliveryInput, requireUuidParam } from './submission-delivery.dto';
+import { parseClaimInput, parseFailDeliveryInput, requireUuidParam } from './submission-delivery.dto';
 
 /**
  * Device-facing routes for the submission delivery queue — reached ONLY by an
@@ -35,9 +35,9 @@ export class SubmissionDeliveryController {
   @AllowGatewayDevice()
   @Audited('delivery.submission.claimed')
   @HttpCode(HttpStatus.OK)
-  async claim(@Req() req: RequestWithGatewayDevice) {
+  async claim(@Req() req: RequestWithGatewayDevice, @Body() body: unknown) {
     const deviceId = requireDevice(req);
-    return this.delivery.claim(deviceId);
+    return this.delivery.claim(deviceId, parseClaimInput(body));
   }
 
   @Post(':id/ack')

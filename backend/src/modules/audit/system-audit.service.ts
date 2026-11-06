@@ -4,8 +4,11 @@ import type { AuditReceipt, AuditWrite } from '@dpdp/shared';
 import { AUDIT_SINK, PostgresAuditSink } from './postgres-audit.sink';
 
 /**
- * THE SECOND SANCTIONED CALLER of the audit sink — for entries with no HTTP
- * request behind them at all.
+ * THE SANCTIONED NON-INTERCEPTOR CALLER of the audit sink — for entries with
+ * no USABLE ambient tenant context for the global AuditInterceptor to record
+ * against, whether because there is no HTTP request at all (a worker-fired
+ * deadline) or because the request's own bearer token deliberately carries no
+ * tenant (the platform-admin tool — see below).
  *
  * ===========================================================================
  * WHY THIS EXISTS
@@ -24,6 +27,17 @@ import { AUDIT_SINK, PostgresAuditSink } from './postgres-audit.sink';
  * changes its character from "a quirk of this feature" to "a missing capability
  * every worker-fired module will hit next" — Breach's own escalation service
  * said as much. This class is that capability.
+ *
+ * A third, differently-shaped case hits the identical gap:
+ * `LicensingService.issueForPlatformAdmin` (the cross-tenant /admin/licenses
+ * support tool). That request DOES have an HTTP context, but its bearer token
+ * is `typ='platform_admin'` — deliberately carrying no `tenant_id`, because
+ * the whole point of the tool is to act on a tenant chosen per-call, not one
+ * bound to the caller's own session (see the platform-admin migration). The
+ * global interceptor has nothing to record against for such a request
+ * (@NoAudit is set on its route for exactly that reason) — so the mutation
+ * uses this same capability, with the explicitly-chosen tenant standing in
+ * for "the tenant the worker's deadline row named."
  *
  * ===========================================================================
  * WHY THIS IS NOT A SECOND WRITER (R3 survives)
@@ -47,12 +61,19 @@ import { AUDIT_SINK, PostgresAuditSink } from './postgres-audit.sink';
  * ===========================================================================
  * WHO MAY CALL THIS, AND HOW
  *
- * Exactly two callers today, both worker-side escalation services, both
- * gating the call on the trigger being one the WORKER produces
- * (`sla_proximity` / `sla_breach`), never `'manual'` — a manually-triggered
- * escalation runs through an HTTP route and is already audited the ordinary
- * way; writing here too would double the entry. See
- * `RequestEscalationService.escalate` and `BreachEscalationService.escalate`.
+ * Three callers today.
+ *
+ * Two are worker-side escalation services, both gating the call on the
+ * trigger being one the WORKER produces (`sla_proximity` / `sla_breach`),
+ * never `'manual'` — a manually-triggered escalation runs through an HTTP
+ * route and is already audited the ordinary way; writing here too would
+ * double the entry. See `RequestEscalationService.escalate` and
+ * `BreachEscalationService.escalate`.
+ *
+ * The third is `LicensingService.issueForPlatformAdmin`, gated by its route
+ * carrying no tenant JWT at all (PlatformAdminGuard, not TenantGuard) rather
+ * than by a trigger field — there is no ordinary audited path this could ever
+ * double, because a platform-admin request can never carry one.
  *
  *   constructor(private readonly systemAudit: SystemAuditService) {}
  *   ...

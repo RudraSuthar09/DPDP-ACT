@@ -111,6 +111,11 @@ describe('Storage & Folder Mapping — configuration only; no automatic guessing
       'listRoots',
       'removeFolder',
       'removeRoot',
+      // "Remove folder" in Sources & Storage: tombstones a GATEWAY root
+      // without dismantling its mirrored folder tree first, and without
+      // deleting or repointing any mapping into it (see the method's header).
+      // Still configuration only — a status change on a pointer.
+      'revokeGatewayRoot',
       'setMapping',
       'updateRoot',
       // Central DPDP Storage automatic sync (Enterprise): a read-only

@@ -1,10 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { TakeTheTourButton } from '../../../components/ProductTour';
 import { ActivationPanel } from '../../../components/ActivationGate';
 import { useAuth } from '../../../lib/auth';
 import { useCapabilities } from '../../../lib/capabilities';
+import { apiFetch } from '../../../lib/api';
 
 /**
  * Settings index. Exists because the guided tour needed a permanent, findable
@@ -22,9 +24,42 @@ const TOUR_STATUS_TEXT: Record<string, string> = {
 const PLAN_LABEL: Record<string, string> = { saas: 'SaaS', enterprise: 'Enterprise' };
 const DEPLOYMENT_LABEL: Record<string, string> = { hosted: 'Hosted (by us)', client_server: 'Client server' };
 
+interface ActiveInstallation {
+  id: string;
+  version: string;
+  registeredAt: string;
+  lastHeartbeatAt: string | null;
+}
+
+const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
+
 export default function SettingsPage() {
   const { user } = useAuth();
   const { capabilities, refresh: refreshCapabilities } = useCapabilities();
+
+  // undefined = not checked yet, null = checked and none active. Only the
+  // roles that could ever activate one are worth checking for — same gate
+  // InstallationController itself enforces, so this never fires a request
+  // that would just 403.
+  const [installation, setInstallation] = useState<ActiveInstallation | null | undefined>(undefined);
+  const canManageInstallation = !!user && MANAGE_ROLES.has(user.role);
+
+  useEffect(() => {
+    if (!canManageInstallation) return;
+    let cancelled = false;
+    apiFetch<{ installation: ActiveInstallation | null }>('/installations/active')
+      .then((data) => {
+        if (!cancelled) setInstallation(data.installation);
+      })
+      .catch(() => {
+        // Fail open to the activation form rather than get stuck showing
+        // neither state on a transient error.
+        if (!cancelled) setInstallation(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canManageInstallation]);
 
   // Live once /capabilities resolves; falls back to the user profile's own
   // plan/deploymentType (same values, org-level default) while loading so
@@ -78,8 +113,31 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {user && (user.role === 'owner' || user.role === 'dpo' || user.role === 'compliance_officer') && (
-        <ActivationPanel onActivated={refreshCapabilities} />
+      {canManageInstallation && installation && (
+        <div className="panel" style={{ marginTop: 16 }}>
+          <h2 style={{ marginTop: 0 }}>
+            Installation &amp; licensing <span className="badge success" style={{ marginLeft: 8, verticalAlign: 'middle' }}>● Active</span>
+          </h2>
+          <p className="muted" style={{ fontSize: '0.9rem', marginTop: 0 }}>
+            This deployment is activated — version {installation.version}, registered{' '}
+            {new Date(installation.registeredAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
+            No license key is needed again unless you&apos;re switching to a different one.
+          </p>
+          <button type="button" onClick={() => setInstallation(null)}>
+            Activate a different license key
+          </button>
+        </div>
+      )}
+
+      {canManageInstallation && installation === null && (
+        <ActivationPanel
+          onActivated={() => {
+            refreshCapabilities();
+            apiFetch<{ installation: ActiveInstallation | null }>('/installations/active')
+              .then((data) => setInstallation(data.installation))
+              .catch(() => {});
+          }}
+        />
       )}
 
       <div className="panel" style={{ marginTop: 16 }} data-tour="settings-tour-panel">
@@ -103,6 +161,17 @@ export default function SettingsPage() {
         </p>
         <Link href="/settings/notifications">Notification channels</Link>
       </div>
+
+      {canManageInstallation && (
+        <div className="panel" style={{ marginTop: 16 }}>
+          <h2 style={{ marginTop: 0 }}>Gateway &amp; storage administration</h2>
+          <p className="muted" style={{ fontSize: '0.9rem', marginTop: 0 }}>
+            Connect or revoke the DPDP Gateway, add a data source by hand, and configure where collected data is
+            written. Ordinary use needs none of this — connected folders appear under Sources &amp; Storage on their own.
+          </p>
+          <Link href="/storage">Gateway &amp; storage administration</Link>
+        </div>
+      )}
     </div>
   );
 }

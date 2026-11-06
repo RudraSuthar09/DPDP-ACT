@@ -9,10 +9,13 @@ const { spawnSync } = require('node:child_process');
 const {
   ACTIONS,
   EXIT_LAUNCH_FAILED,
+  EXIT_POWERSHELL_BAD_COMMAND_LINE,
   EXIT_UAC_CANCELLED,
   buildArgumentListLiteral,
   buildElevatedCommand,
+  describeHelperExit,
   quotePowerShellSingle,
+  quoteWindowsArg,
 } = require('./elevated-command');
 
 let passed = 0;
@@ -32,7 +35,7 @@ check('quotePowerShellSingle doubles embedded quotes', () => {
 });
 
 check('only the four known actions can be elevated', () => {
-  assert.deepStrictEqual([...ACTIONS], ['pair', 'add-source', 'remove', 'restart']);
+  assert.deepStrictEqual([...ACTIONS], ['pair', 'add-source', 'authorize-folder', 'remove', 'restart']);
   for (const bad of ['shell', 'pair; calc', '', undefined, 'PAIR']) {
     assert.throws(() => buildElevatedCommand(HELPER, bad, REQ), /Unknown elevated action/);
   }
@@ -52,9 +55,39 @@ check('the request path must be absolute and match the strict request-file name'
 
 check('the generated command carries no data beyond fixed flags, the helper path and the request path', () => {
   const cmd = buildElevatedCommand(HELPER, 'add-source', REQ);
-  assert.ok(cmd.includes('-Verb RunAs -Wait -PassThru'));
-  assert.ok(cmd.includes("'-Action','add-source','-RequestFile'"));
+  assert.ok(cmd.includes('-Verb RunAs -WindowStyle Hidden -Wait -PassThru'));
+  // The elevated console must never be visible to a customer.
+  assert.ok(cmd.includes('-WindowStyle Hidden'));
+  // ...and the helper is told it will not be prompted.
+  assert.ok(cmd.includes('-NonInteractive'));
+  assert.ok(cmd.includes('-Action add-source -RequestFile'));
   assert.ok(!/password|enrollment|code/i.test(cmd.replace(/NativeErrorCode|ExitCode/g, '')));
+});
+
+check('(Phase 6 root cause) -ArgumentList is ONE string with paths containing spaces quoted, never a PowerShell array', () => {
+  const cmd = buildElevatedCommand(HELPER, 'pair', REQ);
+  assert.ok(!/-ArgumentList @\(/.test(cmd), 'an array -ArgumentList is joined WITHOUT quoting by Windows PowerShell 5.1');
+  assert.ok(cmd.includes('-File "C:\\Program Files\\DPDP Gateway\\elevated-helper.ps1"'));
+});
+
+check('quoteWindowsArg follows the Windows command-line rules', () => {
+  assert.strictEqual(quoteWindowsArg('pair'), 'pair');
+  assert.strictEqual(quoteWindowsArg('C:\\Program Files\\x.ps1'), '"C:\\Program Files\\x.ps1"');
+  assert.strictEqual(quoteWindowsArg('C:\\dir with space\\'), '"C:\\dir with space\\\\"');
+  assert.strictEqual(quoteWindowsArg('a"b'), '"a\\"b"');
+  assert.strictEqual(quoteWindowsArg(''), '""');
+});
+
+check('a helper that never wrote its result is reported by stage, with a reference -- never a raw unsigned exit code', () => {
+  const msg = describeHelperExit(4294770688); // what Electron reported for -196608
+  assert.match(msg, /could not be started/);
+  assert.match(msg, /GW-HELPER-START 0xFFFD0000/);
+  assert.ok(!msg.includes('4294770688'));
+  assert.strictEqual(describeHelperExit(-196608), msg);
+  assert.match(describeHelperExit(EXIT_LAUNCH_FAILED), /GW-HELPER-LAUNCH 0x00000002/);
+  assert.match(describeHelperExit(9), /GW-HELPER-EXIT 0x00000009/);
+  assert.match(describeHelperExit(null), /GW-HELPER-EXIT none/);
+  assert.strictEqual(EXIT_POWERSHELL_BAD_COMMAND_LINE >>> 0, 4294770688);
 });
 
 function runPowerShell(script) {
@@ -93,17 +126,69 @@ checkWin('REAL PowerShell: the elevated helper\'s own exit code is passed throug
   assert.strictEqual(r.status, 7);
 });
 
-checkWin('REAL PowerShell: Start-Process receives exactly the expected argument list', () => {
+checkWin('REAL PowerShell: Start-Process receives the verb and one quoted argument string', () => {
   const r = runPowerShell(
-    'function Start-Process { param($FilePath, $ArgumentList, $Verb, [switch]$Wait, [switch]$PassThru) ' +
-      "[Console]::Out.WriteLine(\"$FilePath|$Verb|$($ArgumentList -join '|')\"); [pscustomobject]@{ ExitCode = 0 } }\n" +
+    'function Start-Process { param($FilePath, $ArgumentList, $Verb, $WindowStyle, [switch]$Wait, [switch]$PassThru) ' +
+      "[Console]::Out.WriteLine(\"$FilePath|$Verb|$($ArgumentList.GetType().Name)|$ArgumentList\"); [pscustomobject]@{ ExitCode = 0 } }\n" +
       buildElevatedCommand(HELPER, 'pair', REQ),
   );
   assert.strictEqual(r.status, 0, r.stderr);
   assert.strictEqual(
     r.stdout.trim().split(/\r?\n/)[0],
-    `powershell.exe|RunAs|-NoProfile|-ExecutionPolicy|Bypass|-File|${HELPER}|-Action|pair|-RequestFile|${REQ}`,
+    `powershell.exe|RunAs|String|-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${HELPER}" -Action pair -RequestFile ${REQ}`,
   );
+});
+
+// The regression test for the real failure ("The setup step failed (exit code
+// 4294770688)"): the REAL Start-Process (not a stand-in) starting a REAL
+// helper whose path contains spaces, through the same node spawn main.js
+// uses. Only "-Verb RunAs" is removed -- a test cannot answer a UAC prompt --
+// so this does NOT exercise elevation itself.
+checkWin('REAL Start-Process: a helper under a path WITH SPACES runs and receives the exact arguments (was exit -196608)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dpdp gw helper '));
+  try {
+    const helper = path.join(dir, 'Program Files', 'DPDP Gateway', 'elevated-helper.ps1');
+    fs.mkdirSync(path.dirname(helper), { recursive: true });
+    const out = path.join(dir, 'received.txt');
+    fs.writeFileSync(
+      helper,
+      `param([string]$Action, [string]$RequestFile)\r\nSet-Content -LiteralPath '${out.replace(/'/g, "''")}' -Value ($Action + '|' + $RequestFile) -Encoding UTF8\r\nexit 0\r\n`,
+    );
+    const reqDir = path.join(dir, "O'Brien temp");
+    fs.mkdirSync(reqDir);
+    const req = path.join(reqDir, 'dpdp-gw-request-0123456789abcdef0123456789abcdef.json');
+
+    const cmd = buildElevatedCommand(helper, 'pair', req);
+    assert.ok(cmd.includes(' -Verb RunAs '));
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd.replace(' -Verb RunAs ', ' ')], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 60_000,
+    });
+    assert.strictEqual(r.status, 0, `exit ${r.status} (${(r.status >>> 0).toString(16)}): ${r.stderr}`);
+    assert.strictEqual(fs.readFileSync(out, 'utf8').replace(/^﻿/, '').trim(), `pair|${req}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+checkWin('REAL Start-Process: the OLD array form really fails with -196608 for such a path (proves the test detects the bug)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dpdp gw old '));
+  try {
+    const helper = path.join(dir, 'elevated-helper.ps1');
+    fs.writeFileSync(helper, 'exit 0\r\n');
+    const oldForm = `$p = Start-Process -FilePath 'powershell.exe' -ArgumentList ${buildArgumentListLiteral(['-NoProfile', '-File', helper])} -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode`;
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', oldForm], { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
+    assert.strictEqual(r.status >>> 0, 4294770688);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 console.log(`\n${passed} passed`);

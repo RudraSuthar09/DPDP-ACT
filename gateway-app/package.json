@@ -6,7 +6,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node src/workspace-url.test.js && node src/elevated-command.test.js && node src/request-file.test.js && node src/config-path.test.js && node src/wiring.test.js"
+    "test": "node src/workspace-url.test.js && node src/elevated-command.test.js && node src/request-file.test.js && node src/config-path.test.js && node src/status-check.test.js && node src/wiring.test.js"
   },
   "devDependencies": {
     "electron": "^33.2.0"

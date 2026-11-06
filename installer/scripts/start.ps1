@@ -29,6 +29,17 @@
   supply all three explicitly or pre-populate config\.env by hand before the
   first run.
 
+.PARAMETER SubmissionStagingEncKey
+  The second central data-at-rest key, SUBMISSION_STAGING_ENC_KEY. Same rule
+  as MfaSecretEncKey: the exact value the central backend already uses, never
+  generated here. Also used to ADD the key to an existing config\.env that
+  predates it (an installation created before this key existed cannot start
+  without it).
+
+  Prefer setting $env:DPDP_SUBMISSION_STAGING_ENC_KEY (and the other DPDP_*
+  variables) in the elevated session instead of passing any of these as
+  parameters: parameters are visible in this script's own command line.
+
 .PARAMETER GatewayEnrollmentCode
   The Enterprise Gateway's one-time enrollment code (from DPDP's Data
   Sources page -- "Connect Enterprise Gateway"). Only needed the FIRST time
@@ -44,6 +55,7 @@ param(
   [string]$AppDatabaseUrl,
   [string]$DatabaseUrl,
   [string]$MfaSecretEncKey,
+  [string]$SubmissionStagingEncKey,
   [string]$GatewayEnrollmentCode
 )
 
@@ -52,12 +64,32 @@ $root = Get-InstallRoot
 Assert-DockerAvailable
 $composeArgs = Get-ComposeArgs $root
 
-$generateEnvArgs = @('-ConfigDir', (Join-Path $root 'config'))
-if ($AppDatabaseUrl) { $generateEnvArgs += @('-AppDatabaseUrl', $AppDatabaseUrl) }
-if ($DatabaseUrl) { $generateEnvArgs += @('-DatabaseUrl', $DatabaseUrl) }
-if ($MfaSecretEncKey) { $generateEnvArgs += @('-MfaSecretEncKey', $MfaSecretEncKey) }
-& powershell -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot\generate-env.ps1" @generateEnvArgs
-if ($LASTEXITCODE -ne 0) { Write-Error "Could not generate config\.env (exit $LASTEXITCODE)"; exit 1 }
+# Secrets reach generate-env.ps1 through ENVIRONMENT VARIABLES of the child
+# process, never its command line: a command line is visible to every user
+# on the machine in the process list (and to process-creation auditing),
+# while a process's environment is not. Each is removed again right after.
+# The DPDP_* variables may also simply be set by the operator beforehand
+# (the recommended way: see installer\README.md, "Provisioning the shared keys").
+$secretHandOff = @{
+  DPDP_APP_DATABASE_URL           = $AppDatabaseUrl
+  DPDP_DATABASE_URL               = $DatabaseUrl
+  DPDP_MFA_SECRET_ENC_KEY         = $MfaSecretEncKey
+  DPDP_SUBMISSION_STAGING_ENC_KEY = $SubmissionStagingEncKey
+}
+$setHere = @()
+foreach ($name in $secretHandOff.Keys) {
+  if ($secretHandOff[$name]) {
+    Set-Item -Path "Env:\$name" -Value $secretHandOff[$name]
+    $setHere += $name
+  }
+}
+try {
+  & powershell -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot\generate-env.ps1" -ConfigDir (Join-Path $root 'config')
+  $generateExit = $LASTEXITCODE
+} finally {
+  foreach ($name in $setHere) { Remove-Item -Path "Env:\$name" -ErrorAction SilentlyContinue }
+}
+if ($generateExit -ne 0) { Write-Error "Could not generate config\.env (exit $generateExit)"; exit 1 }
 
 Write-Output 'Starting DPDP (backend, worker, frontend, agent) -- connecting to the central database...'
 

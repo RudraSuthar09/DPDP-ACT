@@ -31,7 +31,37 @@ export interface GatewaySourceConfig {
   /** A SEPARATE, privileged credential for writes/schema changes. Absent means
    *  every write/create/column-create operation fails closed. */
   writeConnection?: DbConnection;
+  /**
+   * What the Gateway administrator explicitly allowed DPDP to do with this
+   * entry's folder (Gateway Setup -> Manage sources):
+   *   'read'  (DEFAULT, and what every entry saved before this field existed
+   *           means) — a data source, served by the data plane only;
+   *   'write' — a storage location ONLY: DPDP may write submitted consent data
+   *           into it through the storage plane, and can never read it;
+   *   'both'  — both, each through its own plane and its own DPDP record.
+   * Read never implies write and write never implies read: each plane only
+   * ever sees the entries canRead()/canWrite() let through.
+   */
+  access?: SourceAccess;
+  /** The DPDP storage location (storage_roots.id, a Gateway-provider root)
+   *  this folder is the writable destination for. Required with write access,
+   *  forbidden without it. */
+  storageRootId?: string;
 }
+
+export const SOURCE_ACCESS = ['read', 'write', 'both'] as const;
+export type SourceAccess = (typeof SOURCE_ACCESS)[number];
+
+/** Absent access is 'read' — existing entries keep exactly their old meaning. */
+export function canRead(cfg: Pick<GatewaySourceConfig, 'access'>): boolean {
+  return cfg.access === undefined || cfg.access === 'read' || cfg.access === 'both';
+}
+/** Only an EXPLICIT 'write'/'both' grants write — never a default. */
+export function canWrite(cfg: Pick<GatewaySourceConfig, 'access'>): boolean {
+  return cfg.access === 'write' || cfg.access === 'both';
+}
+
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
 const FILE_KINDS = new Set<DataSourceKind>(['csv', 'excel', 'filesystem']);
 const DB_KINDS = new Set<DataSourceKind>(['postgresql', 'mysql', 'sqlserver']);
@@ -47,15 +77,23 @@ export class ConnectorRegistry {
 
   /** `dbClientFactory` is injectable so tests can drive DB connectors without a
    *  live database; production uses the real driver-backed factory. */
+  /** `revoked` is consulted on EVERY lookup, not just at construction: a
+   *  folder the customer removes in DPDP must stop being served without
+   *  waiting for a service restart. Absent = nothing revoked (tests, dev). */
   constructor(
     private readonly sources: readonly GatewaySourceConfig[],
     private readonly dbClientFactory: DbClientFactory = realDbClientFactory,
+    private readonly revoked: { has(id: string): boolean } = { has: () => false },
   ) {}
 
   /** Fail closed: an unconfigured source has no connector. */
   get(sourceId: string): DataConnector {
+    // Revoked beats configured. Checked first so a stale local entry can
+    // never outlive the customer's decision to remove the folder.
+    if (this.revoked.has(sourceId)) throw new ConnectorError('SOURCE_NOT_AUTHORIZED');
     const cfg = this.sources.find((s) => s.sourceId === sourceId);
-    if (!cfg) throw new ConnectorError('SOURCE_NOT_AUTHORIZED');
+    // A write-only folder is never readable, whoever built this registry.
+    if (!cfg || !canRead(cfg)) throw new ConnectorError('SOURCE_NOT_AUTHORIZED');
     let connector = this.cache.get(sourceId);
     if (!connector) {
       connector = createConnector(cfg, this.dbClientFactory);
@@ -121,8 +159,33 @@ export function parseSourceConfigEntries(parsed: unknown, label: string): Gatewa
     if (e.writeConnection && typeof e.writeConnection === 'object') {
       cfg.writeConnection = parseConnection(e.writeConnection as Record<string, unknown>);
     }
+    parseAccess(e, cfg, label);
     return cfg;
   });
+}
+
+/** Folder write authorization. Fails closed on anything ambiguous, so an
+ *  entry can never end up writable by accident or by a typo. */
+function parseAccess(e: Record<string, unknown>, cfg: GatewaySourceConfig, label: string): void {
+  const where = `source "${cfg.sourceId}" in ${label}`;
+  if (e.access !== undefined) {
+    if (typeof e.access !== 'string' || !(SOURCE_ACCESS as readonly string[]).includes(e.access)) {
+      throw new Error(`"access" for ${where} must be one of: ${SOURCE_ACCESS.join(', ')}.`);
+    }
+    cfg.access = e.access as SourceAccess;
+  }
+  if (!canWrite(cfg)) {
+    if (e.storageRootId !== undefined) throw new Error(`"storageRootId" for ${where} is only allowed with write access.`);
+    return;
+  }
+  if (!FILE_KINDS.has(cfg.kind)) throw new Error(`Write access for ${where} is only possible for a folder, not a database.`);
+  if (!cfg.roots || cfg.roots.length !== 1 || !cfg.roots[0]!.trim()) {
+    throw new Error(`Write access for ${where} needs exactly one folder.`);
+  }
+  if (typeof e.storageRootId !== 'string' || !ID_PATTERN.test(e.storageRootId)) {
+    throw new Error(`Write access for ${where} needs the DPDP storage location ID ("storageRootId").`);
+  }
+  cfg.storageRootId = e.storageRootId;
 }
 
 /** Parse agent source config from an env var (JSON). Network-agnostic; the
@@ -141,7 +204,7 @@ export function loadSourceConfig(env: NodeJS.ProcessEnv = process.env): GatewayS
 }
 
 function parseConnection(c: Record<string, unknown>): DbConnection {
-  return {
+  const conn: DbConnection = {
     host: String(c.host ?? ''),
     port: Number(c.port ?? 0),
     user: String(c.user ?? ''),
@@ -149,4 +212,13 @@ function parseConnection(c: Record<string, unknown>): DbConnection {
     database: String(c.database ?? ''),
     ...(c.ssl !== undefined ? { ssl: Boolean(c.ssl) } : {}),
   };
+  if (c.sslCaFile !== undefined) {
+    if (typeof c.sslCaFile !== 'string' || !c.sslCaFile.trim() || c.sslCaFile.includes('\0')) {
+      throw new Error('"sslCaFile" must be a non-empty file name.');
+    }
+    // A CA without TLS would be silently meaningless; refuse rather than guess.
+    if (conn.ssl !== true) throw new Error('"sslCaFile" requires "ssl": true on the same connection.');
+    conn.sslCaFile = c.sslCaFile.trim();
+  }
+  return conn;
 }

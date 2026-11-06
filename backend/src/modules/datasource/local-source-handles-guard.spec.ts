@@ -21,7 +21,9 @@ import { join } from 'node:path';
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 const HANDLES_LIB = join(REPO_ROOT, 'frontend', 'src', 'lib', 'local-source-handles.ts');
 const VIEWER = join(REPO_ROOT, 'frontend', 'src', 'app', '(app)', 'data-sources', '[id]', 'viewer', 'page.tsx');
-const SOURCES_PAGE = join(REPO_ROOT, 'frontend', 'src', 'app', '(app)', 'data-sources', 'page.tsx');
+// The per-source table (local status badge + Remove) moved into the
+// administration component; the guard follows the code.
+const SOURCES_PAGE = join(REPO_ROOT, 'frontend', 'src', 'components', 'SourceAdministration.tsx');
 const AMBIENT_TYPES = join(REPO_ROOT, 'frontend', 'src', 'types', 'file-system-access.d.ts');
 
 function codeOnly(src: string): string {

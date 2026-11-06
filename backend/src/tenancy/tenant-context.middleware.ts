@@ -7,6 +7,7 @@ import { TenantContextService } from './tenant-context.service';
 import { verifyTenantJwt } from './jwt';
 import { PORTAL_PATH_PREFIX, portalRequestPath } from './portal-tenant.middleware';
 import { FORM_PATH_PREFIX, formRequestPath } from './form-tenant.middleware';
+import { PLATFORM_ADMIN_PATH_PREFIX, platformAdminRequestPath } from './platform-admin.guard';
 
 /**
  * The edge of Seam S1. For every request it:
@@ -50,6 +51,15 @@ export class TenantContextMiddleware implements NestMiddleware {
     // link: a staff access token must not establish tenant context on a route
     // FormGuard expects FormTenantMiddleware alone to have resolved.
     if (formRequestPath(req).startsWith(FORM_PATH_PREFIX)) {
+      next();
+      return;
+    }
+    // Same reasoning again, for the platform-admin tool: its bearer token is
+    // typ='platform_admin', carries no tenant_id at all (it crosses tenants
+    // by design), and is verified by PlatformAdminGuard instead — forcing it
+    // through verifyTenantJwt here would 401 every platform-admin request
+    // before that guard ever runs.
+    if (platformAdminRequestPath(req).startsWith(PLATFORM_ADMIN_PATH_PREFIX)) {
       next();
       return;
     }

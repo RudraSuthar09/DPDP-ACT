@@ -156,7 +156,10 @@ Output: `gateway-installer\dist\DPDPGatewaySetup-<version>.exe` (the script
 prints its SHA-256). The build **fails** if:
 - `agent/package.json`, `agent/src/version.ts` and `gateway-app/package.json` disagree on the version;
 - Node.js or WinSW does not match its pinned SHA-256 (downloads are HTTPS-only and cached in `build\cache`);
-- the staging tree contains a `.env` file, a key/certificate, Gateway runtime state (including `proxy-credentials.json`), or test files. Test fixtures (`dist\__fixtures__`, including TEST-ONLY TLS keys) are pruned before the audit.
+- the staging tree contains a `.env` file, a key/certificate, Gateway runtime state (including `proxy-credentials.json`), test files, `__fixtures__` or `mock-*` files (test fixtures, including TEST-ONLY TLS keys and the mock proxy/backend/PostgreSQL servers, are pruned first; the audit proves they are gone);
+- any of the agent's `devDependencies` is present in the staged `node_modules`;
+- a file the release depends on is missing (agent entry points, the transport and TLS modules, undici, node.exe, WinSW, the Setup app);
+- `MANIFEST.sha256` does not have exactly one entry per staged file. The four service scripts are installed **from staging**, so the manifest covers every file Setup installs (before Phase 5 the scripts were not in it).
 
 npm dependencies (including `undici` 6.29.0, exact) and Electron are pinned
 by `pnpm-lock.yaml` with integrity hashes and installed with
@@ -232,6 +235,7 @@ Run on a Windows 11 development machine **without Administrator rights**:
 | Proxy: CONNECT tunnelling for enrol/heartbeat/submission calls, Basic auth, 407/403/drop/down handling, no direct fallback, NO_PROXY, loopback direct, TLS end to end through the tunnel | `agent` `transport.spec.ts` and `network.e2e.spec.ts` | Real undici, real TLS, real sockets (incl. this machine's LAN address); the proxy and DPDP backend are **local mock servers**, not a real corporate proxy or tenant |
 | Corporate CA: trust from `config.json` read at process start; untrusted and wrong-host certificates fatal | same, with a TEST-ONLY CA (`agent/src/__fixtures__/tls`) | Real TLS; simulated CA |
 | Windows certificate store read (`tls.getCACertificates('system')`) | `tls-trust.spec.ts` | Real, developer account only |
+| PostgreSQL TLS: trusted (custom CA, by name and by IP), untrusted, host-name mismatch (by name and IP), server refuses TLS, handshake dropped, no plaintext fallback, plaintext config unchanged, sanitized errors | `agent/src/connectors/db/postgres-tls.spec.ts` | Real `pg` driver + real TLS against a **simulated** PostgreSQL wire-protocol server with TEST-ONLY certificates; **no real PostgreSQL server** |
 | Elevated helper: request validation, scrub, UTF-8 stdin hand-off, cli-pair writes, error reporting | `gateway-installer\tests\validate-elevated-helper.ps1` | Real PowerShell + real agent CLI, with **only** `#Requires -RunAsAdministrator` removed; service restart asserted to fail (no service) |
 | Diagnostics collector: output contains none of 8 planted secrets/internal hosts; manifest tamper detected | `gateway-installer\tests\validate-collect-diagnostics.ps1` | Real PowerShell 5.1 against a **simulated** install/ProgramData layout, not elevated, no service |
 | UAC-cancel / launch-failure exit codes, argument quoting and injection | `gateway-app` `elevated-command.test.js` | Real PowerShell, `Start-Process` shadowed (no UAC prompt) |
@@ -247,6 +251,20 @@ reboot); the Windows certificate store as seen by the virtual account; the
 real UAC prompt; upgrade and uninstall; a real corporate proxy (including
 TLS inspection and authentication); pairing against a real DPDP tenant;
 `collect-diagnostics.ps1` on a real installation.
+
+## Release gates (all OPEN)
+
+None of these is satisfied by unit tests, mock servers or the developer-account
+runs above. Each needs the acceptance checklist below on real infrastructure:
+
+1. Administrator-capable Windows installation and ACL validation (A).
+2. DPAPI under the real service identity `NT SERVICE\DPDPGatewayAgent` (A9).
+3. Reboot persistence of the service, credentials and sources (D).
+4. Real-tenant pairing and source operation, including database TLS against a real server (B, C).
+5. Upgrade and uninstall (G, H).
+6. A real corporate proxy, including authentication and TLS inspection (F).
+7. Legitimate code signing and signature verification (see "Integrity vs. authenticity").
+8. Not Gateway-only, but shipped with the full-stack Docker product: the agent container's `GATEWAY_NO_PROXY` behaviour behind a real Docker proxy configuration (`scripts/validate-compose-agent-proxy.ps1` checks only the rendered configuration and the routing logic).
 
 ## Acceptance checklist (Administrator-capable Windows machine + a test tenant)
 
@@ -276,9 +294,10 @@ function GwNodePid { (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | 
 11. `& 'C:\Program Files\DPDP Gateway\collect-diagnostics.ps1'` -> keep the zip (baseline). Its summary shows `manifestMismatches: 0` and no warnings.
 
 **B. Pairing**
-12. Dashboard -> Data Sources -> Connect Enterprise Gateway; copy the code.
+12. Dashboard -> Data Sources -> Connect Enterprise Gateway; note the **Server address** and copy the code (both shown in the same panel).
 13. Start "DPDP Gateway Setup" (Start menu) as the standard user. Task Manager -> Details -> "Elevated" column shows `No` for `electron.exe`.
-14. Enter the workspace URL (`https://...`) and the code; accept UAC (also with a *different* admin account if your plan covers over-the-shoulder elevation). Expect "Gateway connected" within ~30 s.
+14. Enter the **server address** from step 12 and the code; accept UAC (also with a *different* admin account if your plan covers over-the-shoulder elevation). Expect "Gateway connected" within ~30 s; the status screen shows **Connected**.
+14a. Negative checks (each on a fresh pairing): enter the *dashboard's* web address instead of the server address -> the wizard says it is not the DPDP server and Back returns to the address screen; disconnect the network and pair -> after at most ~2 minutes the wizard says DPDP could not be reached; reconnect, click **Try again** (accept UAC) -> Connected without a new code (if the code has not expired).
 15. `GwStatus | Select-Object enrolled, deviceId, heartbeat, lastHeartbeatAt, enrollmentError` -> `True`, a device ID, `connected`, a recent time, empty. The dashboard lists the same device ID as active.
 16. `(Get-Content 'C:\ProgramData\DPDP Gateway\state\device-credential.json' -Raw | ConvertFrom-Json).PSObject.Properties.Name` -> only `dpapi`. `Test-Path '...\state\pending-enrollment.json'` -> `False`.
 17. On a fresh install, pair with an **expired or already-used** code -> the wizard shows the "rejected" message within seconds; `(GwStatus).enrollmentError` -> `CODE_REJECTED`.
@@ -288,6 +307,7 @@ function GwNodePid { (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | 
 19. Setup -> Manage sources -> add a PostgreSQL/MySQL/SQL Server source with a non-ASCII password. Accept UAC.
 20. `Get-Content '...\state\sources.json' -Raw` contains `"format": "dpdp-gateway-sources"` and `"version": 2` and **not** the password; `pending-sources.json` is gone; `(GwStatus).sourceKinds` shows the kind.
 21. In the dashboard, pair the source and read data through the Gateway browser -> works (the service decrypted the password).
+21a. Database TLS (needs a real PostgreSQL with TLS, ideally a private-CA certificate): set `"ssl": true` on the source (see `agent/README.md` -> "Database TLS"), restart -> reading data **fails** (`PERMISSION_DENIED`) until the CA is configured; copy the CA to the config folder, add `"sslCaFile"`, restart -> reading works. Point `host` at a name/IP not in the certificate -> fails. On the database server, `SELECT ssl, version FROM pg_stat_ssl WHERE pid <> pg_backend_pid();` shows `t` for the Gateway's connection.
 
 **D. Reboot persistence**
 22. `Restart-Computer`. Do not log in for 2 minutes; then the dashboard shows a heartbeat newer than the boot time (`(Get-CimInstance Win32_OperatingSystem).LastBootUpTime`).

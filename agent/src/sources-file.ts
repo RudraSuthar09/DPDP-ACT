@@ -34,7 +34,7 @@
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { loadSourceConfig, parseSourceConfigEntries, type GatewaySourceConfig } from './connectors/registry';
+import { canRead, canWrite, loadSourceConfig, parseSourceConfigEntries, type GatewaySourceConfig } from './connectors/registry';
 import type { DbConnection } from './connectors/db/db-client';
 import { scrubAndRemove, writeFileAtomic } from './atomic-write';
 import { DpapiError, dpapiProtect, dpapiUnprotect, runPowerShellReal, type PowerShellRunner } from './dpapi';
@@ -330,6 +330,65 @@ export function upsertSourceConfig(
   const next = upsertInto(readSourcesFile(filePath, protector).sources, [source]);
   writeSourcesFile(filePath, next, protector);
   return next;
+}
+
+/**
+ * Applies central revocations to the local source list: the "Remove folder"
+ * action in DPDP, arriving here.
+ *
+ * Takes an EXPLICIT list of revoked ids, never an "active set" to reconcile
+ * against. This file also holds entries an operator configured by hand (and,
+ * in dev, entries that come from GATEWAY_SOURCES), and deleting whatever the
+ * central platform did not recognise would silently throw those away.
+ *
+ * For an entry with both permissions where only one was revoked, the entry is
+ * DOWNGRADED rather than dropped: losing write must not quietly cost the
+ * administrator their read grant, or the reverse. An entry whose every
+ * permission is gone is removed outright.
+ *
+ * Returns the number of entries changed; 0 means there was nothing to do, and
+ * the file is not rewritten.
+ */
+export function applyRevocations(
+  filePath: string,
+  revoked: { sourceIds: readonly string[]; storageRootIds: readonly string[] },
+  protector: SecretProtector | null = null,
+): number {
+  const revokedSources = new Set(revoked.sourceIds);
+  const revokedRoots = new Set(revoked.storageRootIds);
+  if (revokedSources.size === 0 && revokedRoots.size === 0) return 0;
+
+  const current = readSourcesFile(filePath, protector).sources;
+  const next: GatewaySourceConfig[] = [];
+  let changed = 0;
+
+  for (const cfg of current) {
+    // Read is served under sourceId; write under storageRootId. A write-only
+    // folder is KEYED by its storage root id (see applyPendingAuthorizations),
+    // so that id can appear in either field — both are checked.
+    const lostRead = revokedSources.has(cfg.sourceId);
+    const lostWrite =
+      (cfg.storageRootId !== undefined && revokedRoots.has(cfg.storageRootId)) ||
+      (cfg.storageRootId === undefined && revokedRoots.has(cfg.sourceId));
+    if (!lostRead && !lostWrite) {
+      next.push(cfg);
+      continue;
+    }
+
+    const keepsRead = canRead(cfg) && !lostRead;
+    const keepsWrite = canWrite(cfg) && !lostWrite;
+    changed += 1;
+    if (!keepsRead && !keepsWrite) continue; // nothing left: the entry goes
+    const { storageRootId: _dropped, ...rest } = cfg;
+    next.push({
+      ...rest,
+      access: keepsRead && keepsWrite ? 'both' : keepsRead ? 'read' : 'write',
+      ...(keepsWrite && cfg.storageRootId !== undefined ? { storageRootId: cfg.storageRootId } : {}),
+    });
+  }
+
+  if (changed > 0) writeSourcesFile(filePath, next, protector);
+  return changed;
 }
 
 /** Env (GATEWAY_SOURCES, Docker/dev/CI) wins when set; otherwise the file. */

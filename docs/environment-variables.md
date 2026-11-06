@@ -1,120 +1,223 @@
 # Environment variables
 
-Every variable actually read by the platform, in one place (locked
-architecture §14/§22). Copy `.env.example` to `.env` and fill in — never
-commit a real `.env` (see `.gitignore`).
+Every variable the platform actually reads, grouped by the process that reads
+it. This is the single reference; the two templates point here:
 
-No new environment variables were introduced by the installation/licensing/
-capability foundation phase — that model is entirely database-driven (the
-`installations`/`licenses` tables, read through `GET /capabilities`). This
-list documents what already existed, including the Gateway/agent variables
-that were previously code-only (read in `agent/src/config.ts` and
-`frontend/src/app/(app)/data-sources/[id]/gateway/page.tsx`) but never
-written down.
+| File                      | For                  | Notes                                                                                 |
+| ------------------------- | -------------------- | ------------------------------------------------------------------------------------- |
+| `.env.example`            | Local development    | Copy to `.env`. Safe defaults + published dev placeholders.                           |
+| `.env.production.example` | Production reference | Empty secrets. Not copied to servers: secrets come from a secrets manager at runtime. |
 
-## Postgres (central control-plane database)
+Never commit a real `.env` (see `.gitignore`).
 
-| Variable | Used by | Notes |
-| --- | --- | --- |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` / `POSTGRES_PORT` | `docker-compose.yml`'s optional `postgres` service, `scripts/local-db.mjs` | Individual pieces, mainly for the optional local-db Compose profile. |
-| `DATABASE_URL` | `node-pg-migrate` (`pnpm migrate*`) | Owner/superuser connection. Migrations (DDL) only — bypasses RLS. Never used by the running app. |
-| `APP_DATABASE_URL` | Backend API + worker (`TenantDatabaseService`) | Least-privilege `dpdp_app` role. RLS is always enforced against this connection (Seam S1). |
+**Startup validation.** The backend API and worker check their environment
+before connecting to anything (`backend/src/config/env.validation.ts`) and
+list every problem at once, by name, never printing a value. With
+`NODE_ENV=production` they also refuse the published dev placeholders, a
+`JWT_SECRET` shorter than 32 characters, and malformed keys.
 
-Today both point at a hosted Supabase Postgres instance in dev (see the real
-`.env`). That is the existing, working setup and this phase does not change
-it — Docker Compose's `postgres` service is an **opt-in** alternative (`docker
-compose --profile local-db up postgres`), not a default. Using it means
-pointing `DATABASE_URL`/`APP_DATABASE_URL`/`POSTGRES_HOST` at the `postgres`
-service instead (e.g. `POSTGRES_HOST=postgres` when running `pnpm migrate:up`
-from inside the Compose network, or `localhost` when running it from the host
-against the published port) — this repo does not auto-switch that for you.
+Legend: **R** required · **O** optional · 🔒 secret (secrets manager, never in
+an image, a log or a build arg) · 🌐 public (baked into the browser bundle;
+every visitor can read it).
 
-## API / Web
+---
 
-| Variable | Used by | Notes |
-| --- | --- | --- |
-| `API_PORT` | `backend/src/main.ts` | Default `3001`. |
-| `WEB_PORT` | `frontend/package.json` dev/start scripts are actually hardcoded to `3000` today — `WEB_PORT` is otherwise unused. | Documented for completeness; not currently wired to the Next.js scripts. |
-| `NEXT_PUBLIC_API_URL` | `frontend/src/lib/api.ts` | Baked into the browser bundle at **build** time (Next.js `NEXT_PUBLIC_*` convention) — must be the browser-reachable address, e.g. `http://localhost:3001`, never an in-Docker-network service name. |
-| `INTERNAL_API_URL` | `frontend/src/lib/api.ts` (`SERVER_API_URL`) | Read at **runtime**, server-side only — never baked into the browser bundle. Where the frontend container's own Next.js server (SSR for the public `forms/[slug]`/`portal/[slug]` pages) reaches the backend; inside Docker this must be the container-network address (`http://backend:3001`), never `localhost` (that would mean the frontend container itself). Falls back to `NEXT_PUBLIC_API_URL` when unset, which is correct for local non-Docker `pnpm dev` (both resolve to the same host) but wrong inside Docker if left unset — `docker-compose.yml`/`installer/runtime/docker-compose.runtime.yml` both set it explicitly. |
+## Backend API (`backend`, `node dist/main.js`)
 
-## Gateway / Agent (previously code-only, now documented)
+| Variable                                   |                                 | Default                                | Notes                                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------ | ------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                                 | R                               | `production` in the image              | `production` switches on the strict checks above and redacts console notifications. `docker-compose.yml` sets `development` for local work.                                                                                                                                                                                        |
+| `APP_DATABASE_URL`                         | R 🔒                            | —                                      | The least-privilege `dpdp_app` role. Every tenant query runs on it, so RLS is always enforced (Seam S1).                                                                                                                                                                                                                           |
+| `DATABASE_URL`                             | R 🔒 (or `PGBOSS_DATABASE_URL`) | —                                      | The schema **owner**. Migrations always; and pg-boss at runtime **unless** `PGBOSS_DATABASE_URL` is set. _An earlier version of this page said "never used by the running app" — that was wrong._                                                                                                                                  |
+| `PGBOSS_DATABASE_URL`                      | O 🔒 (prod: R)                  | falls back to `DATABASE_URL`           | pg-boss on its own role `dpdp_jobs`, which owns only the `pgboss` schema (`docs/pgboss-least-privilege.sql`). With it set, the API and worker never hold the owner credential. Production warns while it is unset.                                                                                                                 |
+| `DATABASE_SSL_CA_FILE`                     | R in prod                       | unset                                  | Verify the database certificate **and hostname** against this PEM bundle — on AWS `/opt/dpdp/certs/rds-global-bundle.pem`, shipped in the image (pinned by SHA-256). While set, TLS parameters in the URLs are stripped, so no URL can turn verification off (`backend/src/database/pg-tls.ts`). An unreadable file stops startup. |
+| `JWT_SECRET`                               | R 🔒                            | — (empty in `.env.example` on purpose) | Signs every session, invitation and **Gateway device token**, and their tenant claim. Anyone holding it can act as any tenant. Production: ≥ 32 random characters. Development warns loudly on a published example value. See [Rotating JWT_SECRET](#rotating-jwt_secret).                                                         |
+| `MFA_SECRET_ENC_KEY`                       | R 🔒                            | —                                      | AES-256 key, exactly 32 bytes base64. See [shared data-at-rest keys](#shared-data-at-rest-keys).                                                                                                                                                                                                                                   |
+| `SUBMISSION_STAGING_ENC_KEY`               | R 🔒                            | —                                      | AES-256 key, exactly 32 bytes base64. See [shared data-at-rest keys](#shared-data-at-rest-keys).                                                                                                                                                                                                                                   |
+| `REQUEST_OTP_SECRET`                       | O 🔒                            | falls back to `JWT_SECRET`             | HMAC key for request-portal one-time codes at rest. Set separately in any real deployment.                                                                                                                                                                                                                                         |
+| `WEB_ORIGIN`                               | R in prod                       | `http://localhost:3000`                | Dashboard origin(s) allowed by CORS, comma-separated, exact `scheme://host[:port]`. Also sent to enrolled Gateways as the origins their local listener accepts. Production warns if unset or plain-http.                                                                                                                           |
+| `TRUST_PROXY`                              | R behind a LB                   | off                                    | Proxy hops in front of the API (`1` behind one load balancer). Without it every visitor shares one per-IP rate-limit bucket. Never `true` in production — that trusts any client-supplied `X-Forwarded-For`.                                                                                                                       |
+| `API_PORT`                                 | O                               | `3001`                                 |                                                                                                                                                                                                                                                                                                                                    |
+| `DB_POOL_MAX`                              | O                               | `10`                                   | Size of the `dpdp_app` pool, per process.                                                                                                                                                                                                                                                                                          |
+| `MFA_ISSUER`                               | O                               | `DPDP Platform`                        | Name shown in authenticator apps.                                                                                                                                                                                                                                                                                                  |
+| `ACCESS_TOKEN_TTL_SECONDS`                 | O                               | `15552000` (180 d)                     | No revocation list: this is the blast radius of a leaked token.                                                                                                                                                                                                                                                                    |
+| `MFA_CHALLENGE_TTL_SECONDS`                | O                               | `300`                                  |                                                                                                                                                                                                                                                                                                                                    |
+| `INVITE_TOKEN_TTL_SECONDS`                 | O                               | `604800` (7 d)                         |                                                                                                                                                                                                                                                                                                                                    |
+| `PLATFORM_ADMIN_TOKEN_TTL_SECONDS`         | O                               | `43200` (12 h)                         |                                                                                                                                                                                                                                                                                                                                    |
+| `GATEWAY_DEVICE_TOKEN_TTL_SECONDS`         | O                               | `2592000` (30 d)                       |                                                                                                                                                                                                                                                                                                                                    |
+| `GATEWAY_ENROLLMENT_CODE_TTL_SECONDS`      | O                               | `900`                                  |                                                                                                                                                                                                                                                                                                                                    |
+| `NOTIFY_TRANSPORT`                         | O                               | `console`                              | `console` or `http`. In production `console` logs only a redacted line and delivers nothing.                                                                                                                                                                                                                                       |
+| `NOTIFY_HTTP_ENDPOINT`                     | O                               | —                                      | Required when `NOTIFY_TRANSPORT=http`.                                                                                                                                                                                                                                                                                             |
+| `POSTMARK_API_KEY` / `POSTMARK_FROM_EMAIL` | O 🔒/—                          | —                                      | Real e-mail; used when both are set.                                                                                                                                                                                                                                                                                               |
+| `MSG91_AUTH_KEY` / `MSG91_SENDER_ID`       | O 🔒/—                          | —                                      | Real SMS; used when both are set.                                                                                                                                                                                                                                                                                                  |
+| `NOTIFY_DEV_ECHO_OTP`                      | O                               | `false`                                | Dev only: returns portal OTPs in the HTTP response. Ignored when `NODE_ENV=production`.                                                                                                                                                                                                                                            |
+| `IMPORT_EVIDENCE_STORE`                    | O (prod: `s3`)                  | `local`                                | Where CSV/Excel import evidence goes. `local` = files under `backend/var` (lost on a container platform: production warns). `s3` = encrypted, write-once objects.                                                                                                                                                                  |
+| `IMPORT_EVIDENCE_S3_BUCKET`                | R with `s3`                     | —                                      | Bucket name, validated.                                                                                                                                                                                                                                                                                                            |
+| `IMPORT_EVIDENCE_S3_PREFIX`                | O                               | `inventory-import-evidence/`           | Plain path segments ending in `/`. Keys are `<prefix><tenant-uuid>/<sha256>.json` — no request text ever shapes a key.                                                                                                                                                                                                             |
+| `IMPORT_EVIDENCE_S3_KMS_KEY_ID`            | O                               | —                                      | SSE-KMS with this key; unset = SSE-S3 (AES-256). Encryption is requested on every upload either way.                                                                                                                                                                                                                               |
+| `IMPORT_EVIDENCE_RETENTION_DAYS`           | O                               | —                                      | Object Lock retention per object (1-3650 days, from the import time). The bucket must have Object Lock enabled at creation.                                                                                                                                                                                                        |
+| `IMPORT_EVIDENCE_OBJECT_LOCK_MODE`         | O                               | `COMPLIANCE`                           | `COMPLIANCE` or `GOVERNANCE`; only with a retention period.                                                                                                                                                                                                                                                                        |
+| `AWS_REGION`                               | R with `s3`                     | —                                      | Read by the AWS SDK, as are credentials (the ECS task role). Never put access keys in the environment.                                                                                                                                                                                                                             |
 
-| Variable | Used by | Notes |
-| --- | --- | --- |
-| `GATEWAY_BIND_HOST` | `agent/src/config.ts` | Default `127.0.0.1` (loopback). Never auto-`0.0.0.0`. Set explicitly (e.g. in Docker) for LAN/container reachability — the agent then logs a loud non-loopback warning. |
-| `GATEWAY_BIND_PORT` | `agent/src/config.ts` | Default `7071`. |
-| `GATEWAY_ALLOWED_ORIGINS` | `agent/src/config.ts` | Comma-separated **exact** origins allowed to call the agent from a browser. No wildcards. |
-| `GATEWAY_CONTROL_PLANE_URL` | `agent/src/index.ts`, `agent/src/enrollment.ts` | Where the agent reaches the central control plane — enrollment, heartbeat, session refresh, de-enrollment, and pairing redemption all go through this. Required for any of those; a Gateway with this unset runs as a health-only listener. In Docker, this is the backend's **container-network** address (`http://backend:3001`), never `localhost`. |
-| `GATEWAY_ENROLLMENT_CODE` | `agent/src/enrollment.ts` | The one-time bootstrap code from DPDP's "Connect Enterprise Gateway" flow. Only read on a run where no credential is yet persisted in `GATEWAY_STATE_DIR` — ignored (never re-read) once enrolled. Never written to `config\.env` or any file; supply it only as a transient process/shell environment variable for the one `docker compose up` call that enrolls. |
-| `GATEWAY_STATE_DIR` | `agent/src/config.ts`, `agent/src/enrollment.ts` | Where the agent persists its enrollment device credential (`device-credential.json`) between restarts. Defaults to `~/.dpdp-gateway`; in Docker this is set to a fixed path backed by a named volume so it survives container recreation (see `docker-compose.yml`/`installer/runtime/docker-compose.runtime.yml`). Never the central database, never the image, never the repo. |
-| `GATEWAY_DISPLAY_NAME` | `agent/src/config.ts` | Non-secret label shown to staff in DPDP's Gateway device list. Defaults to the machine's hostname — inside a container that's a meaningless random id, so Docker sets this explicitly. |
-| `GATEWAY_HEARTBEAT_INTERVAL_SECONDS` | `agent/src/config.ts`, `agent/src/enrollment.ts` | How often the agent calls `POST /gateway/heartbeat` once enrolled. Default `60`, minimum `5`. |
-| `GATEWAY_SOURCES` | `agent/src/connectors/registry.ts` | JSON array of configured connector sources for the data plane. Heartbeat/enrollment work correctly with this unset/empty — the Gateway does not require any data source to be configured. |
-| `GATEWAY_STORAGE_ROOTS` | `agent/src/storage/registry.ts` | JSON array of `{ storageRootId, rootPath }` for the **Storage Data-Plane** (folder browse/create/verify — a separate capability from `GATEWAY_SOURCES`' data-source reads). `storageRootId` is the id DPDP's own "Storage Management" screen assigned when a Gateway-provider storage root was created (`POST /storage/roots`) — it cannot be known ahead of time, so this is left empty by default and set as a transient env var for the one run that needs it, exactly like `GATEWAY_ENROLLMENT_CODE`. `rootPath` is the path **inside this container** (e.g. `/client-storage`), never the host path — see `GATEWAY_STORAGE_HOST_DIR` below. |
-| `GATEWAY_STORAGE_HOST_DIR` | `docker-compose.yml`, `installer/runtime/docker-compose.runtime.yml` | The REAL host directory bind-mounted to the agent container's fixed `/client-storage` path — the physical location of whatever the Storage Data-Plane creates. Dev default: `E:\DPDP-Test-Storage`. Installer default: `../data/gateway-storage` (relative to the compose file, i.e. `<install-root>\data\gateway-storage`, auto-created by Docker). Never the repo, never a whole drive, never an arbitrary existing folder — always one dedicated directory. Not read by any application source code (bind-mount source only); the agent only ever sees the fixed in-container path via `GATEWAY_STORAGE_ROOTS`' `rootPath`. |
-| `NEXT_PUBLIC_GATEWAY_AGENT_URL` | `frontend/src/app/(app)/data-sources/[id]/gateway/page.tsx` | Default agent address the browser tries first; the actual per-tenant Gateway endpoint (`gateway_devices.endpoint`) is what's normally used instead. |
+Every numeric setting must be a positive whole number — a typo used to become
+`NaN` silently; it now stops startup.
 
-## Secrets (rotate before any real deployment)
+## Worker (`backend` image, `node dist/worker.js`)
 
-None of these are new; none are read by Docker build steps or written into
-any image layer — every service consumes them at **runtime**, via
-`env_file: .env` in `docker-compose.yml`, never baked into a Dockerfile. They
-are not all the same *kind* of secret, though — see the split below.
+Same image, different command. It loads no identity module, so it needs **less** — though not as little as this page once said:
 
-### Installation-local secrets — safe to regenerate per environment
+| Variable                                  |           | Notes                                                                                                                                                                                |
+| ----------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `NODE_ENV`                                | R         | As above.                                                                                                                                                                            |
+| `APP_DATABASE_URL`                        | R 🔒      | As above. Also holds the worker's leadership lock.                                                                                                                                   |
+| `PGBOSS_DATABASE_URL` (or `DATABASE_URL`) | R 🔒      | pg-boss.                                                                                                                                                                             |
+| `MFA_SECRET_ENC_KEY`                      | R 🔒      | Its notification module decrypts **webhook signing secrets** with it. _This page previously said the worker needs neither encryption key; booting the real worker proved otherwise._ |
+| `DATABASE_SSL_CA_FILE`                    | R in prod | As above.                                                                                                                                                                            |
+| `DB_POOL_MAX`                             | O         | As above.                                                                                                                                                                            |
+| `NOTIFY_*`, `POSTMARK_*`, `MSG91_*`       | O         | It sends deadline/escalation alerts.                                                                                                                                                 |
 
-`JWT_SECRET`, `REQUEST_OTP_SECRET`, `SUBJECT_REF_HMAC_PEPPER` (the last is
-currently unused dead config — see `backend/src/modules/consent/subject-ref.ts`'s
-comment; the real per-tenant subject-ref secret lives encrypted in
-`tenant_consent_secrets`, protected by `MFA_SECRET_ENC_KEY` below, not by this
-pepper). These sign or hash short-lived, ephemeral material — session tokens
-and one-time codes — never a value that stays decrypted-or-bust in the
-database across processes. A fresh value per install/environment is correct:
-at most it invalidates in-flight tokens/codes at the moment it changes,
-never historical data. See `.env.example`'s own comments for exactly what
-each protects.
+Do **not** give the worker `JWT_SECRET`, `REQUEST_OTP_SECRET`,
+`SUBMISSION_STAGING_ENC_KEY` or any `IMPORT_EVIDENCE_*` — it never uses them.
 
-### `MFA_SECRET_ENC_KEY` — a data-at-rest key SCOPED TO THE CENTRAL DATABASE, not to any one installation
+### Exactly one worker
 
-This is categorically different from the three above and must not be
-generated fresh per installation/environment. It is the key
-`AesGcmSecretCipher` (`backend/src/modules/identity/crypto/secret-cipher.ts`)
-uses to encrypt/decrypt, at rest, in the **central** PostgreSQL:
+The WorkflowRunner is safe with several workers (each deadline is claimed in
+one transaction), but the Enterprise storage sweep is not coordinated across
+processes. So exactly one worker may be **active**, enforced twice:
 
-- `users.mfa_secret_ciphertext` (TOTP/MFA secrets)
-- `tenant_consent_secrets.secret_ciphertext` (per-tenant subject-ref
-  pseudonymization secrets, I2)
-- webhook signing secrets (`notify` module)
+1. **Deployment:** the ECS service runs one task, and deploys stop the old task
+   before starting the new one (`deploy/aws/ecs/service-worker.json`:
+   `desiredCount 1`, `maximumPercent 100`), checked by
+   `backend/src/config/aws-deploy-templates.spec.ts`.
+2. **In the process** (`backend/src/worker-leadership.ts`): before starting
+   pg-boss or any ticker, the worker takes a PostgreSQL session advisory lock.
+   A second worker — a manual `run-task`, a second service, a laptop pointed
+   at the same database — logs _Another worker is already active. Standing
+   by_ and does nothing until the first one's connection closes, then takes
+   over (measured: about 12 s with the default 15 s poll). If the lock
+   connection drops while active, the worker exits, so it can never run
+   alongside a successor.
 
-Because the ciphertext lives in the shared central database rather than with
-any one process, **every runtime that connects to that central database and
-needs to decrypt any of the above must hold the exact same key** — a
-developer's local `.env`, CI, and every installed customer runtime pointed
-at the same central database all share one value (see the single fixed key
-in `.env.example`). A runtime that generates its own random value can
-encrypt new data fine, but can never decrypt anything a different key
-already produced there — this is what an AES-GCM auth-tag mismatch
-(`Unsupported state or unable to authenticate data`) means when it shows up
-in backend logs: wrong key, not corruption. Rotating this key for real means
-re-encrypting every affected column, not just picking a new value.
+The lock needs a **session-level** connection: RDS direct is fine; a
+transaction-mode pooler (PgBouncer/Supavisor transaction mode) is not.
 
-`installer/scripts/generate-env.ps1` reflects this: it requires
-`-MfaSecretEncKey` as an explicit, caller-supplied value (same as the two
-database connection strings) and never generates one itself.
+## Frontend (`frontend`, Next.js)
 
-## Notifications (unchanged, listed for completeness)
+| Variable                         |      | When                     | Notes                                                                                                                                                                                  |
+| -------------------------------- | ---- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NEXT_PUBLIC_API_URL`            | R 🌐 | **build**                | The API's browser-reachable address (e.g. `https://api.example.com`). Baked into the bundle: changing it means a new image. Never an in-network name.                                  |
+| `NEXT_PUBLIC_REQUIRE_ACTIVATION` | O 🌐 | build                    | `true` only for the customer installer's image (first-run activation gate).                                                                                                            |
+| `NEXT_PUBLIC_GATEWAY_AGENT_URL`  | O 🌐 | build                    | Default Gateway address the browser tries first; the per-tenant enrolled endpoint normally wins.                                                                                       |
+| `INTERNAL_API_URL`               | O    | **runtime**, server-only | Where the frontend's own server reaches the API for server-rendered public pages (`/forms/*`, `/portal/*`). Inside Docker: `http://backend:3001`. Falls back to `NEXT_PUBLIC_API_URL`. |
+| `NODE_ENV`                       | R    | runtime                  | `production` in the image.                                                                                                                                                             |
 
-`NOTIFY_TRANSPORT`, `NOTIFY_HTTP_ENDPOINT`, `POSTMARK_API_KEY`,
-`POSTMARK_FROM_EMAIL`, `MSG91_AUTH_KEY`, `MSG91_SENDER_ID`, `NOTIFY_DEV_ECHO_OTP`
-— see `.env.example`.
+The frontend container gets **no** backend secret — not even through Compose
+(`docker-compose.yml` gives it no `env_file`). `turbo.json` lists the three
+`NEXT_PUBLIC_*` values as global env so a cached build is never reused for a
+different API address.
 
-## A note on Redis
+## Gateway / Agent (customer's machine — not part of the cloud deployment)
 
-`.env.example` documents `REDIS_HOST`/`REDIS_PORT`/`REDIS_URL`, and `turbo.json`
-lists `REDIS_URL` as a global env var, but the backend actually uses
-**pg-boss** (Postgres-backed jobs) for the S3 `WorkflowRunner`, not Redis/
-BullMQ — there is no `bullmq`/`ioredis` dependency anywhere in `backend/`.
-This is a pre-existing documentation/code mismatch, not something introduced
-or fixed by this phase; `docker-compose.yml` accordingly does not include a
-Redis service.
+The Gateway runs on each customer's Windows computer as a service
+(`gateway-installer/`), configured through its own `config.json` and the
+Gateway Setup app; `agent/.env.example` covers running it from source. The
+`agent` service in `docker-compose.yml` is a **local test harness** using the
+same variables.
+
+| Variable                               | Used by                                | Notes                                                                                                                                                                              |
+| -------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GATEWAY_BIND_HOST`                    | `agent/src/config.ts`                  | Default `127.0.0.1` (loopback). Never auto-`0.0.0.0`. Set explicitly (e.g. in Docker) for LAN/container reachability — the agent then logs a loud non-loopback warning.            |
+| `GATEWAY_BIND_PORT`                    | `agent/src/config.ts`                  | Default `7071`.                                                                                                                                                                    |
+| `GATEWAY_ALLOWED_ORIGINS`              | `agent/src/config.ts`                  | Comma-separated **exact** origins allowed to call the agent from a browser. No wildcards. Enrolled Gateways also accept the API's `WEB_ORIGIN` list, delivered over the heartbeat. |
+| `GATEWAY_ALLOWED_HOSTS`                | `agent/src/config.ts`                  | Extra `Host` header values accepted by the local listener (DNS-rebinding defence).                                                                                                 |
+| `GATEWAY_CONTROL_PLANE_URL`            | `agent/src/index.ts`, `enrollment.ts`  | The API's address. In production: the public `https://` API URL. In Docker: `http://backend:3001`. Unset = health-only listener.                                                   |
+| `GATEWAY_NO_PROXY`                     | `agent/src/network-config.ts`          | Extra proxy exclusions **added** to `NO_PROXY`, never replacing it. Both compose files set it to `backend`. Check with `scripts/validate-compose-agent-proxy.ps1`.                 |
+| `GATEWAY_ENROLLMENT_CODE`              | `agent/src/enrollment.ts`              | One-time bootstrap code. Only read when no credential is persisted yet. Supply transiently for the one run that enrolls; never write it to a file.                                 |
+| `GATEWAY_STATE_DIR`                    | `agent/src/config.ts`, `enrollment.ts` | Where the device credential persists. Docker: a named volume.                                                                                                                      |
+| `GATEWAY_CONFIG_PATH`                  | `agent/src/config-paths.ts`            | Path of the Windows service's `config.json`.                                                                                                                                       |
+| `GATEWAY_DISPLAY_NAME`                 | `agent/src/config.ts`                  | Label shown to staff in the device list. Defaults to the hostname.                                                                                                                 |
+| `GATEWAY_HEARTBEAT_INTERVAL_SECONDS`   | `agent/src/config.ts`                  | Default `60`, minimum `5`.                                                                                                                                                         |
+| `GATEWAY_SOURCES`                      | `agent/src/connectors/registry.ts`     | JSON array of data sources for the data plane (dev/Docker; the Windows Gateway uses `sources.json`).                                                                               |
+| `GATEWAY_STORAGE_ROOTS`                | `agent/src/storage/registry.ts`        | JSON `[{ storageRootId, rootPath }]` for the Storage Data-Plane; `rootPath` is the in-container path. Merged with the folders an administrator authorizes in Gateway Setup.        |
+| `AGENT_LOCAL_STORAGE_ROOT`             | `agent/src/delivery/local-root.ts`     | The delivery poller's local Central-storage root (Docker test harness).                                                                                                            |
+| `ELECTRON_STORAGE_CONFIG_PATH`         | `agent/src/delivery/local-root.ts`     | Takes precedence over the above when co-located with the desktop app.                                                                                                              |
+| `AGENT_DELIVERY_POLL_INTERVAL_SECONDS` | `agent/src/delivery`                   | Default `10`.                                                                                                                                                                      |
+| `NODE_EXTRA_CA_CERTS`                  | Node / `agent/src/tls-trust.ts`        | Corporate CA bundle for TLS-inspecting proxies.                                                                                                                                    |
+
+### Docker-only (bind-mount sources; read by Compose, never by code)
+
+`ENTERPRISE_STORAGE_HOST_DIR`, `GATEWAY_STORAGE_HOST_DIR`,
+`AGENT_DELIVERY_HOST_DIR`, `API_PORT`, `WEB_PORT`, and — for the optional
+`local-db` profile — `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
+`POSTGRES_PORT`.
+
+---
+
+## Rotating JWT_SECRET
+
+`.env.example` ships `JWT_SECRET` **empty**: a value printed in a public file
+is not a secret, so there is nothing safe to copy. Generate your own; the API
+will not start until you do. A local `.env` that still holds the old published
+example value (`change_me_dev_jwt_secret`) makes the API log a loud warning at
+every start — anyone with this repository could sign tokens it accepts.
+
+**Locally** (never prints the value):
+
+```bash
+node scripts/rotate-jwt-secret.mjs --check   # unsafe? (exit 1 if so)
+node scripts/rotate-jwt-secret.mjs           # replace it in ./.env
+```
+
+It replaces only the `JWT_SECRET` line (every other line and the line endings
+are left as they are) with 64 random hex characters, written atomically.
+
+**In production**, rotate the Secrets Manager value and force a new
+deployment of the API service.
+
+**What rotating breaks — plan for it:** every signed-in user is signed out;
+pending invitations stop working (resend them); **every enrolled Gateway's
+device token is rejected, so each Gateway must be paired again**; open MFA
+challenges and platform-admin sessions end. No stored data is affected —
+`JWT_SECRET` encrypts nothing.
+
+## Shared data-at-rest keys
+
+`MFA_SECRET_ENC_KEY` and `SUBMISSION_STAGING_ENC_KEY` are categorically
+different from `JWT_SECRET`/`REQUEST_OTP_SECRET`. They encrypt data **at rest
+in the shared central database**:
+
+- `MFA_SECRET_ENC_KEY` (`identity/crypto/secret-cipher.ts`):
+  `users.mfa_secret_ciphertext`, `tenant_consent_secrets.secret_ciphertext`
+  (per-tenant subject-ref secrets, I2), webhook signing secrets.
+- `SUBMISSION_STAGING_ENC_KEY` (`delivery/submission-delivery-crypto.ts`):
+  consent-form values and files staged in `consent_form_submission_deliveries`
+  until a tenant's Gateway collects them.
+
+So **every runtime connected to the same database must hold the same value** —
+a local `.env`, CI, the cloud deployment, and every customer installation
+pointed at that database. A runtime with its own random value can encrypt but
+never decrypt what another produced: an AES-GCM `Unsupported state or unable to
+authenticate data` error in the logs means _wrong key_, not corruption. Real
+rotation means re-encrypting the affected columns.
+
+`installer/scripts/generate-env.ps1` takes both keys as explicit,
+operator-supplied values for exactly this reason — never generated — through
+`DPDP_*` environment variables rather than the command line, checks that each
+is exactly 32 bytes, and adds `SUBMISSION_STAGING_ENC_KEY` to an existing
+installation that predates it. The provisioning flow is in
+`installer/README.md`, _Provisioning the shared keys_.
+
+The previous `.env.example` shipped a dev value for both keys that decoded to
+**35 bytes**, which both ciphers refuse — copying it produced a backend that
+could not start. The current file ships a valid 32-byte dev value.
+
+## Removed
+
+| Variable                                | Why it was safe to remove                                                                                                                                                                               |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_URL` | No Redis client is a dependency of any package and nothing imports one; jobs run on pg-boss in Postgres. Removed from `.env.example`, `turbo.json` and CI (which also started an unused Redis service). |
+| `SUBJECT_REF_HMAC_PEPPER`               | Only mentioned in a comment explaining it is no longer used (`consent/subject-ref.ts`); the real per-tenant secret lives encrypted in `tenant_consent_secrets`.                                         |
+| `POSTGRES_HOST`                         | Read by nothing — not code, not Compose, not scripts.                                                                                                                                                   |
+
+An existing `.env` that still contains these lines keeps working; they are
+simply ignored.

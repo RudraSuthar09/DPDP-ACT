@@ -1,0 +1,29 @@
+{
+  "serviceName": "dpdp-frontend",
+  "cluster": "dpdp-prod",
+  "taskDefinition": "dpdp-frontend",
+  "launchType": "FARGATE",
+  "desiredCount": 2,
+  "deploymentConfiguration": {
+    "minimumHealthyPercent": 100,
+    "maximumPercent": 200,
+    "deploymentCircuitBreaker": { "enable": true, "rollback": true }
+  },
+  "healthCheckGracePeriodSeconds": 30,
+  "loadBalancers": [
+    {
+      "targetGroupArn": "<FRONTEND_TARGET_GROUP_ARN>",
+      "containerName": "frontend",
+      "containerPort": 3000
+    }
+  ],
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": ["<PRIVATE_SUBNET_A>", "<PRIVATE_SUBNET_B>"],
+      "securityGroups": ["<FRONTEND_SECURITY_GROUP>"],
+      "assignPublicIp": "DISABLED"
+    }
+  },
+  "enableExecuteCommand": false,
+  "propagateTags": "SERVICE"
+}

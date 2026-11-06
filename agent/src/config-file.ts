@@ -58,8 +58,7 @@ const MAX_CA_FILE_BYTES = 1024 * 1024;
  * trust anchor that a standard user could replace would let them intercept
  * the device token. Error messages do not echo the path.
  */
-export function loadCaBundleFile(configFilePath: string, caFile: string): string[] {
-  const label = '"tls.extraCaCertsFile" in config.json';
+export function loadCaBundleFile(configFilePath: string, caFile: string, label = '"tls.extraCaCertsFile" in config.json'): string[] {
   const configDir = path.dirname(path.resolve(configFilePath));
   const candidate = path.resolve(configDir, caFile);
   let realDir: string;

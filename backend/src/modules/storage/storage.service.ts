@@ -3,6 +3,7 @@ import type { StorageFolder, StorageMapping, StorageModuleKey, StorageRoot } fro
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
 import { GatewayService } from '../gateway/gateway.service';
+import { CapabilityService } from '../capability/capability.service';
 import { StorageRepository, type StorageFolderRow, type StorageMappingRow, type StorageRootRow } from './storage.repository';
 import { assertAbsoluteEnterprisePath, type CreateStorageFolderInput, type CreateStorageRootInput, type UpdateStorageRootInput, type UpsertStorageMappingInput } from './storage.dto';
 import { verifyServerPathWritable } from '../storage-sync/server-storage-fs';
@@ -24,12 +25,24 @@ export class StorageService {
     private readonly tenantContext: TenantContextService,
     private readonly audit: AuditContextService,
     private readonly gateway: GatewayService,
+    private readonly capability: CapabilityService,
   ) {}
 
   // --- roots ------------------------------------------------------------
 
   async createRoot(input: CreateStorageRootInput): Promise<StorageRoot> {
     const ctx = this.tenantContext.getOrThrow();
+    if (input.provider === 'gateway' || input.provider === 'server') {
+      // Same enforcement primitive GatewayService.setInstallation uses for
+      // linking a device to a client_server installation (locked
+      // architecture §10). Both non-'local' providers presuppose a real,
+      // tenant-operated filesystem this central API can reach — 'gateway'
+      // through a paired device, 'server' through the backend/worker
+      // process's own bind mount — neither of which exists for a hosted
+      // SaaS deployment; 'local' (the browser's File System Access API) is
+      // the only provider a saas/hosted tenant is ever entitled to.
+      await this.capability.assertCapability('enterpriseGateway');
+    }
     if (input.provider === 'gateway' && input.gatewayDeviceId) {
       // A plain foreign key does NOT apply RLS during its own referential-
       // integrity check (a documented Postgres limitation) — without this
@@ -109,6 +122,50 @@ export class StorageService {
       targetId: id,
       reason: reason ?? 'Storage root removed.',
       beforeState: { status: 'active' },
+      afterState: { status: 'tombstoned' },
+    });
+    return toRootResponse(row);
+  }
+
+  /**
+   * Revoke a GATEWAY folder's write grant — the storage half of "Remove
+   * folder" in Sources & Storage (see GatewayFolderService.revoke).
+   *
+   * Deliberately NOT removeRoot, and deliberately narrow:
+   *   - it refuses anything that is not a 'gateway'-provider root, so a
+   *     server mount or the browser's Central local folder can never be
+   *     taken out through this door;
+   *   - unlike removeRoot it does NOT demand an empty folder tree. The
+   *     folders under a Gateway root are a mirror of what the administrator
+   *     browsed, not configuration the customer can be asked to dismantle
+   *     first; requiring that would simply make removal impossible for every
+   *     folder anyone had ever picked a destination inside.
+   *   - it leaves those folders and every storage_mapping pointing into them
+   *     EXACTLY as they are. Nothing is deleted and nothing is repointed: a
+   *     consent-form field still names the destination it was given, and
+   *     every write path (staging and delivery alike) re-checks that the root
+   *     is active, so each one now fails closed instead of quietly landing in
+   *     some other folder. The administrator is told to choose a replacement.
+   *
+   * The customer's real files and folders on their own computer are untouched
+   * by this, as by everything else in this module — it stores names and
+   * pointers only.
+   */
+  async revokeGatewayRoot(id: string, reason: string | null): Promise<StorageRoot> {
+    const before = await this.repo.findRoot(id);
+    if (!before || before.status !== 'active') {
+      throw new NotFoundException('Storage location not found or already removed.');
+    }
+    if (before.provider !== 'gateway') {
+      throw new ConflictException('Only a Gateway folder can be revoked this way.');
+    }
+    const row = await this.repo.tombstoneRoot(id, reason, this.tenantContext.getOrThrow().userId);
+    if (!row) throw new NotFoundException('Storage location not found or already removed.');
+    this.audit.annotate({
+      targetType: 'storage_root',
+      targetId: id,
+      reason: reason ?? `Gateway folder "${before.name}" write access revoked.`,
+      beforeState: { status: 'active', provider: before.provider },
       afterState: { status: 'tombstoned' },
     });
     return toRootResponse(row);

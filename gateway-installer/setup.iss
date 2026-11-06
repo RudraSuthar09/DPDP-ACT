@@ -83,13 +83,15 @@ Source: "{#StagingDir}\agent\*"; DestDir: "{app}\agent"; Flags: recursesubdirs i
 Source: "{#StagingDir}\runtime\node.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
 Source: "{#StagingDir}\DPDPGatewayAgent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagingDir}\DPDPGatewayAgent.xml"; DestDir: "{app}"; Flags: ignoreversion
-Source: "service\install-service.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "service\uninstall-service.ps1"; DestDir: "{app}"; Flags: ignoreversion
+; Scripts come from STAGING (copied there by build-agent-bundle.ps1) so that
+; MANIFEST.sha256 covers exactly what is installed.
+Source: "{#StagingDir}\install-service.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagingDir}\uninstall-service.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; The ONLY script the Gateway Setup app elevates (UAC). It locates itself,
 ; so it must live in {app}.
-Source: "service\elevated-helper.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagingDir}\elevated-helper.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; Read-only, redacting evidence collector for administrators/support (run elevated).
-Source: "service\collect-diagnostics.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StagingDir}\collect-diagnostics.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StagingDir}\gateway-app\electron\*"; DestDir: "{app}\gateway-app\electron"; Flags: recursesubdirs ignoreversion
 Source: "{#StagingDir}\gateway-app\app\*"; DestDir: "{app}\gateway-app\app"; Flags: recursesubdirs ignoreversion
 Source: "{#StagingDir}\MANIFEST.sha256"; DestDir: "{app}"; Flags: ignoreversion
@@ -100,6 +102,11 @@ Name: "{autodesktop}\DPDP Gateway Setup"; Filename: "{app}\gateway-app\electron\
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut for Gateway Setup"; GroupDescription: "Additional shortcuts:"
+
+[UninstallDelete]
+; Written by install-service.ps1 at install time (not part of [Files]).
+Type: files; Name: "{app}\install-service.log"
+Type: files; Name: "{app}\install-service.error.txt"
 
 [Run]
 ; runasoriginaluser: the wizard must NOT inherit the installer's elevation.
@@ -147,19 +154,57 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
-{ Exit codes are checked (the previous [Run]-based version ignored them). }
+var
+  ServiceInstallFailed: Boolean;
+  ServiceInstallError: String;
+
+{ Exit codes are checked (the previous [Run]-based version ignored them), and
+  success is only believed if the service really exists afterwards. On
+  failure the script's own message (e.g. WinSW's error) is shown, the
+  Finished page says the installation is incomplete, and the Gateway Setup
+  app is not offered (it cannot pair without the service). }
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
+  Detail: AnsiString;
 begin
   if CurStep = ssPostInstall then
   begin
-    if not RunScript('install-service.ps1', '', ResultCode) then
+    ServiceInstallFailed := not RunScript('install-service.ps1', '', ResultCode);
+    if (not ServiceInstallFailed) and (not ServiceExists()) then
     begin
-      Log('install-service.ps1 failed with exit code ' + IntToStr(ResultCode));
-      SuppressibleMsgBox('The DPDP Gateway service could not be installed or started (exit code ' + IntToStr(ResultCode) + ').' + #13#10#13#10 +
-        'Details: ' + ExpandConstant('{app}\install-service.log'), mbCriticalError, MB_OK, IDOK);
+      ServiceInstallFailed := True;
+      ResultCode := -2;
     end;
+    if ServiceInstallFailed then
+    begin
+      ServiceInstallError := '';
+      if LoadStringFromFile(ExpandConstant('{app}\install-service.error.txt'), Detail) then
+        ServiceInstallError := Trim(String(Detail));
+      if ServiceInstallError = '' then
+        ServiceInstallError := 'The service was not registered (exit code ' + IntToStr(ResultCode) + ').';
+      Log('install-service.ps1 failed (exit code ' + IntToStr(ResultCode) + '): ' + ServiceInstallError);
+      SuppressibleMsgBox('The DPDP Gateway service could not be installed or started.' + #13#10#13#10 +
+        ServiceInstallError + #13#10#13#10 +
+        'Full log: ' + ExpandConstant('{app}\install-service.log'), mbCriticalError, MB_OK, IDOK);
+    end;
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+var
+  I: Integer;
+begin
+  if (CurPageID = wpFinished) and ServiceInstallFailed then
+  begin
+    WizardForm.FinishedHeadingLabel.Caption := 'DPDP Gateway was NOT fully installed';
+    WizardForm.FinishedLabel.Caption :=
+      'The program files were copied, but the DPDP Gateway service could not be installed, so this computer cannot be paired yet.' + #13#10#13#10 +
+      ServiceInstallError + #13#10#13#10 +
+      'Details: ' + ExpandConstant('{app}\install-service.log');
+    for I := 0 to WizardForm.RunList.Items.Count - 1 do
+      WizardForm.RunList.Checked[I] := False;
+    WizardForm.RunList.Visible := False;
   end;
 end;
 

@@ -79,6 +79,37 @@ try {
     assert.strictEqual(validateSourcePayload({ sourceId: 'f', kind: 'csv', root: '..\\..\\Windows' }).ok, false);
   });
 
+  check('source payload: a folder with no permission choice is read-only, with exactly its old payload', () => {
+    assert.deepStrictEqual(validateSourcePayload({ sourceId: 'f', kind: 'filesystem', root: 'D:\\x' }), {
+      ok: true,
+      payload: { sourceId: 'f', kind: 'filesystem', roots: ['D:\\x'] },
+    });
+    assert.deepStrictEqual(validateSourcePayload({ sourceId: 'f', kind: 'filesystem', root: 'D:\\x', access: 'read', storageRootId: 'ignored' }), {
+      ok: true,
+      payload: { sourceId: 'f', kind: 'filesystem', roots: ['D:\\x'] },
+    });
+  });
+
+  check('source payload: write and both carry the storage location ID; write-only is keyed by it', () => {
+    const SR = '0b6a6b9e-1d3c-4a71-9c6f-1f0e0d0c0b0a';
+    assert.deepStrictEqual(validateSourcePayload({ sourceId: '', kind: 'filesystem', root: 'D:\\Out', access: 'write', storageRootId: SR }), {
+      ok: true,
+      payload: { sourceId: SR, kind: 'filesystem', roots: ['D:\\Out'], access: 'write', storageRootId: SR },
+    });
+    assert.deepStrictEqual(validateSourcePayload({ sourceId: 'ds1', kind: 'filesystem', root: 'D:\\Out', access: 'both', storageRootId: SR }), {
+      ok: true,
+      payload: { sourceId: 'ds1', kind: 'filesystem', roots: ['D:\\Out'], access: 'both', storageRootId: SR },
+    });
+  });
+
+  check('source payload: write permission is refused for databases, unknown values, or without a storage location ID', () => {
+    const SR = '0b6a6b9e-1d3c-4a71-9c6f-1f0e0d0c0b0a';
+    assert.strictEqual(validateSourcePayload({ sourceId: 'x', kind: 'postgresql', access: 'write', storageRootId: SR, connection: { host: 'h', port: 1, user: 'u', database: 'd' } }).ok, false);
+    assert.strictEqual(validateSourcePayload({ sourceId: 'x', kind: 'filesystem', root: 'D:\\x', access: 'admin', storageRootId: SR }).ok, false);
+    assert.strictEqual(validateSourcePayload({ sourceId: 'x', kind: 'filesystem', root: 'D:\\x', access: 'write' }).ok, false);
+    assert.strictEqual(validateSourcePayload({ sourceId: 'x', kind: 'filesystem', root: 'D:\\x', access: 'both', storageRootId: '..\\x' }).ok, false);
+  });
+
   check('source payload: rejects bad source IDs and out-of-range ports', () => {
     assert.strictEqual(validateSourcePayload({ sourceId: 'has space', kind: 'csv', root: 'D:\\x' }).ok, false);
     assert.strictEqual(validateSourcePayload({ sourceId: '-x', kind: 'csv', root: 'D:\\x' }).ok, false);

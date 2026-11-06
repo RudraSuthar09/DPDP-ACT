@@ -146,6 +146,12 @@ Copy-Item (Join-Path $extract "node-v$NodeVersion-win-x64\node.exe") (Join-Path 
 $winsw = Get-VerifiedDownload $WinswUrl $WinswSha256 "WinSW-$WinswVersion-x64.exe" "WinSW v$WinswVersion"
 Copy-Item $winsw (Join-Path $OutDir 'DPDPGatewayAgent.exe') -Force
 Copy-Item (Join-Path $InstallerDir 'service\DPDPGatewayAgent.xml') (Join-Path $OutDir 'DPDPGatewayAgent.xml') -Force
+# The service scripts are staged too (setup.iss installs these copies), so
+# MANIFEST.sha256 covers them: they run elevated, and collect-diagnostics.ps1
+# verifies installed files against the manifest.
+foreach ($script in @('install-service.ps1', 'uninstall-service.ps1', 'elevated-helper.ps1', 'collect-diagnostics.ps1')) {
+  Copy-Item (Join-Path $InstallerDir "service\$script") (Join-Path $OutDir $script) -Force
+}
 
 # --- 3. Gateway Setup app -------------------------------------------------------
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $GatewayAppDir 'scripts\package.ps1')
@@ -154,25 +160,153 @@ Copy-Item (Join-Path $GatewayAppDir 'dist') (Join-Path $OutDir 'gateway-app') -R
 Remove-Matching (Join-Path $OutDir 'gateway-app\app') @('*.test.js')
 
 # --- 4. Release audit: nothing secret or stateful ships --------------------------
-$forbidden = @(Get-ChildItem -LiteralPath $OutDir -Recurse -Force -File | Where-Object {
+# pnpm lays out node_modules with directory JUNCTIONS. Inno Setup FOLLOWS them
+# (it installs their contents as real folders), but Get-ChildItem -Recurse
+# does NOT. Until Phase 5 that let one junction -- the workspace's own
+# @dpdp/agent entry, pointing back at the SOURCE agent folder (src, test
+# fixtures, dev node_modules) -- be packed into the installer while being
+# invisible to this audit and to MANIFEST.sha256. So: links pointing outside
+# staging are removed (the link only, never its target), and every check
+# below walks the tree exactly the way Inno Setup installs it.
+$stagingRoot = [System.IO.Path]::GetFullPath($OutDir).TrimEnd('\')
+function Test-InsideStaging([string]$Path) {
+  return ($Path -eq $stagingRoot) -or $Path.StartsWith("$stagingRoot\", [StringComparison]::OrdinalIgnoreCase)
+}
+$dirStack = New-Object System.Collections.Stack
+$dirStack.Push($stagingRoot)
+while ($dirStack.Count -gt 0) {
+  foreach ($d in Get-ChildItem -LiteralPath $dirStack.Pop() -Force -Directory) {
+    if ($d.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      $target = [string]($d.Target | Select-Object -First 1)
+      if (-not $target -or -not (Test-InsideStaging ([System.IO.Path]::GetFullPath($target)))) {
+        # Directory.Delete(path, $false) on a junction/symlink removes the LINK only.
+        [System.IO.Directory]::Delete($d.FullName, $false)
+        Write-Host "Removed link pointing outside staging: $($d.FullName.Substring($stagingRoot.Length + 1))"
+      }
+    } else {
+      $dirStack.Push($d.FullName)
+    }
+  }
+}
+
+# Every file as Inno Setup will install it: Rel = install path, Full = real file.
+function Get-InstallTree {
+  $files = New-Object System.Collections.Generic.List[object]
+  $work = New-Object System.Collections.Stack
+  $work.Push(@($stagingRoot, '', @($stagingRoot.ToLowerInvariant())))
+  while ($work.Count -gt 0) {
+    $dir, $rel, $chain = $work.Pop()
+    foreach ($item in Get-ChildItem -LiteralPath $dir -Force) {
+      $itemRel = if ($rel) { "$rel\$($item.Name)" } else { $item.Name }
+      $isLink = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+      if ($item.PSIsContainer) {
+        $real = $item.FullName
+        if ($isLink) {
+          $real = [System.IO.Path]::GetFullPath([string]($item.Target | Select-Object -First 1))
+          if (-not (Test-InsideStaging $real)) { throw "Release audit failed -- link points outside staging: $itemRel" }
+        }
+        if ($chain -contains $real.ToLowerInvariant()) { throw "Release audit failed -- link cycle in staging: $itemRel" }
+        $work.Push(@($real, $itemRel, ($chain + $real.ToLowerInvariant())))
+      } else {
+        if ($isLink) { throw "Release audit failed -- file link in staging: $itemRel" }
+        $files.Add([pscustomobject]@{ Rel = $itemRel; Full = $item.FullName; Name = $item.Name })
+      }
+    }
+  }
+  return $files
+}
+$installTree = Get-InstallTree
+Write-Host "Install tree: $($installTree.Count) files (internal pnpm links followed, as Inno Setup does)."
+
+$stateNames = @('device-credential.json', 'sources.json', 'pending-sources.json', 'pending-enrollment.json', 'pending-deenroll.json', 'proxy-credentials.json', 'agent.lock', 'config.json')
+$forbidden = @($installTree | Where-Object {
     $n = $_.Name.ToLowerInvariant()
     ($n -eq '.env') -or ($n -like '.env.*') -or ($n -like '*.pem') -or ($n -like '*.key') -or ($n -like '*.pfx') -or ($n -like '*.p12') -or
-    (($_.FullName -notmatch '\\node_modules\\') -and ($n -in @('device-credential.json', 'sources.json', 'pending-sources.json', 'pending-enrollment.json', 'pending-deenroll.json', 'proxy-credentials.json', 'agent.lock', 'config.json')))
+    (($_.Rel -notmatch '\\node_modules\\') -and ($n -in $stateNames))
   })
 if ($forbidden.Count -gt 0) {
-  throw "Release audit failed -- these must not ship:`n$($forbidden.FullName -join "`n")"
+  throw "Release audit failed -- these must not ship:`n$($forbidden.Rel -join "`n")"
 }
-$leftovers = @(Get-ChildItem -LiteralPath $OutDir -Recurse -Force -File | Where-Object { $_.FullName -notmatch '\\node_modules\\' -and ($_.Name -like '*.spec.*' -or $_.Name -like '*.test.*') })
-if ($leftovers.Count -gt 0) { throw "Release audit failed -- test files staged:`n$($leftovers.FullName -join "`n")" }
-Write-Host 'Release audit passed (no .env, keys, certificates, Gateway state or test files staged).'
+$leftovers = @($installTree | Where-Object {
+    $_.Rel -match '\\__fixtures__\\' -or $_.Rel -match '\\@dpdp\\agent\\src\\' -or (
+      $_.Rel -notmatch '\\node_modules\\' -and ($_.Name -like '*.spec.*' -or $_.Name -like '*.test.*' -or $_.Name -like 'mock-*'))
+  })
+if ($leftovers.Count -gt 0) { throw "Release audit failed -- test files, fixtures, mocks or agent sources staged:`n$($leftovers.Rel -join "`n")" }
+
+# Development-only dependencies of the agent must not ship (pnpm deploy --prod).
+$devDeps = @((Get-Content -Raw (Join-Path $RepoRoot 'agent\package.json') | ConvertFrom-Json).devDependencies.PSObject.Properties.Name)
+$devShipped = @($devDeps | Where-Object { Test-Path -LiteralPath (Join-Path $AgentStage "node_modules\$_") })
+if ($devShipped.Count -gt 0) { throw "Release audit failed -- development dependencies staged: $($devShipped -join ', ')" }
+
+# The code this release is supposed to contain is actually there.
+$required = @(
+  'agent\dist\index.js', 'agent\dist\cli-pair.js', 'agent\dist\transport.js', 'agent\dist\network-config.js',
+  'agent\dist\tls-trust.js', 'agent\dist\source-tls.js', 'agent\dist\connectors\db\db-client.js',
+  # Automatic folder registration: the approval queue the elevated helper
+  # writes and the service exchanges for DPDP record ids.
+  'agent\dist\pending-authorizations.js', 'agent\dist\startup-tasks.js',
+  'agent\node_modules\undici\package.json', 'runtime\node.exe', 'DPDPGatewayAgent.exe', 'DPDPGatewayAgent.xml',
+  'gateway-app\app\src\main.js', 'gateway-app\app\src\request-file.js', 'gateway-app\app\src\index.html',
+  'gateway-app\electron\electron.exe'
+)
+# The release must actually CONTAIN this workflow, not just the files: a build
+# from a stale tree would otherwise produce a wizard that still asks for ids.
+$contentChecks = @(
+  @{ Path = 'agent\dist\cli-pair.js'; Needle = 'authorize-folder'; What = 'the agent CLI accepts folder approvals' },
+  @{ Path = 'agent\dist\pending-authorizations.js'; Needle = 'pending-authorizations.json'; What = 'the approval queue' },
+  @{ Path = 'agent\dist\enrollment.js'; Needle = '/gateway/folders'; What = 'the folder-registration control-plane call' },
+  @{ Path = 'gateway-app\app\src\index.html'; Needle = 'btn-sources-approve'; What = 'the wizard''s "Allow this folder" action' },
+  @{ Path = 'gateway-app\app\src\preload.js'; Needle = 'authorizeFolder'; What = 'the wizard''s folder-approval bridge' },
+  @{ Path = 'gateway-app\app\src\main.js'; Needle = 'openDirectory'; What = 'the native folder picker' },
+  # The elevated helper must never flash a console window at a customer, and
+  # must be told it will not be prompted (it would hang invisibly otherwise).
+  @{ Path = 'gateway-app\app\src\elevated-command.js'; Needle = '-WindowStyle Hidden'; What = 'the hidden elevated console' },
+  @{ Path = 'gateway-app\app\src\elevated-command.js'; Needle = '-NonInteractive'; What = 'the non-interactive helper invocation' },
+  # Approving a folder must report its real outcome.
+  @{ Path = 'gateway-app\app\src\renderer.js'; Needle = 'Folder allowed'; What = 'the folder-approval confirmation' },
+  @{ Path = 'gateway-app\app\src\index.html'; Needle = 'id="sources-notice"'; What = 'the confirmation element' }
+)
+# Elevation itself must still be requested: a build that quietly dropped
+# -Verb RunAs would run the helper unelevated and fail at every write.
+$elevatedCmd = Join-Path $OutDir 'gateway-app\app\src\elevated-command.js'
+if (-not (Select-String -LiteralPath $elevatedCmd -SimpleMatch '-Verb RunAs' -Quiet)) {
+  throw 'Release audit failed -- the elevated helper no longer requests UAC elevation (-Verb RunAs).'
+}
+foreach ($check in $contentChecks) {
+  $full = Join-Path $OutDir $check.Path
+  if (-not (Test-Path -LiteralPath $full) -or -not (Select-String -LiteralPath $full -SimpleMatch $check.Needle -Quiet)) {
+    throw "Release audit failed -- $($check.What) is missing from $($check.Path). Build from a tree that contains it."
+  }
+}
+# And it must NOT still ask for a storage location id.
+$wizardHtml = Join-Path $OutDir 'gateway-app\app\src\index.html'
+if (Select-String -LiteralPath $wizardHtml -SimpleMatch 'id="source-storage-id"' -Quiet) {
+  throw 'Release audit failed -- the wizard still asks for a Storage location ID.'
+}
+# Nothing from the central platform belongs in a Gateway installer.
+$leaked = @($installTree | Where-Object { $_.Rel -match '\\(backend|frontend)\\' -or $_.Rel -match '\\@dpdp\\(backend|frontend)\\' })
+if ($leaked.Count -gt 0) { throw "Release audit failed -- backend/frontend files staged:`n$($leaked.Rel -join "`n")" }
+$missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $OutDir $_)) })
+if ($missing.Count -gt 0) { throw "Release audit failed -- expected files missing: $($missing -join ', ')" }
+
+# The staged WinSW descriptor must be valid XML that WinSW itself can load
+# (a "--" inside an XML comment once made every service install fail).
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $InstallerDir 'tests\validate-service-xml.ps1') -StagingDir $OutDir -AllowConfigChange
+if ($LASTEXITCODE -ne 0) { throw 'Release audit failed -- DPDPGatewayAgent.xml is not a valid WinSW configuration (see above).' }
+Write-Host 'Release audit passed (no .env, keys, certificates, Gateway state, tests, fixtures, mocks or dev dependencies staged; required files present).'
 
 # --- 5. Manifest -------------------------------------------------------------------
+# One entry per file AS INSTALLED (paths relative to {app}), including files
+# reached through pnpm's internal links, which Inno Setup installs as copies.
 $manifest = Join-Path $OutDir 'MANIFEST.sha256'
-$lines = Get-ChildItem -LiteralPath $OutDir -Recurse -Force -File | Where-Object { $_.FullName -ne $manifest } | Sort-Object FullName | ForEach-Object {
-  "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.FullName.Substring($OutDir.Length + 1))"
-}
-$header = @("# DPDP Gateway $AgentVersion staging manifest", "# node $NodeVersion ($NodeZipSha256 zip), WinSW $WinswVersion", "# electron: see gateway-app/node_modules/electron/package.json (pinned by pnpm-lock.yaml)")
+$manifestRel = 'MANIFEST.sha256'
+$entries = @($installTree | Where-Object { $_.Rel -ne $manifestRel } | Sort-Object Rel)
+$lines = $entries | ForEach-Object { "$((Get-FileHash -LiteralPath $_.Full -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Rel)" }
+$header = @("# DPDP Gateway $AgentVersion install manifest (paths relative to the install directory)", "# node $NodeVersion ($NodeZipSha256 zip), WinSW $WinswVersion", "# electron: see gateway-app/node_modules/electron/package.json (pinned by pnpm-lock.yaml)")
 [System.IO.File]::WriteAllLines($manifest, [string[]]($header + $lines), (New-Object System.Text.UTF8Encoding($false)))
+if (@($lines).Count -ne $entries.Count -or @(Get-InstallTree).Count -ne ($entries.Count + 1)) {
+  throw 'Manifest check failed: the manifest does not have exactly one entry per installed file.'
+}
 Write-Host "Manifest: $($lines.Count) files -> $manifest"
 
 # --- 6. Optional: compile the installer ----------------------------------------------

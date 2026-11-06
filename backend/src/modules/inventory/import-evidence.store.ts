@@ -16,16 +16,12 @@ export interface ImportEvidenceRecord {
 
 export interface StoredImportEvidence extends ImportEvidenceRecord {
   fileSha256: string;
+  /** Where the evidence lives: a local file path, or `s3://bucket/key`. */
   evidencePath: string;
 }
 
 /**
- * WORM-style evidence of a CSV/Excel import declaration (FR-INV-02) — a local
- * disk equivalent of S3 Object Lock. This dev environment has no AWS
- * credentials configured (see backend/.env: only Supabase Postgres), and
- * Object Lock itself is Stage 5 per the master doc, so this is the practical
- * stand-in: written once, then chmod'd read-only, and the application never
- * opens it for writing again.
+ * WORM-style evidence of a CSV/Excel import declaration (FR-INV-02).
  *
  * Deliberately stores ONLY the declaration — header column names, a SHA-256 of
  * the full uploaded bytes, and a row COUNT — never the file's data rows, and
@@ -34,13 +30,44 @@ export interface StoredImportEvidence extends ImportEvidenceRecord {
  * this feature has to withstand. The hash is computed over the bytes in
  * memory; those bytes are never written anywhere and are discarded the moment
  * this call returns — only the fixed-size digest is retained.
+ *
+ * Two implementations, chosen at startup by IMPORT_EVIDENCE_STORE (see
+ * import-evidence.config.ts):
+ *   - `local` (default): a file on the container's disk, chmod'd read-only.
+ *     Right for development and for an on-premises installation with a
+ *     persistent disk; WRONG for a container platform that replaces disks on
+ *     every deploy, where the evidence would silently disappear.
+ *   - `s3`: one encrypted, write-once object per declaration
+ *     (s3-import-evidence.store.ts), optionally under Object Lock retention.
+ *
+ * This abstract class is the injection token, so the one caller
+ * (RegisterImportService) is unaware of which is in use.
+ */
+export abstract class ImportEvidenceStore {
+  abstract record(evidence: ImportEvidenceRecord, rawBytes: string): Promise<StoredImportEvidence>;
+}
+
+/** The digest every implementation stores under — content-addressing means an
+ *  identical file declared twice resolves to the same evidence. */
+export function evidenceDigest(rawBytes: string): string {
+  return createHash('sha256').update(rawBytes, 'utf8').digest('hex');
+}
+
+/**
+ * The original local-disk store, unchanged in behaviour: a local equivalent of
+ * S3 Object Lock — written once, then chmod'd read-only, and never opened for
+ * writing again.
  */
 @Injectable()
-export class ImportEvidenceStore {
-  private readonly baseDir = join(process.cwd(), 'var', 'inventory-import-evidence');
+export class LocalImportEvidenceStore extends ImportEvidenceStore {
+  constructor(
+    private readonly baseDir: string = join(process.cwd(), 'var', 'inventory-import-evidence'),
+  ) {
+    super();
+  }
 
   async record(evidence: ImportEvidenceRecord, rawBytes: string): Promise<StoredImportEvidence> {
-    const fileSha256 = createHash('sha256').update(rawBytes, 'utf8').digest('hex');
+    const fileSha256 = evidenceDigest(rawBytes);
     const tenantDir = join(this.baseDir, evidence.tenantId);
     await mkdir(tenantDir, { recursive: true });
 

@@ -5,6 +5,7 @@ import type { UserStatus } from '@dpdp/shared';
 import { TenantContextService } from '../tenancy/tenant-context.service';
 import { runWithTenant } from './tenant-connection';
 import { UnitOfWorkService } from './unit-of-work';
+import { pgConnectionOptions } from './pg-tls';
 
 /** What the login peephole returns — ids only, never credential material. */
 export interface LoginResolution {
@@ -75,7 +76,15 @@ export class TenantDatabaseService implements OnModuleDestroy {
           'See Seam S1.',
       );
     }
-    this.pool = new Pool({ connectionString, max: 10 });
+    // DB_POOL_MAX sizes this RLS pool per process (default 10, unchanged).
+    // Budget it when scaling out: every API task AND every worker task opens
+    // up to this many connections here, plus pg-boss's own pool, and the
+    // database's max_connections has to cover the sum. Validated at startup.
+    // TLS: verified against DATABASE_SSL_CA_FILE when set (see pg-tls.ts).
+    this.pool = new Pool({
+      ...pgConnectionOptions(connectionString, config.get<string>('DATABASE_SSL_CA_FILE')),
+      max: Number(config.get<string>('DB_POOL_MAX') ?? 10),
+    });
     // node-postgres emits 'error' on the POOL (not just the query promise) when
     // an IDLE client's connection is severed server-side — exactly what a
     // managed-Postgres pooler (e.g. Supabase) does when it recycles idle
@@ -326,11 +335,13 @@ export class TenantDatabaseService implements OnModuleDestroy {
    * This does NOT bypass RLS: the connection is still dpdp_app, so any query
    * against a tenant table returns zero rows (app.current_tenant() is NULL and
    * `tenant_id = NULL` is never true — fail closed, exactly like a forgotten
-   * WHERE). Its ONLY legitimate use is calling a SECURITY DEFINER scheduler
-   * peephole that deliberately returns cross-tenant ids — the sibling of
-   * resolveLogin for the login path (Seam S3's reconciliation ticker). Anything
-   * tenant-scoped must go through withTenant/withTenantId instead; there is no
-   * generic untenanted query primitive, and this is deliberately not one.
+   * WHERE). Its legitimate uses are calling a SECURITY DEFINER peephole that
+   * deliberately returns cross-tenant data: the scheduler reconciliation
+   * ticker (Seam S3), and the platform-admin tool's login/organisation-list
+   * peepholes (app.resolve_platform_admin_login, app.list_organisations —
+   * see the platform-admin migration). Anything tenant-scoped must go through
+   * withTenant/withTenantId instead; there is no generic untenanted query
+   * primitive, and this is deliberately not one.
    */
   async runUntenanted<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();

@@ -1,10 +1,29 @@
 'use client';
 
 import { useParams } from 'next/navigation';
-import { useCallback, useEffect, useState } from 'react';
-import { CONSENT_FORM_FIELD_TYPES, type ConsentFormCustomerField, type ConsentFormFieldType, type StorageMapping } from '@dpdp/shared';
-import { apiFetch, ApiError } from '../../../../../lib/api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  CONSENT_FORM_FIELD_TYPES,
+  describeUploadKind,
+  type ConsentFormFileKind,
+  type ConsentDeliveryState,
+  type ConsentFormCustomerField,
+  type ConsentFormFieldType,
+  type StorageFolder,
+  type StorageMapping,
+  type StorageRoot,
+} from '@dpdp/shared';
+import { apiFetch, ApiError, downloadFile, fetchBlob } from '../../../../../lib/api';
+import {
+  GatewayStorageSessionError,
+  openGatewayStorageSession,
+  writeStorageFile,
+} from '../../../../../lib/gateway-storage-session';
 import { useAuth } from '../../../../../lib/auth';
+import { useCapabilities } from '../../../../../lib/capabilities';
+import { describeDestination, gatewayStorageRoots } from '../../../../../lib/gateway-destinations';
+import { classifyGatewayConnection } from '../../../../../lib/gateway-connection';
+import { DestinationPicker, type ChosenDestination } from '../../../../../components/DestinationPicker';
 import { useToast } from '../../../../../components/Toast';
 import { useDialog } from '../../../../../components/Dialog';
 import {
@@ -46,6 +65,54 @@ interface Submission {
   channel: 'widget' | 'link';
   submittedAt: string;
   answers: Array<{ consentPurposeId: string; purposeName: string | null; granted: boolean }>;
+  /** Storage writes only — the answers above are already recorded either way. */
+  deliveryState: ConsentDeliveryState;
+  deliveryAttempts: number;
+  /** Per destination, outcomes/counts only — never where. */
+  centralDelivery?: 'stored' | 'pending' | 'failed' | 'partial' | 'not_configured';
+  enterpriseCopies?: { total: number; stored: number; failed: number };
+}
+
+const CENTRAL_TEXT: Record<NonNullable<Submission['centralDelivery']>, string> = {
+  stored: 'stored',
+  pending: 'pending',
+  failed: 'failed',
+  partial: 'partly stored',
+  not_configured: 'not configured',
+};
+
+/** " Central DPDP Storage: stored. Enterprise copies: 1 of 2 stored." —
+ *  appended to the status tooltip, so the two destinations are told apart. */
+function destinationSummary(s: Submission): string {
+  const central = s.centralDelivery ? ` Central DPDP Storage: ${CENTRAL_TEXT[s.centralDelivery]}.` : '';
+  const e = s.enterpriseCopies;
+  if (!e || e.total === 0) return central;
+  return `${central} Enterprise copies: ${e.stored} of ${e.total} stored${e.failed ? `, ${e.failed} failed` : ''}.`;
+}
+
+/** Storage status badge for one submission. Wording keeps the consent
+ *  (always recorded) separate from where its data has been written. */
+function deliveryBadge(s: Submission): { className: string; label: string; title: string } {
+  switch (s.deliveryState) {
+    case 'delivered':
+      return { className: 'badge success', label: 'Stored', title: 'The submitted data was written to its storage destination.' };
+    case 'partially_delivered':
+      return {
+        className: 'badge warning',
+        label: 'Partly stored',
+        title: 'Some storage destinations were written, but at least one failed after repeated attempts. The consent itself is recorded.',
+      };
+    case 'failed':
+      return {
+        className: 'badge denied',
+        label: 'Storage failed',
+        title: 'Writing this submission to storage failed after repeated attempts. The consent itself is recorded.',
+      };
+    default:
+      return s.deliveryAttempts > 0
+        ? { className: 'badge warning', label: `Retrying (${s.deliveryAttempts})`, title: 'A storage write failed and will be retried automatically.' }
+        : { className: 'badge info', label: 'Pending', title: 'Waiting for connected storage or the DPDP Gateway to write this submission.' };
+  }
 }
 
 const MANAGE_ROLES = new Set(['owner', 'dpo', 'compliance_officer']);
@@ -55,6 +122,53 @@ const INVENTORY_NEW = '__new__';
  *  and field type — it never selects or implies a storage location. The
  *  label and type both remain freely editable afterward, and "Custom
  *  field…" leaves the label blank for free typing. */
+/** Plain words for each field type. The two legacy upload types are named as
+ *  such so a form owner reaches for "File upload" on anything new. */
+const FIELD_TYPE_LABEL: Record<ConsentFormFieldType, string> = {
+  text: 'Text',
+  file: 'File upload (photo or PDF)',
+  pdf: 'PDF (older type)',
+  excel: 'Excel (older type)',
+};
+
+/** Offered caps, in MB. Bounded by UPLOAD_MAX_BYTES_CEILING, which the
+ *  backend and the table's own CHECK both enforce independently. */
+const UPLOAD_SIZE_CHOICES_MB = [2, 5, 10, 15, 25];
+
+interface ExportDestination {
+  storageRootId: string | null;
+  destinationName: string | null;
+  /** False when the chosen folder has been removed or is no longer writable —
+   *  shown as such rather than quietly becoming download-only. */
+  available: boolean;
+}
+
+/** Mirrors the server's own exportFilename, so the name the customer sees
+ *  when downloading matches the one written into their folder. The server's
+ *  version is authoritative for the Content-Disposition header. */
+function exportFilenameFor(formName: string): string {
+  const stem = formName
+    .normalize('NFKD')
+    .replace(/[^A-Za-z0-9 _-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-\s]+|[-\s]+$/g, '')
+    .slice(0, 60);
+  return `${stem || 'consent-form'} submissions ${new Date().toISOString().slice(0, 10)}.xlsx`;
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : '');
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the spreadsheet.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
 const FIELD_LABEL_PRESETS: Array<{ label: string; fieldType: ConsentFormFieldType }> = [
   { label: 'Name', fieldType: 'text' },
   { label: 'Mobile Number', fieldType: 'text' },
@@ -66,12 +180,28 @@ const FIELD_LABEL_PRESETS: Array<{ label: string; fieldType: ConsentFormFieldTyp
   { label: 'Identity Document', fieldType: 'pdf' },
   { label: 'Address Proof', fieldType: 'pdf' },
   { label: 'Financial Statement', fieldType: 'excel' },
+  { label: 'Photo', fieldType: 'file' },
+  { label: 'Passport Photo', fieldType: 'file' },
 ];
 
 export default function ConsentFormBuilderPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
   const canManage = !!user && MANAGE_ROLES.has(user.role);
+  const { capabilities } = useCapabilities();
+  const hasGateway = capabilities?.features.enterpriseGateway ?? false;
+
+  // Enterprise (Gateway) destinations for a field's Additional Storage: the
+  // tenant's Gateway storage locations and their DPDP folder records.
+  const [gwRoots, setGwRoots] = useState<StorageRoot[]>([]);
+  const [gwFolders, setGwFolders] = useState<StorageFolder[]>([]);
+  /** Gateway locations the organisation has removed. A field still pointing
+   *  into one has NO usable destination and must be repointed by hand —
+   *  DPDP never picks a different folder on someone's behalf. */
+  const [removedRootIds, setRemovedRootIds] = useState<string[]>([]);
+  /** The field whose destination picker is open, if any. */
+  const [pickerField, setPickerField] = useState<ConsentFormCustomerField | null>(null);
+  const [gatewayOnline, setGatewayOnline] = useState<boolean | undefined>(undefined);
 
   const [form, setForm] = useState<FormDetail | null>(null);
   const [inventory, setInventory] = useState<InventoryOption[]>([]);
@@ -103,6 +233,13 @@ export default function ConsentFormBuilderPage() {
   const [cfRequired, setCfRequired] = useState(false);
   const [cfIsIdentifier, setCfIsIdentifier] = useState(false);
   const [cfIsCustomerName, setCfIsCustomerName] = useState(false);
+  const [cfDescription, setCfDescription] = useState('');
+  const [cfFileKinds, setCfFileKinds] = useState<ConsentFormFileKind>('image_pdf');
+  const [cfMaxMb, setCfMaxMb] = useState(10);
+  const [exportDestination, setExportDestination] = useState<ExportDestination | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [fieldStorage, setFieldStorage] = useState<Record<string, StorageMapping | null>>({});
   const [fieldStorageLoaded, setFieldStorageLoaded] = useState(false);
   const [fieldStorageBusy, setFieldStorageBusy] = useState<Record<string, boolean>>({});
@@ -115,6 +252,56 @@ export default function ConsentFormBuilderPage() {
   const [newElementCategory, setNewElementCategory] = useState('');
   const [newElementStorage, setNewElementStorage] = useState('');
   const [copied, setCopied] = useState(false);
+
+  /** Best-effort: without it, a field simply cannot be pointed at a Gateway
+   *  folder from here; nothing else on the page depends on it. Also reads the
+   *  Gateway's own online state, so an unavailable destination is labelled
+   *  rather than silently offered. */
+  /** Where this form's spreadsheet goes — a NAME and whether it is usable
+   *  right now, never an id the customer has to see. */
+  const loadExportDestination = useCallback(async () => {
+    try {
+      setExportDestination(
+        await apiFetch<ExportDestination>(`/consent/forms/${id}/submissions/export-destination`),
+      );
+    } catch {
+      // Best-effort, exactly like loadGatewayDestinations: without it the
+      // export is download-only, and nothing else on the page depends on it.
+      setExportDestination(null);
+    }
+  }, [id]);
+
+  const loadGatewayDestinations = useCallback(async () => {
+    try {
+      // includeTombstoned, so a destination whose folder the organisation has
+      // REMOVED can still be recognised below and labelled as gone. Without
+      // it the mapping simply fails to resolve and the field would claim its
+      // additional storage is connected when nothing can be written there.
+      const allRoots = (await apiFetch<{ roots: StorageRoot[] }>('/storage/roots?includeTombstoned=true')).roots;
+      const gwAll = gatewayStorageRoots(allRoots);
+      const roots = gwAll.filter((r) => r.status === 'active');
+      const folders = await Promise.all(
+        gwAll.map((r) =>
+          apiFetch<{ folders: StorageFolder[] }>(`/storage/roots/${r.id}/folders`)
+            .then((x) => x.folders)
+            .catch(() => [] as StorageFolder[]),
+        ),
+      );
+      setGwRoots(roots);
+      setRemovedRootIds(gwAll.filter((r) => r.status !== 'active').map((r) => r.id));
+      setGwFolders(folders.flat());
+      if (roots.length > 0) {
+        const { device } = await apiFetch<{ device: { status: string; endpoint: string | null; lastHeartbeatAt: string | null } | null }>(
+          '/gateway/devices/active',
+        ).catch(() => ({ device: null }));
+        setGatewayOnline(device ? classifyGatewayConnection(device, null) === 'connected' : false);
+      }
+    } catch {
+      setGwRoots([]);
+      setGwFolders([]);
+      setRemovedRootIds([]);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setError(null);
@@ -142,10 +329,12 @@ export default function ConsentFormBuilderPage() {
           setFieldStorageLoaded(true);
         })
         .catch(() => setFieldStorageLoaded(true));
+      void loadGatewayDestinations();
+      void loadExportDestination();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to load this form.');
     }
-  }, [id]);
+  }, [id, loadGatewayDestinations, loadExportDestination]);
 
   useEffect(() => {
     void load();
@@ -291,7 +480,19 @@ export default function ConsentFormBuilderPage() {
       () =>
         apiFetch(`/consent/forms/${id}/customer-fields`, {
           method: 'POST',
-          body: { label: cfLabel.trim(), fieldType: cfType, required: cfRequired, isIdentifier: cfIsIdentifier, isCustomerName: cfIsCustomerName },
+          body: {
+            label: cfLabel.trim(),
+            fieldType: cfType,
+            required: cfRequired,
+            isIdentifier: cfIsIdentifier,
+            isCustomerName: cfIsCustomerName,
+            description: cfDescription.trim() || null,
+            // Sent ONLY for a file field: the backend refuses this
+            // configuration on any other type rather than ignoring it.
+            ...(cfType === 'file'
+              ? { allowedFileKinds: cfFileKinds, maxFileBytes: cfMaxMb * 1024 * 1024 }
+              : {}),
+          },
         }),
       'Field added.',
     );
@@ -324,6 +525,43 @@ export default function ConsentFormBuilderPage() {
     }
   }
 
+  /** Points a field's Additional Storage at a folder of a Gateway storage
+   *  location: reuses that folder's DPDP record if it exists, else creates
+   *  it, then sets the field's EXISTING mapping (one folder per field). The
+   *  real folder is created by the Gateway on first delivery, inside the
+   *  location its administrator authorized — DPDP never writes it here. */
+  /**
+   * Applies what the picker returned, reusing the EXISTING per-field mapping
+   * (storage_mappings, moduleKey 'consent_form_field') — no new model and no
+   * new identifier. 'central' removes any extra mapping (Central alone is
+   * still always written); a folder id maps the field to that folder, which
+   * the picker has already mirrored into storage_folders.
+   */
+  async function onDestinationChosen(field: ConsentFormCustomerField, chosen: ChosenDestination) {
+    setPickerField(null);
+    if (chosen.kind === 'central') {
+      if (fieldStorage[field.id]) await onRemoveFieldStorage(field);
+      else showToast(`"${field.label}" is stored in Central DPDP Storage only.`);
+      return;
+    }
+    setFieldStorageBusy((prev) => ({ ...prev, [field.id]: true }));
+    setFieldStorageError(null);
+    try {
+      await apiFetch('/storage/mappings', {
+        method: 'PUT',
+        body: { moduleKey: 'consent_form_field', entityId: field.id, folderId: chosen.folderId },
+      });
+      const mapping = await getAdditionalStorageMapping('consent_form_field', field.id);
+      setFieldStorage((prev) => ({ ...prev, [field.id]: mapping }));
+      await loadGatewayDestinations();
+      showToast(`"${field.label}" will also be copied to ${chosen.label}.`);
+    } catch (err) {
+      setFieldStorageError(err instanceof ApiError ? err.message : 'Could not save this destination.');
+    } finally {
+      setFieldStorageBusy((prev) => ({ ...prev, [field.id]: false }));
+    }
+  }
+
   async function onRemoveFieldStorage(field: ConsentFormCustomerField) {
     const mapping = fieldStorage[field.id];
     if (!mapping) return;
@@ -340,17 +578,103 @@ export default function ConsentFormBuilderPage() {
     }
   }
 
+  // --- submissions export ----------------------------------------------------
+
+  /**
+   * Downloads the spreadsheet. POST because the route is audited — taking a
+   * copy of a submissions register is recorded, like every other export in
+   * this product.
+   */
+  async function onDownloadExport(): Promise<void> {
+    setExportBusy(true);
+    setExportNotice(null);
+    setExportError(null);
+    try {
+      await downloadFile(`/consent/forms/${id}/submissions/export`, exportFilenameFor(form!.name), {
+        method: 'POST',
+      });
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : 'Could not prepare the spreadsheet.');
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  /**
+   * Saves a copy into the chosen authorized folder, through the Gateway's own
+   * storage plane.
+   *
+   * Three things it deliberately does NOT do: it does not overwrite (the
+   * filename carries today's date, and the write is sent with overwrite
+   * false, so the Gateway refuses rather than replacing an existing file); it
+   * does not claim success when the Gateway is unreachable (opening the
+   * session fails first, and that failure is what gets reported); and it does
+   * not fall back to a different folder.
+   */
+  async function onSaveExportToFolder(): Promise<void> {
+    const rootId = exportDestination?.storageRootId;
+    if (!rootId) return;
+    setExportBusy(true);
+    setExportNotice(null);
+    setExportError(null);
+    try {
+      // Generated fresh, from the current records — never a cached copy.
+      const blob = await fetchBlob(`/consent/forms/${id}/submissions/export`);
+      const filename = exportFilenameFor(form!.name);
+      const session = await openGatewayStorageSession(rootId);
+      await writeStorageFile(session, {
+        path: [],
+        filename,
+        contentBase64: await blobToBase64(blob),
+      });
+      setExportNotice(`Saved "${filename}" to ${exportDestination?.destinationName ?? 'your folder'}.`);
+    } catch (err) {
+      setExportError(
+        err instanceof GatewayStorageSessionError || err instanceof ApiError
+          ? err.message
+          : 'Could not save the spreadsheet to that folder.',
+      );
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  async function onSetExportDestination(storageRootId: string | null): Promise<void> {
+    setExportBusy(true);
+    setExportNotice(null);
+    setExportError(null);
+    try {
+      await apiFetch(`/consent/forms/${id}/submissions/export-destination`, {
+        method: 'PUT',
+        body: { storageRootId },
+      });
+      await loadExportDestination();
+      setExportNotice(storageRootId ? 'Spreadsheet folder saved.' : 'The spreadsheet is download-only now.');
+    } catch (err) {
+      setExportError(err instanceof ApiError ? err.message : 'Could not save that folder.');
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
   if (!form) return error ? <div className="error">{error}</div> : <p className="muted">Loading…</p>;
 
   const hostedLink =
     form.slug && typeof window !== 'undefined' ? `${window.location.origin}/forms/${form.slug}` : null;
   const shareText = encodeURIComponent('Please review and complete this consent form: ');
+  /** A form with no consent item on it has nothing to ask, so the public page
+   *  refuses to open it even while the form is switched on. Say so here rather
+   *  than letting the owner share a link that looks live and is not. */
+  const activeRowCount = form.rows.filter((r) => r.active).length;
+  const liveButEmpty = form.isActive && activeRowCount === 0;
 
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <h1 style={{ margin: 0 }}>{form.name}</h1>
-        <span className={`badge ${form.isActive ? 'success' : 'neutral'}`}>{form.isActive ? 'Live' : 'Off'}</span>
+        <span className={`badge ${liveButEmpty ? 'warning' : form.isActive ? 'success' : 'neutral'}`}>
+          {liveButEmpty ? 'Unfinished' : form.isActive ? 'Live' : 'Off'}
+        </span>
         {canManage && (
           <>
             <button type="button" disabled={busy} onClick={() => void onRename()}>Rename</button>
@@ -397,9 +721,9 @@ export default function ConsentFormBuilderPage() {
       <div className="panel" style={{ marginTop: 16 }}>
         <h2 style={{ marginTop: 0 }}>Form Fields</h2>
         <p className="muted" style={{ fontSize: '0.85rem' }}>
-          Create the information you want to collect from the customer. Every field&apos;s value is always
-          stored in <strong>Central DPDP Storage</strong>; you can optionally connect an additional local
-          folder for any one field — one field&apos;s choice never becomes another&apos;s.
+          Create the information you want to collect from the customer. Every field&apos;s value is always stored in{' '}
+          <strong>Central DPDP Storage</strong>; each field can additionally be copied to one connected location — one
+          field&apos;s choice never becomes another&apos;s.
         </p>
         {fieldStorageError && <div className="error">{fieldStorageError}</div>}
 
@@ -424,21 +748,31 @@ export default function ConsentFormBuilderPage() {
                         {!fieldStorageLoaded ? (
                           <span className="muted" style={{ fontSize: '0.8rem' }}>Loading storage…</span>
                         ) : mapping ? (
-                          <span className="badge success">Additional storage connected</span>
+                          (() => {
+                            const gwFolder = gwFolders.find((x) => x.id === mapping.folderId);
+                            const gwRoot = gwFolder && gwRoots.find((r) => r.id === gwFolder.storageRootId);
+                            if (gwFolder && removedRootIds.includes(gwFolder.storageRootId)) {
+                              return (
+                                <span className="badge error" title="The folder this field was saving into has been removed. Choose another one; nothing is being saved there in the meantime.">
+                                  Destination removed — choose another
+                                </span>
+                              );
+                            }
+                            return gwFolder && gwRoot ? (
+                              <span className="badge success" title="Copied by the DPDP Gateway into a folder its administrator authorized for writing.">
+                                Enterprise copy → {describeDestination(gwRoot, gwFolder)}
+                              </span>
+                            ) : (
+                              <span className="badge success">Additional storage connected</span>
+                            );
+                          })()
                         ) : (
                           <span className="badge neutral">No additional storage</span>
                         )}
                         {canManage && fieldStorageLoaded && (
-                          <>
-                            <button type="button" disabled={isBusy} onClick={() => void onConnectFieldStorage(f)} style={{ fontSize: '0.78rem' }}>
-                              {isBusy ? 'Working…' : mapping ? 'Change Folder' : 'Browse Folder'}
-                            </button>
-                            {mapping && (
-                              <button type="button" disabled={isBusy} onClick={() => void onRemoveFieldStorage(f)} style={{ fontSize: '0.78rem' }}>
-                                Remove
-                              </button>
-                            )}
-                          </>
+                          <button type="button" disabled={isBusy} onClick={() => setPickerField(f)} style={{ fontSize: '0.78rem' }}>
+                            {isBusy ? 'Working…' : mapping ? 'Change destination' : 'Choose destination'}
+                          </button>
                         )}
                       </div>
                     </div>
@@ -452,6 +786,16 @@ export default function ConsentFormBuilderPage() {
           </div>
         )}
         {form.customerFields.length === 0 && <p className="muted">No fields yet — add your first below.</p>}
+
+        {pickerField && (
+          <DestinationPicker
+            fieldLabel={pickerField.label}
+            locations={gwRoots}
+            gatewayOnline={gatewayOnline}
+            onCancel={() => setPickerField(null)}
+            onChosen={(d) => void onDestinationChosen(pickerField, d)}
+          />
+        )}
 
         {canManage && (
           <div style={{ marginTop: 16, borderTop: '2px solid var(--border)', paddingTop: 16 }}>
@@ -471,9 +815,46 @@ export default function ConsentFormBuilderPage() {
             <label htmlFor="cf-type">Field Type</label>
             <select id="cf-type" value={cfType} onChange={(e) => setCfType(e.target.value as ConsentFormFieldType)} disabled={busy}>
               {CONSENT_FORM_FIELD_TYPES.map((t) => (
-                <option key={t} value={t}>{t === 'text' ? 'Text' : t === 'pdf' ? 'PDF' : 'Excel'}</option>
+                <option key={t} value={t}>{FIELD_TYPE_LABEL[t]}</option>
               ))}
             </select>
+
+            {/* Only a File upload field has anything more to configure. */}
+            {cfType === 'file' && (
+              <div className="reveal" style={{ marginTop: 8, paddingLeft: 12, borderLeft: '2px solid var(--accent-soft-border)' }}>
+                <label htmlFor="cf-kinds">What can they upload?</label>
+                <select
+                  id="cf-kinds"
+                  value={cfFileKinds}
+                  onChange={(e) => setCfFileKinds(e.target.value as ConsentFormFileKind)}
+                  disabled={busy}
+                >
+                  <option value="image_pdf">Photos or PDF</option>
+                  <option value="image">Photos only</option>
+                  <option value="pdf">PDF only</option>
+                </select>
+                <p className="muted" style={{ fontSize: '0.78rem', marginTop: 4 }}>
+                  {describeUploadKind(cfFileKinds)}. DPDP checks the file itself, not its name — a renamed
+                  program or any other file type is refused.
+                </p>
+
+                <label htmlFor="cf-max-mb">Largest file allowed</label>
+                <select id="cf-max-mb" value={cfMaxMb} onChange={(e) => setCfMaxMb(Number(e.target.value))} disabled={busy}>
+                  {UPLOAD_SIZE_CHOICES_MB.map((mb) => (
+                    <option key={mb} value={mb}>{mb} MB</option>
+                  ))}
+                </select>
+
+                <label htmlFor="cf-description">Instructions for the customer (optional)</label>
+                <input
+                  id="cf-description"
+                  value={cfDescription}
+                  onChange={(e) => setCfDescription(e.target.value)}
+                  placeholder="e.g. Both sides of the card, in one file"
+                  disabled={busy}
+                />
+              </div>
+            )}
 
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
               <input type="checkbox" style={{ width: 'auto' }} checked={cfRequired} onChange={(e) => setCfRequired(e.target.checked)} disabled={busy} />
@@ -655,6 +1036,12 @@ export default function ConsentFormBuilderPage() {
           embed is separate and covers all live forms at once — see the <a href="/consent/integration">Integration</a> tab.
         </p>
         {!form.isActive && <div className="notice">This form is currently off — the link will not work until you turn it on.</div>}
+        {liveButEmpty && (
+          <div className="notice">
+            This form has no consent item turned on yet, so the link will not open for your
+            customers. Add at least one consent item above, then share the link.
+          </div>
+        )}
         {hostedLink && (
           <>
             <div className="mono panel" style={{ wordBreak: 'break-all', display: 'flex', gap: 10, alignItems: 'center' }}>
@@ -674,14 +1061,80 @@ export default function ConsentFormBuilderPage() {
 
       {/* --- submissions --- */}
       <div className="panel" style={{ marginTop: 16 }}>
-        <h2 style={{ marginTop: 0 }}>Submissions</h2>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+          <h2 style={{ marginTop: 0, marginBottom: 8 }}>Submissions</h2>
+          {canManage && (
+            <>
+              <button type="button" disabled={exportBusy} onClick={() => void onDownloadExport()}>
+                {exportBusy ? 'Preparing…' : 'Download as Excel'}
+              </button>
+              {exportDestination?.storageRootId && (
+                <button type="button" disabled={exportBusy} onClick={() => void onSaveExportToFolder()}>
+                  {exportBusy ? 'Saving…' : `Save a copy to ${exportDestination.destinationName ?? 'your folder'}`}
+                </button>
+              )}
+            </>
+          )}
+        </div>
+
+        {exportNotice && <div className="notice">{exportNotice}</div>}
+        {exportError && <div className="error">{exportError}</div>}
+
+        {canManage && (
+          <p className="muted" style={{ fontSize: '0.8rem', marginTop: 0 }}>
+            The spreadsheet lists every submission with its consent answers and any files collected.
+            Answers the customer typed are kept in your own folder, not in DPDP, so the spreadsheet
+            shows where to find them rather than repeating them.
+          </p>
+        )}
+
+        {/* Where a copy of the spreadsheet is kept — the SAME picker a field's
+            destination uses, so no id is ever typed. */}
+        {canManage && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
+            <span className="muted" style={{ fontSize: '0.85rem' }}>Spreadsheet folder:</span>
+            {exportDestination?.storageRootId ? (
+              <span className={`badge ${exportDestination.available ? 'success' : 'error'}`}>
+                {exportDestination.available
+                  ? exportDestination.destinationName
+                  : `${exportDestination.destinationName ?? 'That folder'} — no longer available`}
+              </span>
+            ) : (
+              <span className="badge neutral">Download only</span>
+            )}
+            {/* The writable locations themselves — the same storage-root model
+                a field's destination uses. A location, not a subfolder: the
+                spreadsheet is one file kept at the top of the folder, and
+                offering a subfolder here would promise placement this does
+                not implement. Read-only folders cannot appear: gwRoots is
+                active gateway-provider roots only, and such a root exists
+                only because an administrator granted WRITE. */}
+            <select
+              value={exportDestination?.storageRootId ?? ''}
+              disabled={exportBusy || gwRoots.length === 0}
+              onChange={(e) => void onSetExportDestination(e.target.value || null)}
+            >
+              <option value="">Download only</option>
+              {gwRoots.map((r) => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+            {gwRoots.length === 0 && (
+              <span className="muted" style={{ fontSize: '0.8rem' }}>
+                No folder is connected for saving yet — connect one in Sources &amp; Storage.
+              </span>
+            )}
+          </div>
+        )}
+
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Channel</th>
                 <th>Submitted</th>
-                <th>Answers</th>
+                <th>Consent (recorded)</th>
+                <th>Storage</th>
               </tr>
             </thead>
             <tbody>
@@ -698,11 +1151,29 @@ export default function ConsentFormBuilderPage() {
                       ))}
                     </div>
                   </td>
+                  <td>
+                    {(() => {
+                      const b = deliveryBadge(s);
+                      return (
+                        <>
+                          <span className={b.className} title={b.title + destinationSummary(s)}>
+                            {b.label}
+                          </span>
+                          {(s.enterpriseCopies?.total ?? 0) > 0 && (
+                            <div className="muted" style={{ fontSize: '0.75rem', marginTop: 2 }}>
+                              {destinationSummary(s).trim()}
+                            </div>
+                          )}
+                        </>
+
+                      );
+                    })()}
+                  </td>
                 </tr>
               ))}
               {submissions.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="muted" style={{ textAlign: 'center', padding: 24 }}>No submissions yet.</td>
+                  <td colSpan={4} className="muted" style={{ textAlign: 'center', padding: 24 }}>No submissions yet.</td>
                 </tr>
               )}
             </tbody>

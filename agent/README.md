@@ -248,6 +248,16 @@ read once at service start:
 Changes to `config.json`, the CA file or `proxy-credentials.json` take effect
 when the service restarts (`Restart-Service DPDPGatewayAgent`).
 
+### Docker: `GATEWAY_NO_PROXY`
+
+`GATEWAY_NO_PROXY` (same syntax as `NO_PROXY`) is **added** to whichever
+exclusion list is in effect (environment `NO_PROXY` or `config.json`
+`proxy.noProxy`), never replacing it. Both full-stack Compose files set it to
+`backend`, because the Docker CLI injects `HTTP(S)_PROXY`/`NO_PROXY` into
+containers when a proxy is configured in `~/.docker/config.json`, and the
+agent would otherwise send `http://backend:3001` to that external proxy.
+Validate with `scripts/validate-compose-agent-proxy.ps1`.
+
 ### Diagnostics
 
 Failures with no HTTP response become stable codes with actionable messages
@@ -256,7 +266,10 @@ that never contain a URL, host, credential or token: `PROXY_AUTH_FAILED`,
 `TLS_UNTRUSTED`, `TLS_HOSTNAME_MISMATCH`, `TLS_FAILED`, `TIMEOUT`,
 `NETWORK_ERROR`. Enrolment maps them to `enrollmentError`
 `PROXY_AUTH_FAILED` / `PROXY_UNREACHABLE` / `TLS_CERTIFICATE_REJECTED` /
-`BACKEND_UNREACHABLE`; TLS and proxy-auth failures are not retried. The local
+`BACKEND_UNREACHABLE`; a reply that is not the DPDP API (non-JSON, or 404/405
+on the enrolment route -- usually the dashboard's web address entered instead
+of the server address) is `WRONG_SERVER` and is not retried. The first
+heartbeat is sent immediately at start-up, then every interval; TLS and proxy-auth failures are not retried. The local
 status block includes `network`: `proxy` (`none`/`config`/`environment`),
 `proxyAuthentication`, `noProxyRules`, `customTrust`, `tlsTrust` counts,
 `proxyCredentialsError`, and the latest heartbeat `lastErrorCode`. Startup
@@ -267,6 +280,48 @@ Timeouts are undici's defaults (connect 10 s, headers/body 300 s), unchanged
 from Node's global `fetch` used before. Known upstream issue worked around in
 `transport.ts`: undici 6.x reconnects forever when a proxy closes the socket
 before answering CONNECT; the transport makes that fail once.
+
+## Database TLS (PostgreSQL)
+
+Database connections do **not** use the outbound HTTP transport or its
+`config.json` `tls` trust: each database source has its own settings, on its
+`connection` (and `writeConnection`) object:
+
+| Field | Meaning |
+|---|---|
+| `"ssl": true` | Require TLS. The server certificate **and host name** are verified (equivalent to libpq `sslmode=verify-full`). If the server refuses TLS, or the certificate is untrusted, expired or for another host, the connection fails; it never falls back to plaintext and never skips verification. |
+| `"sslCaFile": "pg-ca.pem"` | Optional; requires `"ssl": true`. PEM file of the CA(s) that issued the server's certificate (private PKI, a self-signed server certificate that is itself a CA, or a cloud provider bundle such as Amazon RDS's). Must live **inside the Gateway config directory** (`%ProgramData%\DPDP Gateway\config` on Windows; admin-only) and contain only valid CA certificates. When set, **only** these CAs are trusted for that connection (libpq `sslrootcert`). |
+| `ssl` absent or `false` | Plaintext, unchanged from before. Use only on networks where that is acceptable. |
+
+Without `sslCaFile`, the server certificate must chain to Node.js's bundled
+public roots. The host in `"host"` must appear in the certificate's SAN (a DNS
+name, or an IP-address SAN when connecting by IP).
+
+A source whose `sslCaFile` cannot be loaded (missing, outside the config
+directory, not a CA, expired, contains a key) is **left out** at startup and
+the local status reports `sourcesError: "TLS_CA_INVALID"`; the log names it by
+position and kind only. TLS failures at connect time reach the browser only as
+the sanitized `PERMISSION_DENIED` code (no host, certificate or driver text).
+
+**Migration (behaviour change).** Before this change, `"ssl": true` encrypted
+the connection but accepted **any** certificate. A source that pointed at a
+server with a self-signed or private-CA certificate will now fail to connect
+until an administrator adds `sslCaFile` (or replaces the server certificate
+with one from a public CA). There is deliberately no switch to restore the old
+behaviour. To check a server's chain from the Gateway machine:
+`openssl s_client -starttls postgres -connect db.example:5432 -servername db.example -showcerts`.
+
+Setting it on an installed Gateway (elevated PowerShell): copy the CA into
+`C:\ProgramData\DPDP Gateway\config\`, then edit
+`C:\ProgramData\DPDP Gateway\state\sources.json` and add `"ssl": true,
+"sslCaFile": "pg-ca.pem"` to the source's `connection` object (its non-secret
+fields are plain JSON; leave the `secrets` block untouched), then
+`Restart-Service DPDPGatewayAgent`. The Gateway Setup wizard does not offer
+TLS settings yet: sources it adds connect without TLS.
+
+**Other drivers (not changed in this phase, tracked):** SQL Server sets
+`trustServerCertificate: true` (any certificate accepted), and MySQL verifies
+the chain but not the host name (mysql2 needs `verifyIdentity: true`).
 
 ## What Phase 3B deliberately does NOT do
 

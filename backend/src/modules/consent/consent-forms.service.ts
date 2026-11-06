@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { TenantContextService } from '../../tenancy/tenant-context.service';
 import { AuditContextService } from '../audit/audit-context.service';
@@ -11,6 +11,9 @@ import { ConsentInventoryLinkRepository } from './consent-inventory-link.reposit
 import { DataPrincipalService } from '../data-principal/data-principal.service';
 import { EnterpriseStorageSyncService, type FieldValueToWrite } from '../storage-sync/enterprise-storage-sync.service';
 import { SubmissionDeliveryService, type StageDeliveryFieldInput } from '../delivery/submission-delivery.service';
+import { deriveDeliveryState } from './consent-delivery-state';
+import { acceptUpload, isTypeCheckedUpload, uploadRulesFor, type AcceptedUpload } from './consent-form-uploads';
+import { enterpriseCopyFilename } from '../delivery/submission-delivery.service';
 import type {
   AddRowInput,
   LinkSubmissionFieldValueInput,
@@ -37,6 +40,8 @@ const EN = 'en';
  */
 @Injectable()
 export class ConsentFormsService {
+  private readonly logger = new Logger(ConsentFormsService.name);
+
   constructor(
     private readonly repo: ConsentFormsRepository,
     private readonly consent: ConsentService,
@@ -286,17 +291,31 @@ export class ConsentFormsService {
     const form = await this.repo.getForm(formId);
     if (!form) throw new NotFoundException('Consent form not found.');
     const submissions = await this.repo.listSubmissions(formId);
-    return submissions.map((s) => ({
-      id: s.id,
-      channel: s.channel,
-      submittedAt: s.submitted_at,
-      subjectRef: s.subject_ref,
-      answers: s.answers.map((a) => ({
-        consentPurposeId: a.consent_purpose_id,
-        purposeName: a.consent_purpose_name,
-        granted: a.granted,
-      })),
-    }));
+    // Delivery lifecycle comes from the delivery module's own service (R2 —
+    // never a join into its table from here). Metadata only.
+    const deliveries = await this.delivery.latestStatuses(submissions.map((s) => s.id));
+    const centralConfigured = submissions.length > 0 ? await this.delivery.hasCentralDestination() : true;
+    return submissions.map((s) => {
+      const derived = deriveDeliveryState({ localSyncedAt: s.local_synced_at, deliveries: deliveries.get(s.id) ?? [], centralConfigured });
+      return {
+        id: s.id,
+        channel: s.channel,
+        submittedAt: s.submitted_at,
+        subjectRef: s.subject_ref,
+        answers: s.answers.map((a) => ({
+          consentPurposeId: a.consent_purpose_id,
+          purposeName: a.consent_purpose_name,
+          granted: a.granted,
+        })),
+        deliveryState: derived.state,
+        // Attempts so far on whatever is still being retried (0 = none) —
+        // lets the view say "retrying" without exposing any error text.
+        deliveryAttempts: derived.retryAttempts,
+        // Per destination, counts/outcomes only — never a path or name.
+        centralDelivery: derived.central,
+        enterpriseCopies: derived.enterpriseCopies,
+      };
+    });
   }
 
   /** Submissions this template's consent data has not yet been written into
@@ -364,12 +383,16 @@ export class ConsentFormsService {
    *  active and has active rows. */
   async publicFormForLink(formId: string) {
     const form = await this.repo.getForm(formId);
+    // Each refusal carries a stable `reason` as well as its message: the
+    // public page tells the visitor which of these actually happened, instead
+    // of showing "we couldn't find that form" for all of them. The reason
+    // names no tenant, no form content and no id.
     if (!form || !form.is_active) {
-      throw new NotFoundException('This form is not currently available.');
+      throw new NotFoundException({ message: 'This form is not currently available.', reason: 'FORM_NOT_LIVE' });
     }
     const rows = await this.repo.listRows(formId, true);
     if (rows.length === 0) {
-      throw new NotFoundException('This form has no active rows.');
+      throw new NotFoundException({ message: 'This form has no active consent items yet.', reason: 'FORM_NOT_READY' });
     }
     const customerFields = await this.repo.listCustomerFields(formId);
     return {
@@ -428,6 +451,15 @@ export class ConsentFormsService {
         throw new BadRequestException('An answer refers to a row that is not active on this form.');
       }
     }
+
+    // UPLOADS ARE VALIDATED FIRST, before a single consent event is written.
+    // The file's real type, size and extension are re-derived from the bytes
+    // (acceptUpload) against the FIELD's own configuration, never against
+    // anything in this request. A refusal throws, so the respondent is told
+    // what is wrong and nothing is recorded — the alternative, recording the
+    // consent and dropping the file, would leave the client holding a consent
+    // whose evidence silently never arrived.
+    const accepted = this.validateUploads(await this.repo.listCustomerFields(formId), fieldValues);
 
     const ctx = this.tenantContext.getOrThrow();
     const subjectRef = await this.subjectRef.hash(ctx.tenantId, customerId);
@@ -505,6 +537,45 @@ export class ConsentFormsService {
       await this.stageFieldsForDelivery(formId, submission.id, internalCustomerId, subjectRef, displayName, fieldValues);
     }
 
+    // Enterprise COPIES (additional to everything above, which is unchanged):
+    // fields whose Additional Storage mapping points at a Gateway-authorized
+    // folder are queued for the Gateway, independently of whether the Central
+    // write above succeeded. The destination is resolved from the tenant's
+    // own mappings, never from this request.
+    const enterpriseCopies = fieldValues.length > 0 ? await this.stageEnterpriseCopies(formId, submission.id, fieldValues, accepted) : 0;
+
+    // Durable METADATA about each file collected — label, the filename this
+    // server generated, size, the proved content type. The delivery payload
+    // is nulled on acknowledgement by design, so without this the platform
+    // would forget a file was ever collected the moment it was safely
+    // delivered, and could neither list it in an export nor tell an auditor
+    // it existed. No bytes, no customer path. Best-effort: a submission that
+    // is already recorded must never fail because its bookkeeping did.
+    for (const file of accepted) {
+      try {
+        await this.repo.recordSubmissionFile({
+          submissionId: submission.id,
+          formId,
+          fieldId: file.fieldId,
+          fieldLabel: file.label,
+          filename: enterpriseCopyFilename({
+            submissionId: submission.id,
+            fieldId: file.fieldId,
+            label: file.label,
+            originalFilename: null,
+            extension: file.extension,
+          }),
+          byteSize: file.byteSize,
+          contentType: file.contentType,
+          storageRootId: null,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Could not record file metadata for a submission (form=${formId}): ${err instanceof Error ? err.name : 'error'}`,
+        );
+      }
+    }
+
     this.audit.annotate({
       actorLabel: channel === 'widget' ? 'consent_form:widget' : 'consent_form:link',
       targetType: 'consent_form_submission',
@@ -512,7 +583,12 @@ export class ConsentFormsService {
       reason:
         `Consent form submitted (${channel}) — ${recorded.filter((r) => r.granted).length}/${recorded.length} granted.` +
         (syncResult?.synced ? ' Written into Enterprise Central DPDP Storage.' : ''),
-      afterState: { formId, channel, ...(syncResult ? { enterpriseSynced: syncResult.synced } : {}) },
+      afterState: {
+        formId,
+        channel,
+        ...(syncResult ? { enterpriseSynced: syncResult.synced } : {}),
+        ...(enterpriseCopies > 0 ? { enterpriseCopiesQueued: enterpriseCopies } : {}),
+      },
     });
 
     return {
@@ -616,6 +692,76 @@ export class ConsentFormsService {
     });
   }
 
+  /** Same field-id -> label resolution as stageFieldsForDelivery above (only
+   *  fields that are still on this form), handed to the delivery module,
+   *  which owns the mapping lookup and the encrypted staging. Returns how
+   *  many destinations were queued. Never throws. */
+  /**
+   * Checks every submitted file against ITS OWN field's configuration and
+   * returns what was accepted. Throws on the first refusal.
+   *
+   * A value sent for a field that does not exist (or was removed) is ignored
+   * rather than fatal — the same tolerance the rest of this path already has
+   * for a form edited while someone had it open. A file sent for a TEXT field
+   * is a refusal, though: that is a caller doing something the form never
+   * offered.
+   */
+  private validateUploads(
+    customerFields: Array<{ id: string; label: string; field_type: string; allowed_file_kinds: string | null; max_file_bytes: number | null }>,
+    fieldValues: LinkSubmissionFieldValueInput[],
+  ): AcceptedUpload[] {
+    const byId = new Map(customerFields.map((f) => [f.id, f]));
+    const out: AcceptedUpload[] = [];
+    for (const v of fieldValues) {
+      if (!v.file) continue;
+      const field = byId.get(v.fieldId);
+      if (!field) continue;
+      // Only a TEXT field refuses a file outright. Every other type is an
+      // upload type, and an absent/unknown type is treated as one too rather
+      // than failing a submission — field_type is NOT NULL with a default in
+      // the schema, so an unknown value here means something changed under
+      // us, and the byte check below is what actually guards the content.
+      if (field.field_type === 'text') {
+        throw new BadRequestException(`"${field.label}" does not accept a file.`);
+      }
+      // The legacy 'excel' type is outside the byte allowlist by design (a
+      // .xlsx is a zip container) — it keeps exactly the behaviour it had
+      // before uploads were type-checked, rather than breaking live forms.
+      if (!isTypeCheckedUpload(field.field_type)) continue;
+      out.push(acceptUpload(uploadRulesFor(field), v.file.contentBase64));
+    }
+    return out;
+  }
+
+  private async stageEnterpriseCopies(
+    formId: string,
+    submissionId: string,
+    fieldValues: LinkSubmissionFieldValueInput[],
+    accepted: AcceptedUpload[] = [],
+  ): Promise<number> {
+    const customerFields = await this.repo.listCustomerFields(formId);
+    const byId = new Map(customerFields.map((f) => [f.id, f]));
+    // The extension PROVED from each file's bytes, so the name written into
+    // the client's folder reflects what the file actually is rather than what
+    // the respondent called it.
+    const provedExtension = new Map(accepted.map((a) => [a.fieldId, a.extension]));
+    const fields = fieldValues.flatMap((v) => {
+      const field = byId.get(v.fieldId);
+      if (!field) return [];
+      return [
+        {
+          fieldId: field.id,
+          label: field.label,
+          ...(v.file
+            ? { file: { ...v.file, extension: provedExtension.get(field.id) ?? null } }
+            : { textValue: v.textValue }),
+        },
+      ];
+    });
+    if (fields.length === 0) return 0;
+    return this.delivery.stageEnterpriseCopies({ submissionId, formId, fields });
+  }
+
   // --- the "behind the scenes" resolution ------------------------------------
 
   /** Reuse an existing consent purpose with this exact label, else create one;
@@ -674,6 +820,14 @@ function toCustomerFieldResponse(f: CustomerFieldRow) {
     isIdentifier: f.is_identifier,
     isCustomerName: f.is_customer_name,
     displayOrder: f.display_order,
+    description: f.description,
+    // Upload configuration. Safe to send to the PUBLIC form: it is what the
+    // respondent must be told anyway ("JPG, PNG or PDF, up to 10 MB"), and
+    // neither value is a secret or a server-side decision the client could
+    // subvert by editing it — the backend re-checks both against the stored
+    // field, never against the request.
+    allowedFileKinds: f.allowed_file_kinds,
+    maxFileBytes: f.max_file_bytes,
   };
 }
 

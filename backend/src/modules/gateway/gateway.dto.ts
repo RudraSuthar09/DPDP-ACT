@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { GATEWAY_AGENT_PLATFORMS, type GatewayAgentPlatform } from '@dpdp/shared';
+import { GATEWAY_AGENT_PLATFORMS, GATEWAY_LOOPBACK_HOST, type GatewayAgentPlatform } from '@dpdp/shared';
 
 /**
  * Request parsing for the Gateway control plane — hand-written and total, same
@@ -110,10 +110,41 @@ export function parseRefreshSession(body: unknown): { sessionToken: string } {
 }
 
 /** Heartbeat carries only the agent version (liveness metadata). */
-export function parseHeartbeat(body: unknown): { agentVersion: string } {
+/**
+ * Heartbeat. `localEndpoint` (optional) is the Gateway's own local listener,
+ * self-reported so the dashboard needs no manually entered address for a
+ * Gateway on the user's own computer. Accepted ONLY as http:// on the
+ * loopback host the installed Gateway binds (GATEWAY_LOOPBACK_HOST) with an
+ * explicit port and nothing else: a device credential can therefore never
+ * point browsers at a network address. Network (Enterprise LAN) endpoints
+ * remain staff-configured via PATCH /gateway/devices/:id/endpoint.
+ */
+export function parseHeartbeat(body: unknown): { agentVersion: string; localEndpoint: string | null } {
   const obj = asObject(body);
   rejectSecretFields(obj);
-  return { agentVersion: requireString(obj, 'agentVersion', { min: 1, max: 64 }) };
+  const agentVersion = requireString(obj, 'agentVersion', { min: 1, max: 64 });
+  const raw = obj['localEndpoint'];
+  if (raw === undefined || raw === null) return { agentVersion, localEndpoint: null };
+  if (typeof raw !== 'string' || raw.length > 64) throw new BadRequestException('localEndpoint must be a short string.');
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new BadRequestException('localEndpoint must be a valid URL.');
+  }
+  if (
+    url.protocol !== 'http:' ||
+    url.hostname !== GATEWAY_LOOPBACK_HOST ||
+    !url.port ||
+    url.username ||
+    url.password ||
+    (url.pathname !== '/' && url.pathname !== '') ||
+    url.search ||
+    url.hash
+  ) {
+    throw new BadRequestException('localEndpoint must be http://<loopback host>:<port> with nothing else.');
+  }
+  return { agentVersion, localEndpoint: url.origin };
 }
 
 export function parseRevokeReason(body: unknown): { reason: string | null } {

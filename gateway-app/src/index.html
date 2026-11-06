@@ -78,6 +78,18 @@
     display: none;
   }
   .error-box.show { display: block; }
+  /* Success/progress, same shape as .error-box so one helper drives both. */
+  .notice-box {
+    background: rgba(92, 184, 122, 0.12);
+    border: 1px solid rgba(92, 184, 122, 0.4);
+    color: #a9e3bd;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin-bottom: 14px;
+    display: none;
+  }
+  .notice-box.show { display: block; }
   .spinner {
     width: 14px; height: 14px;
     border: 2px solid rgba(255,255,255,0.3);
@@ -132,9 +144,10 @@
       machine -- only metadata ever travels to DPDP.
     </p>
     <p class="lead">
-      This should take about two minutes. You will need the enrolment code
-      shown in your DPDP dashboard under <strong>Data Sources &rarr; Connect
-      Enterprise Gateway</strong>.
+      This should take about two minutes. You will need the <strong>server
+      address</strong> and the <strong>enrolment code</strong> shown in your
+      DPDP dashboard under <strong>Data Sources &rarr; Connect Enterprise
+      Gateway</strong>.
     </p>
     <div class="row">
       <button class="primary" id="btn-welcome-start">Get started</button>
@@ -143,11 +156,15 @@
 
   <!-- Screen B: Connect workspace -->
   <section id="screen-connect" class="screen">
-    <h2>Connect workspace</h2>
-    <p class="lead">Enter the URL of your DPDP workspace.</p>
+    <h2>Connect to DPDP</h2>
+    <p class="lead">
+      Enter the <strong>server address</strong> shown in your DPDP dashboard
+      next to the enrolment code (Data Sources &rarr; Connect Enterprise
+      Gateway). It is not always the address you use to open the dashboard.
+    </p>
     <div class="error-box" id="connect-error"></div>
-    <label for="connect-url">Workspace URL</label>
-    <input type="text" id="connect-url" placeholder="https://your-company.dpdp.example.com" />
+    <label for="connect-url">DPDP server address</label>
+    <input type="text" id="connect-url" placeholder="https://api.your-dpdp-host.example" />
     <div class="row">
       <button class="secondary" id="btn-connect-back">Back</button>
       <button class="primary" id="btn-connect-continue">Continue</button>
@@ -175,7 +192,10 @@
   <!-- Screen D: Verify connection -->
   <section id="screen-verify" class="screen">
     <h2>Verifying connection</h2>
-    <p class="lead">This takes a few seconds.</p>
+    <p class="lead">
+      This usually takes a few seconds. If DPDP cannot be reached right away,
+      the Gateway keeps trying for up to two minutes before reporting a problem.
+    </p>
     <ul class="checklist">
       <li id="check-service"><span class="icon">&#9675;</span> Gateway service running</li>
       <li id="check-enrolled"><span class="icon">&#9675;</span> Enrollment confirmed by DPDP</li>
@@ -183,8 +203,8 @@
     </ul>
     <div class="error-box" id="verify-error"></div>
     <div class="row">
-      <button class="secondary" id="btn-verify-cancel">Cancel</button>
-      <button class="primary" id="btn-verify-retry" style="display:none;">Retry</button>
+      <button class="secondary" id="btn-verify-cancel">Back</button>
+      <button class="primary" id="btn-verify-retry" style="display:none;">Try again</button>
     </div>
   </section>
 
@@ -206,7 +226,7 @@
     <h2>Gateway status</h2>
     <div class="status-grid">
       <div class="status-row"><span class="k">Connection</span><span class="v" id="status-badge"><span class="badge unknown"><span class="dot"></span>Checking...</span></span></div>
-      <div class="status-row"><span class="k">Workspace</span><span class="v mono" id="status-workspace">-</span></div>
+      <div class="status-row"><span class="k">DPDP server</span><span class="v mono" id="status-workspace">-</span></div>
       <div class="status-row"><span class="k">Device ID</span><span class="v mono" id="status-device">-</span></div>
       <div class="status-row"><span class="k">Last heartbeat</span><span class="v" id="status-heartbeat">-</span></div>
       <div class="status-row"><span class="k">Agent version</span><span class="v" id="status-version">-</span></div>
@@ -215,7 +235,6 @@
     <div class="error-box" id="status-error"></div>
     <div class="row top">
       <button class="secondary" id="btn-status-reconnect">Reconnect</button>
-      <button class="secondary" id="btn-status-dashboard">Open dashboard</button>
       <button class="secondary" id="btn-status-sources">Manage sources</button>
       <button class="danger" id="btn-status-remove">Remove Gateway</button>
     </div>
@@ -223,46 +242,73 @@
 
   <!-- Source configuration -->
   <section id="screen-sources" class="screen">
-    <h2>Data sources</h2>
-    <p class="lead">Databases and folders this Gateway is authorized to read. Credentials never leave this computer and are stored encrypted (Windows DPAPI) by the Gateway service. Adding a source with an existing Source ID replaces it.</p>
+    <h2>Folders DPDP may use</h2>
+    <p class="lead">Choose a folder and say what DPDP may do with it. Nothing else on this computer is reachable. DPDP sets everything else up by itself &mdash; there are no IDs to copy.</p>
     <ul class="checklist" id="sources-list"></ul>
 
-    <label for="source-kind">Source type</label>
-    <select id="source-kind">
-      <option value="postgresql">PostgreSQL</option>
-      <option value="mysql">MySQL</option>
-      <option value="sqlserver">SQL Server</option>
-      <option value="filesystem">Folder (any files)</option>
-      <option value="csv">Folder (CSV)</option>
-      <option value="excel">Folder (Excel)</option>
+    <label for="source-root">Folder</label>
+    <div class="row">
+      <button class="secondary" id="btn-pick-folder" type="button">Choose folder...</button>
+      <input type="text" id="source-root" placeholder="No folder chosen yet" readonly />
+    </div>
+
+    <label for="source-access">What may DPDP do with it?</label>
+    <select id="source-access">
+      <option value="read">Read files in this folder</option>
+      <option value="write">Save consent data here</option>
+      <option value="both">Both</option>
     </select>
-
-    <label for="source-id">Source ID</label>
-    <input type="text" id="source-id" placeholder="e.g. customers-db" />
-
-    <div id="source-fields-db">
-      <label for="source-host">Host</label>
-      <input type="text" id="source-host" placeholder="db.internal" />
-      <label for="source-port">Port</label>
-      <input type="text" id="source-port" placeholder="5432" />
-      <label for="source-user">Username</label>
-      <input type="text" id="source-user" placeholder="read_only_user" />
-      <label for="source-password">Password</label>
-      <input type="text" id="source-password" placeholder="" />
-      <label for="source-database">Database name</label>
-      <input type="text" id="source-database" placeholder="acme_production" />
-    </div>
-
-    <div id="source-fields-file" style="display:none;">
-      <label for="source-root">Allowed folder (full path on this computer)</label>
-      <input type="text" id="source-root" placeholder="D:\Customer Files\Exports" />
-    </div>
+    <p class="lead">When saving, DPDP only ever adds new files &mdash; it never changes or deletes what is already there. The Gateway service account needs permission to create files in the folder.</p>
 
     <div class="error-box" id="sources-error"></div>
+    <div class="notice-box" id="sources-notice"></div>
     <div class="row">
       <button class="secondary" id="btn-sources-back">Back</button>
-      <button class="primary" id="btn-sources-add">Add source</button>
+      <button class="primary" id="btn-sources-approve">Allow this folder</button>
     </div>
+
+    <!-- ADVANCED: databases, and a folder registered against an id supplied by
+         hand. Ordinary customers never open this. -->
+    <details id="source-advanced">
+      <summary class="lead">Advanced: connect a database, or use a specific DPDP ID</summary>
+
+      <label for="source-kind">Type</label>
+      <select id="source-kind">
+        <option value="postgresql">PostgreSQL</option>
+        <option value="mysql">MySQL</option>
+        <option value="sqlserver">SQL Server</option>
+        <option value="filesystem">Folder (any files)</option>
+        <option value="csv">Folder (CSV)</option>
+        <option value="excel">Folder (Excel)</option>
+      </select>
+
+      <div id="source-fields-read-id">
+        <label for="source-id">DPDP source ID</label>
+        <input type="text" id="source-id" placeholder="Paste the Gateway source ID from DPDP" />
+      </div>
+
+      <div id="source-fields-db">
+        <label for="source-host">Host</label>
+        <input type="text" id="source-host" placeholder="db.internal" />
+        <label for="source-port">Port</label>
+        <input type="text" id="source-port" placeholder="5432" />
+        <label for="source-user">Username</label>
+        <input type="text" id="source-user" placeholder="read_only_user" />
+        <label for="source-password">Password</label>
+        <input type="text" id="source-password" placeholder="" />
+        <label for="source-database">Database name</label>
+        <input type="text" id="source-database" placeholder="acme_production" />
+      </div>
+
+      <div id="source-fields-file" style="display:none;">
+        <label for="source-root-advanced">Folder</label>
+        <input type="text" id="source-root-advanced" placeholder="D:\Customer Files\Exports" />
+      </div>
+
+      <div class="row">
+        <button class="secondary" id="btn-sources-add">Add with this ID</button>
+      </div>
+    </details>
   </section>
 
 </main>

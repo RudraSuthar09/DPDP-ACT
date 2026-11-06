@@ -36,6 +36,9 @@ export interface GatewayStatusSummary {
   lastHeartbeatAt: string | null;
   sourcesConfigured: number;
   storageRootsConfigured: number;
+  /** Folders an administrator approved that are still waiting to be
+   *  registered with DPDP (it was unreachable, or not paired yet). */
+  pendingFolderAuthorizations: number;
   /** Count per connector kind (e.g. { postgresql: 1, csv: 2 }). Source IDs,
    *  hosts, users and paths are deliberately NOT exposed here. */
   sourceKinds: Record<string, number>;
@@ -43,8 +46,10 @@ export interface GatewayStatusSummary {
    *  only (see startup-tasks.ts's EnrollmentErrorCode) — never a message
    *  that could carry a backend response or a secret. */
   enrollmentError: EnrollmentErrorCode | null;
-  /** Why sources could not be loaded/applied, if they could not. */
-  sourcesError: SourcesFileErrorCode | null;
+  /** Why sources could not be loaded/applied, if they could not.
+   *  TLS_CA_INVALID: a source's database `sslCaFile` was unusable, so that
+   *  source was left out (see source-tls.ts). */
+  sourcesError: SourcesFileErrorCode | 'TLS_CA_INVALID' | null;
   /** 'dpapi' on Windows when the service's own DPAPI self-test passed;
    *  'unavailable' if it failed (credentials cannot be stored); 'none' on
    *  platforms without OS credential protection (development only). */

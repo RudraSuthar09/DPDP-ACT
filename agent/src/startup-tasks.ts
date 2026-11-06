@@ -8,16 +8,31 @@
  * message, and never discards configuration it could not process.
  */
 import { DpapiError } from './dpapi';
-import { ControlPlaneHttpError, EnrollmentRequiredError, deenroll, type CredentialStore, type GatewayControlPlaneClient } from './enrollment';
+import {
+  ControlPlaneHttpError,
+  EnrollmentRequiredError,
+  UnexpectedServerResponseError,
+  deenroll,
+  type CredentialStore,
+  type GatewayControlPlaneClient,
+} from './enrollment';
 import { clearDeenrollRequest, clearPendingEnrollment, hasDeenrollRequest } from './pending-enrollment';
 import {
   SourcesFileError,
   applyPendingSources,
+  applyRevocations,
   loadEffectiveSourceConfig,
   migrateLegacySourcesFile,
+  upsertSourceConfig,
   type SecretProtector,
   type SourcesFileErrorCode,
 } from './sources-file';
+import {
+  appendPendingAuthorization,
+  clearPendingAuthorizations,
+  readPendingAuthorizations,
+  type PendingFolderAuthorization,
+} from './pending-authorizations';
 import type { GatewaySourceConfig } from './connectors/registry';
 import { TransportError } from './transport';
 
@@ -37,7 +52,16 @@ export type EnrollmentErrorCode =
   /** A proxy is configured but could not be reached or refused the tunnel (never bypassed). */
   | 'PROXY_UNREACHABLE'
   /** The server (or TLS-inspecting proxy) certificate failed verification. */
-  | 'TLS_CERTIFICATE_REJECTED';
+  | 'TLS_CERTIFICATE_REJECTED'
+  /** The address answered, but it is not the DPDP API (non-JSON reply, or no
+   *  enrolment route: 404/405) -- typically the dashboard's web address. */
+  | 'WRONG_SERVER';
+
+/** DPDP always has POST /gateway/enroll and answers in JSON, so these mean
+ *  "wrong address", never "bad code". */
+function isWrongServer(err: unknown): boolean {
+  return err instanceof UnexpectedServerResponseError || (err instanceof ControlPlaneHttpError && (err.status === 404 || err.status === 405));
+}
 
 function classifyTransport(err: TransportError): EnrollmentErrorCode {
   switch (err.code) {
@@ -58,6 +82,7 @@ function classifyTransport(err: TransportError): EnrollmentErrorCode {
 export function classifyEnrollmentFailure(err: unknown): EnrollmentErrorCode | null {
   if (err instanceof EnrollmentRequiredError) return null; // not an error: simply not paired yet
   if (err instanceof TransportError) return classifyTransport(err);
+  if (isWrongServer(err)) return 'WRONG_SERVER';
   if (err instanceof ControlPlaneHttpError) return err.status >= 500 || err.status === 429 ? 'BACKEND_UNREACHABLE' : 'CODE_REJECTED';
   if (err instanceof DpapiError) return 'CREDENTIAL_UNREADABLE';
   if (err instanceof Error && /Corrupt Gateway credential/.test(err.message)) return 'CREDENTIAL_UNREADABLE';
@@ -68,6 +93,7 @@ export function classifyEnrollmentFailure(err: unknown): EnrollmentErrorCode | n
 export function isRetryableEnrollmentError(err: unknown): boolean {
   if (err instanceof EnrollmentRequiredError || err instanceof DpapiError) return false;
   if (err instanceof TransportError) return err.retryable;
+  if (isWrongServer(err)) return false;
   if (err instanceof Error && /Corrupt Gateway credential/.test(err.message)) return false;
   if (err instanceof ControlPlaneHttpError) return err.status >= 500 || err.status === 429;
   return true;
@@ -120,6 +146,141 @@ export async function processDeenrollRequest(opts: {
 export interface PreparedSources {
   sources: GatewaySourceConfig[];
   error: SourcesFileErrorCode | null;
+}
+
+export interface AppliedAuthorizations {
+  /** Folders registered with DPDP on this start. */
+  applied: number;
+  /** Still queued: DPDP could not be reached, or it refused them. */
+  pending: number;
+}
+
+/**
+ * Exchanges each folder an administrator approved in Gateway Setup for its
+ * DPDP record ids (POST /gateway/folders), then writes a complete source
+ * entry — which is what removes hand-copied ids from the wizard.
+ *
+ * Runs under the SERVICE's identity, because only it can decrypt the device
+ * credential. Fails safe in every direction:
+ *   - not enrolled yet, or no control plane: nothing is attempted and the
+ *     queue is kept for a later start;
+ *   - DPDP unreachable or refusing: that folder stays queued (reported as
+ *     `pending`), never silently dropped and never half-written;
+ *   - a folder DPDP accepts is written to sources.json immediately, so a
+ *     later failure for another folder cannot undo it.
+ * The local folder PATH is never sent — only the label and the permission.
+ */
+export async function applyPendingAuthorizations(opts: {
+  stateDir: string;
+  sourcesFilePath: string;
+  protector: SecretProtector | null;
+  client: GatewayControlPlaneClient | null;
+  deviceToken: string | null;
+  log: Log;
+}): Promise<AppliedAuthorizations> {
+  let queued: PendingFolderAuthorization[];
+  try {
+    queued = readPendingAuthorizations(opts.stateDir);
+  } catch (err) {
+    opts.log(`Queued folder approvals could not be read and were left in place: ${(err as Error).message}`);
+    return { applied: 0, pending: 0 };
+  }
+  if (queued.length === 0) return { applied: 0, pending: 0 };
+  if (!opts.client || !opts.deviceToken) {
+    opts.log(`${queued.length} approved folder(s) are waiting until this Gateway is paired with DPDP.`);
+    return { applied: 0, pending: queued.length };
+  }
+
+  const stillQueued: PendingFolderAuthorization[] = [];
+  let applied = 0;
+  for (const entry of queued) {
+    try {
+      const ids = await opts.client.authorizeFolder(opts.deviceToken, { label: entry.label, access: entry.access });
+      const source: GatewaySourceConfig = {
+        // Read access is served under the id DPDP generated; a write-only
+        // folder is keyed by its storage location id, exactly as the manual
+        // flow did — the agent never invents an id of its own.
+        sourceId: ids.sourceId ?? ids.storageRootId!,
+        kind: 'filesystem',
+        roots: [entry.root],
+        access: entry.access,
+        ...(ids.storageRootId ? { storageRootId: ids.storageRootId } : {}),
+      };
+      upsertSourceConfig(opts.sourcesFilePath, source, opts.protector);
+      applied += 1;
+      opts.log(`Registered folder "${entry.label}" with DPDP (${entry.access}).`);
+    } catch (err) {
+      stillQueued.push(entry);
+      opts.log(`Folder "${entry.label}" could not be registered with DPDP yet and stays queued: ${describeRegistrationFailure(err)}`);
+    }
+  }
+
+  // Rewrite the queue with only what is still outstanding.
+  try {
+    clearPendingAuthorizations(opts.stateDir);
+    for (const entry of stillQueued) appendPendingAuthorization(opts.stateDir, entry);
+  } catch (err) {
+    opts.log(`The approved-folder queue could not be updated: ${(err as Error).message}`);
+  }
+  return { applied, pending: stillQueued.length };
+}
+
+/**
+ * Applies the folders DPDP has revoked ("Remove folder" in Sources &
+ * Storage) to this Gateway's local source list, so it stops offering them.
+ *
+ * Runs on start AND after each successful check-in, which is what makes an
+ * OFFLINE revocation work: DPDP records it immediately and refuses to use the
+ * folder centrally from that moment; this Gateway finds out whenever it next
+ * manages to reach DPDP, and needs no instruction to have been delivered at
+ * the time.
+ *
+ * Fails safe in every direction:
+ *   - not paired, no control plane, or DPDP unreachable: nothing is changed
+ *     and nothing is lost — it is retried on the next check-in;
+ *   - the sources file cannot be read or written: it is left exactly as it
+ *     was and the failure is logged (a revocation that cannot be applied
+ *     locally still holds centrally, so no write can reach the folder);
+ *   - idempotent: an already-applied revocation changes nothing and rewrites
+ *     nothing.
+ * It only ever REMOVES or DOWNGRADES local entries, so it can never grant
+ * this Gateway access to anything.
+ */
+export async function applyFolderRevocations(opts: {
+  sourcesFilePath: string;
+  protector: SecretProtector | null;
+  client: GatewayControlPlaneClient | null;
+  deviceToken: string | null;
+  log: Log;
+}): Promise<{ applied: number }> {
+  if (!opts.client || !opts.deviceToken) return { applied: 0 };
+  let revoked: { revokedSourceIds: string[]; revokedStorageRootIds: string[] };
+  try {
+    revoked = await opts.client.listFolderRevocations(opts.deviceToken);
+  } catch (err) {
+    opts.log(`Removed-folder list could not be fetched from DPDP (will retry): ${describeRegistrationFailure(err)}`);
+    return { applied: 0 };
+  }
+  try {
+    const applied = applyRevocations(
+      opts.sourcesFilePath,
+      { sourceIds: revoked.revokedSourceIds, storageRootIds: revoked.revokedStorageRootIds },
+      opts.protector,
+    );
+    if (applied > 0) opts.log(`${applied} folder(s) removed in DPDP are no longer offered by this Gateway.`);
+    return { applied };
+  } catch (err) {
+    opts.log(`Removed folders could not be applied locally and the list was left unchanged: ${(err as Error).message}`);
+    return { applied: 0 };
+  }
+}
+
+/** A stable, secret-free reason — never a token, never a path. */
+function describeRegistrationFailure(err: unknown): string {
+  if (err instanceof ControlPlaneHttpError) return `DPDP answered ${err.status}`;
+  if (err instanceof TransportError) return 'DPDP could not be reached';
+  if (err instanceof UnexpectedServerResponseError) return 'the address did not answer as DPDP';
+  return err instanceof Error ? err.name : 'unknown error';
 }
 
 /**

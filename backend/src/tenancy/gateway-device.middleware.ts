@@ -27,6 +27,16 @@ export const GATEWAY_DEVICE_PATHS = new Set([
   // enrolled-device credential, four new device-facing routes.
   '/gateway/submissions/pending',
   '/gateway/submissions/claim',
+  // Automatic folder registration: the agent reports a folder ITS OWN
+  // administrator authorized and receives the DPDP record ids, so nobody
+  // copies an id by hand (see modules/gateway-folders).
+  '/gateway/folders',
+  // ...and the reverse direction: which of those records the organisation has
+  // REMOVED, so the Gateway stops offering the folder. Read-only, and it can
+  // only ever take access away (see modules/gateway-folders). Deliberately
+  // NOT the removal itself — that is a staff route, so a compromised Gateway
+  // can neither revoke nor un-revoke anything.
+  '/gateway/folders/revocations',
 ]);
 
 /** ack/fail carry a :id in the path, so they can't be listed as exact

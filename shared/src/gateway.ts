@@ -256,9 +256,101 @@ export const GATEWAY_CONTROL_ROUTES = {
   /** Staff revoke a device from the platform. Auth: @Roles(MANAGE). Binds:
    *  device. Effect: Azure stops issuing sessions; agent shuts its listener. */
   revoke: '/gateway/revoke',
+  /**
+   * The agent registers a folder its OWN administrator authorized locally, and
+   * receives the DPDP record ids for it — so nobody copies an id by hand.
+   * Auth: device credential. Binds: tenant + device from the VERIFIED token,
+   * never from the body. Carries a display LABEL and the permission only —
+   * never a filesystem path (I1: the path stays on the Gateway). Idempotent:
+   * the same label from the same device reuses the same records.
+   */
+  authorizeFolder: '/gateway/folders',
+  /** The reverse direction: which of the folder records this Gateway holds
+   *  have been revoked centrally (see GatewayFolderRevocations). */
+  folderRevocations: '/gateway/folders/revocations',
 } as const;
 export type GatewayControlRoute =
   (typeof GATEWAY_CONTROL_ROUTES)[keyof typeof GATEWAY_CONTROL_ROUTES];
+
+/**
+ * What an administrator allowed DPDP to do with one folder on the Gateway
+ * computer. Read and write stay SEPARATE permissions end to end — 'both' is
+ * two explicit grants on one folder, never one implying the other.
+ */
+export const GATEWAY_FOLDER_ACCESS = ['read', 'write', 'both'] as const;
+export type GatewayFolderAccess = (typeof GATEWAY_FOLDER_ACCESS)[number];
+
+/** The agent's request: a human label for the folder + the permission. There
+ *  is deliberately NO tenantId, deviceId, path, or record id in this shape —
+ *  the server derives identity from the device token and generates the ids. */
+export interface GatewayAuthorizeFolderRequest {
+  label: string;
+  access: GatewayFolderAccess;
+}
+
+/** The ids the agent stores locally so the data/storage planes can serve this
+ *  folder. `sourceId` is present iff reading was granted, `storageRootId` iff
+ *  writing was. */
+export interface GatewayAuthorizeFolderResponse {
+  sourceId: string | null;
+  storageRootId: string | null;
+  /** The name DPDP recorded, after de-duplication. */
+  label: string;
+}
+
+/**
+ * Removing one connected folder — the reverse of authorizeFolder, and the
+ * only way a customer undoes a folder grant.
+ *
+ * Keyed by LABEL, exactly as authorizeFolder is, for three reasons: it is the
+ * one thing the customer actually sees; it is what makes authorization
+ * idempotent, so it is what makes removal idempotent too; and it lets ONE
+ * action revoke BOTH the read grant and the write grant of a folder that has
+ * both, which are two separate records by design. No id is ever asked of, or
+ * shown to, the customer.
+ */
+export interface GatewayRevokeFolderRequest {
+  label: string;
+}
+
+/**
+ * What the removal actually did. The ids are reported for the audit trail and
+ * for the Gateway's own reconciliation — never shown to a customer.
+ *
+ * `gatewayPending` is the honest half: DPDP has stopped using the folder
+ * CENTRALLY the moment this returns (no new read pairing, no new write
+ * staging, no queued copy), but the Gateway computer only stops offering it
+ * when it next checks in. True means it has not checked in since, so the
+ * removal is recorded and waiting — not failed, and not finished.
+ */
+export interface GatewayRevokeFolderResponse {
+  label: string;
+  revokedSourceId: string | null;
+  revokedStorageRootId: string | null;
+  gatewayPending: boolean;
+  /** Consent-form fields that pointed at this folder and now have no
+   *  destination. The administrator must choose a replacement; DPDP never
+   *  moves their data to a different folder on its own. */
+  affectedFormFields: number;
+}
+
+/**
+ * What the Gateway asks for on each check-in: which of the folder records it
+ * holds locally have been revoked centrally. An EXPLICIT revocation list, not
+ * "everything not in this active set" — the Gateway also holds entries an
+ * operator configured by hand, and a reconciliation that deleted whatever the
+ * central platform did not recognise would silently throw those away.
+ */
+export interface GatewayFolderRevocations {
+  revokedSourceIds: string[];
+  revokedStorageRootIds: string[];
+}
+
+/** A folder whose removal is recorded centrally but not yet applied on the
+ *  Gateway computer. Labels only — no ids, no paths. */
+export interface GatewayPendingFolderRemoval {
+  label: string;
+}
 
 /** Enrollment: request carries the code + the device's public identity. */
 export interface GatewayEnrollRequest {
@@ -346,6 +438,13 @@ export const GATEWAY_DATA_ROUTES = {
   customerWrite: '/source/customer/write',
   customerCreate: '/source/customer/create',
   columnCreate: '/source/column/create',
+  /**
+   * File picker: list ONE level (folders + approved files) of an authorized
+   * folder source. Navigation is by OPAQUE folder handles issued by the
+   * Gateway -- the browser never sends or receives a path. Metadata only
+   * (name, kind, size), never file content.
+   */
+  sourceBrowse: '/source/browse',
 } as const;
 export type GatewayDataRoute =
   (typeof GATEWAY_DATA_ROUTES)[keyof typeof GATEWAY_DATA_ROUTES];
@@ -426,6 +525,27 @@ export interface GatewaySourceDiscoverResponse {
    *  files under allowed roots, or authorized database tables. Source-agnostic. */
   handles: ResourceHandle[];
   /** True when the result was capped (there were more). */
+  truncated: boolean;
+}
+
+/** File picker request: `folder` is an opaque handle from a previous browse
+ *  response; omit it for the top of the authorized folder(s). */
+export interface GatewaySourceBrowseRequest {
+  sourceId: string;
+  folder?: string;
+}
+/** One entry of a browse listing. `label` is the entry's own NAME (never a
+ *  path); `handle` is opaque (a folder handle to browse into, or a file
+ *  handle usable with read/metadata like a discovered one). */
+export interface GatewaySourceBrowseEntry {
+  handle: string;
+  entryKind: 'folder' | 'file';
+  label: string;
+  sizeBytes: number | null;
+}
+export interface GatewaySourceBrowseResponse {
+  entries: GatewaySourceBrowseEntry[];
+  /** True when the listing was capped. */
   truncated: boolean;
 }
 
@@ -673,7 +793,39 @@ export interface StorageConnector {
   browse(path: GatewayStoragePath): Promise<GatewayStorageBrowseResponse>;
   createFolder(path: GatewayStoragePath, name: string): Promise<GatewayStorageCreateFolderResponse>;
   verifyFolder(path: GatewayStoragePath): Promise<GatewayStorageVerifyFolderResponse>;
+  /**
+   * Writes ONE file's content into an ALREADY-AUTHORIZED, ALREADY-EXISTING
+   * folder (`path` — createFolder is the only way to make a new one; write
+   * never auto-creates directories). The one deliberate, narrow exception to
+   * this interface's original "folders only, no file content" design —
+   * added for consent-form field delivery to Enterprise storage, nowhere
+   * else. Every implementation must: re-validate containment exactly like
+   * browse/createFolder; validate the filename (reject unsafe characters and
+   * dangerous executable extensions -> INVALID_FILENAME); enforce a size cap
+   * (-> RATE_LIMITED, same code the filesystem connector already uses for an
+   * oversized file); refuse to overwrite an existing file unless `overwrite`
+   * is explicitly true (-> FILE_ALREADY_EXISTS); and write atomically (a
+   * crash leaves either the old file or the new one, never a partial write).
+   */
+  writeFile(path: GatewayStoragePath, filename: string, contentBase64: string, overwrite?: boolean): Promise<GatewayStorageWriteResponse>;
   healthCheck(): Promise<GatewayHealthResponse>;
+}
+
+export interface GatewayStorageWriteRequest {
+  storageRootId: string;
+  /** The folder to write into. Must already exist (see writeFile's doc). */
+  path: GatewayStoragePath;
+  /** A bare file NAME, never a path (no '/', no '\\', no '..'). */
+  filename: string;
+  contentBase64: string;
+  /** Default false: a write that would replace an existing file is refused
+   *  (FILE_ALREADY_EXISTS) unless this is explicitly true. There is still no
+   *  way to delete or rename a file through this interface. */
+  overwrite?: boolean;
+}
+export interface GatewayStorageWriteResponse {
+  written: true;
+  bytesWritten: number;
 }
 
 // ===========================================================================
@@ -726,6 +878,9 @@ export interface GatewayReadOptions {
 export interface DataConnector {
   readonly sourceKind: DataSourceKind;
   discover(): Promise<GatewaySourceDiscoverResponse>;
+  /** Folder-shaped connectors only (filesystem): one level of an authorized
+   *  folder, by opaque handle (null = top). Absent on database connectors. */
+  browse?(folderHandle: string | null): Promise<GatewaySourceBrowseResponse>;
   search(term: string, opts?: GatewayReadOptions): Promise<GatewaySourceSearchResponse>;
   read(handle: string, opts?: GatewayReadOptions): Promise<GatewaySourceReadResponse>;
   metadata(handle: string): Promise<GatewaySourceMetadataResponse>;
@@ -873,6 +1028,14 @@ export const GATEWAY_ERROR_CODES = [
   'IDENTITY_NOT_CONFIGURED',
   /** A caller-supplied identifier (column name) failed strict validation. */
   'INVALID_IDENTIFIER',
+  // Storage-plane file write (writeFile) — see StorageConnector below.
+  /** The target file already exists and the caller did not explicitly ask to
+   *  overwrite it. Never silently replaced — see GatewayStorageWriteRequest. */
+  'FILE_ALREADY_EXISTS',
+  /** The filename failed validation (unsafe characters, a disallowed/dangerous
+   *  extension, or too long) — distinct from PATH_NOT_ALLOWED, which is about
+   *  the containing folder. */
+  'INVALID_FILENAME',
 ] as const;
 export type GatewayErrorCode = (typeof GATEWAY_ERROR_CODES)[number];
 

@@ -27,11 +27,14 @@ interface CapabilitiesState {
 }
 
 /**
- * Fetches GET /capabilities for the current tenant. Default-safe: while
- * loading (or on error) `capabilities` is null and callers should not hide
- * anything on that basis — nothing in this pass hides UI on this hook, since
- * nothing is gated in the frontend today. It exists so a FUTURE feature gate
- * has one correct place to read from.
+ * Fetches GET /capabilities for the current tenant. `capabilities` is null
+ * while loading (or on error) — callers gating Enterprise-only UI on a
+ * feature flag should default to HIDDEN in that state (not shown), so a
+ * SaaS/hosted tenant never sees even a one-frame flash of something their
+ * plan doesn't include. See the Data Sources and Storage pages'
+ * `enterpriseGateway`-gated sections for the pattern. This is UX only — the
+ * backend (CapabilityGuard/assertCapability) is the real enforcement, so
+ * hiding something here is never itself the security boundary.
  */
 export function useCapabilities(): CapabilitiesState {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);

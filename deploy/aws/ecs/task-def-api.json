@@ -1,0 +1,79 @@
+{
+  "family": "dpdp-api",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": { "operatingSystemFamily": "LINUX", "cpuArchitecture": "X86_64" },
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/dpdp-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/dpdp-api-task",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "<ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com/dpdp-backend:<IMAGE_TAG>",
+      "essential": true,
+      "command": ["node", "dist/main.js"],
+      "portMappings": [{ "containerPort": 3001, "protocol": "tcp" }],
+      "stopTimeout": 30,
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "API_PORT", "value": "3001" },
+        { "name": "AWS_REGION", "value": "ap-south-1" },
+        { "name": "WEB_ORIGIN", "value": "https://<APP_DOMAIN>" },
+        { "name": "TRUST_PROXY", "value": "1" },
+        { "name": "DATABASE_SSL_CA_FILE", "value": "/opt/dpdp/certs/rds-global-bundle.pem" },
+        { "name": "DB_POOL_MAX", "value": "10" },
+        { "name": "IMPORT_EVIDENCE_STORE", "value": "s3" },
+        { "name": "IMPORT_EVIDENCE_S3_BUCKET", "value": "<EVIDENCE_BUCKET>" },
+        { "name": "IMPORT_EVIDENCE_S3_KMS_KEY_ID", "value": "<EVIDENCE_KMS_KEY_ARN>" },
+        { "name": "IMPORT_EVIDENCE_RETENTION_DAYS", "value": "<RETENTION_DAYS>" },
+        { "name": "MFA_ISSUER", "value": "DPDP Platform" },
+        { "name": "NOTIFY_TRANSPORT", "value": "console" },
+        { "name": "POSTMARK_FROM_EMAIL", "value": "<VERIFIED_SENDER>" },
+        { "name": "MSG91_SENDER_ID", "value": "<SENDER_ID>" }
+      ],
+      "secrets": [
+        {
+          "name": "APP_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/app-database-url"
+        },
+        {
+          "name": "PGBOSS_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/pgboss-database-url"
+        },
+        {
+          "name": "JWT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/jwt-secret"
+        },
+        {
+          "name": "REQUEST_OTP_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/request-otp-secret"
+        },
+        {
+          "name": "MFA_SECRET_ENC_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/mfa-secret-enc-key"
+        },
+        {
+          "name": "SUBMISSION_STAGING_ENC_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/submission-staging-enc-key"
+        },
+        {
+          "name": "POSTMARK_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/postmark-api-key"
+        },
+        {
+          "name": "MSG91_AUTH_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/msg91-auth-key"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/dpdp/prod/api",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "api"
+        }
+      }
+    }
+  ]
+}

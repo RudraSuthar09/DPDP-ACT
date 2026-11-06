@@ -51,4 +51,22 @@ export class DataPrincipalRepository {
       return rows[0] ?? null;
     });
   }
+
+  /** Display names for many subject refs at once, READ-ONLY — it never
+   *  creates a row, unlike resolveOrCreate. Used by the submissions export,
+   *  which must not bring a customer registry entry into existence as a side
+   *  effect of reading a spreadsheet. Refs with no row, or with no name
+   *  recorded, are simply absent from the result. */
+  displayNamesBySubjectRef(subjectRefs: readonly string[]): Promise<Map<string, string>> {
+    return this.db.withTenant(async (client) => {
+      if (subjectRefs.length === 0) return new Map<string, string>();
+      const { rows } = await client.query<{ subject_ref: string; display_name: string | null }>(
+        `SELECT subject_ref, display_name FROM data_principals WHERE subject_ref = ANY($1::text[])`,
+        [[...new Set(subjectRefs)]],
+      );
+      const out = new Map<string, string>();
+      for (const r of rows) if (r.display_name) out.set(r.subject_ref, r.display_name);
+      return out;
+    });
+  }
 }

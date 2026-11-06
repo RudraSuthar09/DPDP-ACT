@@ -1,0 +1,39 @@
+{
+  "family": "dpdp-migrate",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": { "operatingSystemFamily": "LINUX", "cpuArchitecture": "X86_64" },
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/dpdp-ecs-execution",
+  "containerDefinitions": [
+    {
+      "name": "migrate",
+      "image": "<ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com/dpdp-backend:<IMAGE_TAG>",
+      "essential": true,
+      "command": [
+        "sh",
+        "-c",
+        "node node_modules/node-pg-migrate/bin/node-pg-migrate up -m migrations && node dist/pgboss-install.js"
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "DATABASE_SSL_CA_FILE", "value": "/opt/dpdp/certs/rds-global-bundle.pem" }
+      ],
+      "secrets": [
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/owner-database-url-verify-full"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/dpdp/prod/migrate",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "migrate"
+        }
+      }
+    }
+  ]
+}

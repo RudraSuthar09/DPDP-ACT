@@ -138,8 +138,19 @@ export default function ConsentFormsPage() {
                 </td>
                 <td>{f.submissionCount}</td>
                 <td>
-                  <span className={`badge ${f.isActive ? 'success' : 'neutral'}`}>
-                    {f.isActive ? 'Live' : 'Off'}
+                  {/* On but with nothing to consent to: the hosted link won't
+                      open, so don't call it Live. */}
+                  <span
+                    className={`badge ${
+                      f.isActive && f.activeRowCount === 0 ? 'warning' : f.isActive ? 'success' : 'neutral'
+                    }`}
+                    title={
+                      f.isActive && f.activeRowCount === 0
+                        ? 'Turned on, but no consent item is active yet — the link will not open.'
+                        : undefined
+                    }
+                  >
+                    {f.isActive && f.activeRowCount === 0 ? 'Unfinished' : f.isActive ? 'Live' : 'Off'}
                   </span>
                 </td>
                 <td>

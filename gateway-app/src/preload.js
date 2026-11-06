@@ -23,7 +23,19 @@ contextBridge.exposeInMainWorld('gateway', {
   pair: (enrollmentCode, controlPlaneUrl, displayName) =>
     ipcRenderer.invoke('gateway:pair', { enrollmentCode, controlPlaneUrl, displayName }),
 
-  /** Triggers ONE UAC prompt; writes sources.json and restarts the service.
+  /** Opens the native folder picker. No UAC, and no access is granted by
+   *  choosing: the folder still has to be saved through addSource below.
+   *  { ok:boolean, canceled?:boolean, path?:string } */
+  pickFolder: () => ipcRenderer.invoke('gateway:pick-folder'),
+
+  /** The customer path: approve one folder for reading, saving, or both.
+   *  Triggers ONE UAC prompt. No ids are supplied or returned here — the
+   *  service obtains them from DPDP on its next start.
+   *  { ok:boolean, cancelled?:boolean, error?:string } */
+  authorizeFolder: (root, access) => ipcRenderer.invoke('gateway:authorize-folder', { root, access }),
+
+  /** ADVANCED (databases, or a folder with an id supplied by hand). Triggers
+   *  ONE UAC prompt; writes sources.json and restarts the service.
    *  { ok:boolean, sourceCount?:number, cancelled?:boolean, error?:string } */
   addSource: (sourceConfig) => ipcRenderer.invoke('gateway:add-source', sourceConfig),
 

@@ -89,15 +89,60 @@ not a design choice):
   first-ever central database (nothing encrypted yet) may use a freshly
   generated value.
 
-Supply all three the first time you start DPDP:
-```powershell
-scripts\start.ps1 -AppDatabaseUrl "postgresql://dpdp_app:<password>@<central-host>:5432/<db>" `
-                   -DatabaseUrl "postgresql://<owner-role>:<password>@<central-host>:5432/<db>" `
-                   -MfaSecretEncKey "<the central database's existing MFA_SECRET_ENC_KEY>"
-```
-or pre-populate `config\.env` by hand (see `docs/environment-variables.md`
-in the source repo) before the first run. After that, `config\.env` is left
-untouched by subsequent runs.
+- `SUBMISSION_STAGING_ENC_KEY` — **the same kind of key as
+  `MFA_SECRET_ENC_KEY`, with the same rule.** It encrypts consent-form values
+  and files staged in the central database until a tenant's Gateway collects
+  them (`backend/src/modules/delivery/submission-delivery-crypto.ts`). Every
+  runtime on that database — the cloud deployment and every installation —
+  must hold the identical value. The installer never generates it. The
+  backend will not start without it.
+
+### Provisioning the shared keys
+
+The two connection strings and the two keys are secrets that belong to the
+**central** deployment. They are never in the installer, never in source
+control, and never typed onto a command line (a command line is visible to
+every user on the machine in the process list; a process's environment is
+not).
+
+1. **Obtain them through an authenticated channel.** An authorised operator
+   reads the four values from the central secret store — on AWS, Secrets
+   Manager in `ap-south-1` (`dpdp/prod/app-database-url`,
+   `dpdp/prod/pgboss-database-url` or the owner URL,
+   `dpdp/prod/mfa-secret-enc-key`, `dpdp/prod/submission-staging-enc-key`),
+   with their own IAM identity, so each retrieval is logged in CloudTrail.
+   Never by e-mail, chat or a file share.
+2. **Hand them to the installer through the environment** of an elevated
+   PowerShell session on the customer's machine:
+   ```powershell
+   $env:DPDP_APP_DATABASE_URL           = '<dpdp_app connection string>'
+   $env:DPDP_DATABASE_URL               = '<pg-boss connection string>'
+   $env:DPDP_MFA_SECRET_ENC_KEY         = '<central MFA_SECRET_ENC_KEY>'
+   $env:DPDP_SUBMISSION_STAGING_ENC_KEY = '<central SUBMISSION_STAGING_ENC_KEY>'
+   scripts\start.ps1
+   ```
+   `start.ps1` passes them on to `generate-env.ps1` through the environment,
+   not as arguments. Both keys are checked (exactly 32 bytes) before anything
+   is written; a bad value is refused by name, never echoed.
+3. **Close that PowerShell window.** The values then exist only in
+   `config\.env` under the install root.
+4. **An existing installation** created before `SUBMISSION_STAGING_ENC_KEY`
+   existed cannot start (the backend says so by name). Set only
+   `$env:DPDP_SUBMISSION_STAGING_ENC_KEY` and run `scripts\start.ps1` again:
+   the key is **appended** to the existing `config\.env`; every existing line
+   is left exactly as it was. Without the variable it changes nothing and
+   prints what to do.
+
+The older `-AppDatabaseUrl` / `-DatabaseUrl` / `-MfaSecretEncKey` /
+`-SubmissionStagingEncKey` parameters still work, but put the value on
+`start.ps1`'s own command line — prefer the environment. Alternatively
+pre-populate `config\.env` by hand (see `docs/environment-variables.md` in
+the source repo). After the first run, `config\.env` is left untouched apart
+from the one-time key addition above.
+
+**Rotation.** These two keys are not rotated by replacing a value: data
+encrypted under the old key must be re-encrypted first, centrally, and every
+installation updated in the same change window.
 
 ## Enterprise Gateway enrollment (agent container)
 

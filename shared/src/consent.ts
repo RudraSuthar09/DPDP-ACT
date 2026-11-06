@@ -1,3 +1,5 @@
+import type { ConsentFormFileKind } from './consent-uploads';
+
 /** Consent status (§6, the consent event envelope). */
 export type ConsentStatus = 'GRANTED' | 'WITHDRAWN' | 'EXPIRED';
 
@@ -102,8 +104,61 @@ export interface ConsentStatusAsOf {
  * + this array, same mechanism as STORAGE_MODULE_KEYS) when a future type is
  * needed — deliberately small for now.
  */
-export const CONSENT_FORM_FIELD_TYPES = ['text', 'pdf', 'excel'] as const;
+/**
+ * Where a consent-form submission's STORAGE writes stand — deliberately
+ * separate from the consent itself: the grant/decline is recorded in the
+ * database (consent events) BEFORE any storage write is attempted, and no
+ * delivery state below ever changes or depends on it.
+ *
+ * Destinations are Central DPDP Storage plus one per Enterprise copy (a
+ * field mapped to a Gateway-authorized folder).
+ *
+ *   pending              some destination is not confirmed yet (waiting for
+ *                        connected storage / the Gateway, or retrying)
+ *   delivered            every destination confirmed written
+ *   partially_delivered  some destinations confirmed, others failed
+ *                        permanently (e.g. Central stored, an Enterprise copy
+ *                        failed — or the reverse)
+ *   failed               every destination failed permanently (retries
+ *                        exhausted) and nothing confirmed a write
+ */
+export const CONSENT_DELIVERY_STATES = ['pending', 'delivered', 'partially_delivered', 'failed'] as const;
+export type ConsentDeliveryState = (typeof CONSENT_DELIVERY_STATES)[number];
+
+/**
+ * Why a hosted consent-form link did not open. Returned as `reason` on the
+ * 404 body so the public page can say something true and specific instead of
+ * collapsing every failure into "form not found" (a mistyped link, a form
+ * switched off, and a form nobody has finished building are three different
+ * situations for the visitor). None of these leaks anything: the reason says
+ * nothing about the tenant, the form's contents, or any id.
+ */
+export const PUBLIC_FORM_UNAVAILABLE_REASONS = [
+  /** No form exists at this address (mistyped, withdrawn, or never existed). */
+  'FORM_NOT_FOUND',
+  /** The form exists but its owner has switched it off. */
+  'FORM_NOT_LIVE',
+  /** The form is on, but has no consent item to show yet — it is unfinished. */
+  'FORM_NOT_READY',
+] as const;
+export type PublicFormUnavailableReason = (typeof PUBLIC_FORM_UNAVAILABLE_REASONS)[number];
+
+/**
+ * `file` is the general upload field (photos and/or PDFs, with its own
+ * allowed-kinds and size configuration — see consent-uploads.ts). `pdf` and
+ * `excel` predate it and are kept because live forms use them: each behaves as
+ * a single-type upload field. New forms get `file`; nothing migrates
+ * automatically, because changing what a live form accepts is the owner's
+ * decision, not a side effect of a deploy.
+ */
+export const CONSENT_FORM_FIELD_TYPES = ['text', 'file', 'pdf', 'excel'] as const;
 export type ConsentFormFieldType = (typeof CONSENT_FORM_FIELD_TYPES)[number];
+
+/** Whether this field type collects a FILE rather than a typed value. The one
+ *  place that decision is made, so no caller has to remember the list. */
+export function isFileField(fieldType: ConsentFormFieldType): boolean {
+  return fieldType === 'file' || fieldType === 'pdf' || fieldType === 'excel';
+}
 
 /** A form's field configuration — never a submitted value. */
 export interface ConsentFormCustomerField {
@@ -126,4 +181,14 @@ export interface ConsentFormCustomerField {
    *  ones). At most one true per form, DB-enforced. */
   isCustomerName: boolean;
   displayOrder: number;
+  /** Optional instructions shown under the label on the public form (e.g.
+   *  "Both sides, in one PDF"). Plain text the client wrote. */
+  description: string | null;
+  /** Upload fields only: which kinds of file this field accepts. Null for a
+   *  text field, and for the legacy `pdf`/`excel` types, whose own name is
+   *  already the answer. */
+  allowedFileKinds: ConsentFormFileKind | null;
+  /** Upload fields only: the size cap in bytes, at most
+   *  UPLOAD_MAX_BYTES_CEILING. Null for a text field. */
+  maxFileBytes: number | null;
 }

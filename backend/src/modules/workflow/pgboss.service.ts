@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import PgBoss from 'pg-boss';
 import { WORKFLOW_QUEUE } from './workflow.constants';
+import { pgConnectionOptions } from '../../database/pg-tls';
 
 /**
  * The pg-boss engine, wrapped as a Nest lifecycle service. pg-boss is a durable
@@ -25,6 +26,13 @@ import { WORKFLOW_QUEUE } from './workflow.constants';
  * (On managed Postgres where dpdp_owner cannot create schemas, provision the
  * `pgboss` schema out-of-band, exactly as the `app` schema is — see the bootstrap
  * migration's portability note.)
+ *
+ * LEAST PRIVILEGE (optional, recommended in production): PGBOSS_DATABASE_URL.
+ * pg-boss never needs the owner's rights over the TENANT schema — only over its
+ * own `pgboss` schema. Point PGBOSS_DATABASE_URL at a dedicated role that owns
+ * `pgboss` and nothing else (docs/pgboss-least-privilege.sql) and the running
+ * API and worker no longer hold the owner credential at all; only the
+ * migration task does. Unset, it falls back to DATABASE_URL, exactly as before.
  */
 @Injectable()
 export class PgBossService implements OnModuleInit, OnModuleDestroy {
@@ -34,16 +42,17 @@ export class PgBossService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit(): Promise<void> {
-    const connectionString = this.config.get<string>('DATABASE_URL');
+    const connectionString = this.config.get<string>('PGBOSS_DATABASE_URL') || this.config.get<string>('DATABASE_URL');
     if (!connectionString) {
       throw new Error(
-        'DATABASE_URL (the owner connection) is required for the pg-boss engine behind the ' +
-          'WorkflowRunner (S3). pg-boss manages its own schema and needs DDL rights to create it.',
+        'PGBOSS_DATABASE_URL (or, failing that, DATABASE_URL) is required for the pg-boss engine behind the ' +
+          'WorkflowRunner (S3). pg-boss manages its own schema and needs DDL rights over it.',
       );
     }
 
     const boss = new PgBoss({
-      connectionString,
+      // TLS verified against DATABASE_SSL_CA_FILE when set (see pg-tls.ts).
+      ...pgConnectionOptions(connectionString, this.config.get<string>('DATABASE_SSL_CA_FILE')),
       schema: 'pgboss',
       // A recognisable name in pg_stat_activity so this pool is never confused
       // with the tenant-data pool (dpdp_app).

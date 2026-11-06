@@ -9,6 +9,9 @@ describe('parseSaveCustomerField — the simplified, Google-Forms-like field sav
       required: true,
       isIdentifier: false,
       isCustomerName: false,
+      description: null,
+      allowedFileKinds: null,
+      maxFileBytes: null,
     });
   });
 
@@ -19,6 +22,9 @@ describe('parseSaveCustomerField — the simplified, Google-Forms-like field sav
       required: true,
       isIdentifier: true,
       isCustomerName: false,
+      description: null,
+      allowedFileKinds: null,
+      maxFileBytes: null,
     });
   });
 
@@ -33,6 +39,9 @@ describe('parseSaveCustomerField — the simplified, Google-Forms-like field sav
       required: false,
       isIdentifier: false,
       isCustomerName: true,
+      description: null,
+      allowedFileKinds: null,
+      maxFileBytes: null,
     });
   });
 
@@ -74,6 +83,15 @@ describe('parseSaveCustomerField — the simplified, Google-Forms-like field sav
       destination: 'customer_field',
       mappedColumn: 'aadhaar',
     });
-    expect(result).toEqual({ label: 'Aadhaar Number', fieldType: 'text', required: true, isIdentifier: false, isCustomerName: false });
+    expect(result).toEqual({
+      label: 'Aadhaar Number',
+      fieldType: 'text',
+      required: true,
+      isIdentifier: false,
+      isCustomerName: false,
+      description: null,
+      allowedFileKinds: null,
+      maxFileBytes: null,
+    });
   });
 });

@@ -28,16 +28,49 @@ export function classifyHealthProbe(probe: HealthProbeResult): 'connected' | 'of
   return 'invalid';
 }
 
-/** Given the central device record (or none) and, if present, a probe result,
- *  compute the overall state the UI should render. */
+/** Online = DPDP received a heartbeat this recently. The Gateway sends one
+ *  immediately at start-up and then every 60 s by default, so three missed
+ *  intervals means it is genuinely not connected. */
+export const HEARTBEAT_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+
+export function isHeartbeatRecent(lastHeartbeatAt: string | null | undefined, now: number = Date.now()): boolean {
+  if (!lastHeartbeatAt) return false;
+  const at = Date.parse(lastHeartbeatAt);
+  return Number.isFinite(at) && now - at <= HEARTBEAT_ONLINE_WINDOW_MS && at - now <= HEARTBEAT_ONLINE_WINDOW_MS;
+}
+
+/**
+ * The Gateway's connection to DPDP -- decided by the CENTRAL record's last
+ * heartbeat (the authenticated device-to-backend link), not by whether THIS
+ * browser can open the Gateway's local address. Phase 6: deciding it from a
+ * browser probe of a manually entered endpoint showed a paired, heart-beating
+ * Gateway as needing configuration.
+ */
 export function classifyGatewayConnection(
-  device: { status: string; endpoint: string | null } | null,
-  probe: HealthProbeResult | null,
+  device: { status: string; endpoint: string | null; lastHeartbeatAt?: string | null } | null,
+  _probe: HealthProbeResult | null,
+  now: number = Date.now(),
 ): GatewayConnectionState {
   if (!device || device.status !== 'active') return 'not_configured';
-  if (!device.endpoint) return 'no_endpoint';
-  if (!probe) return 'offline'; // probe not yet run / failed to even start
-  return classifyHealthProbe(probe);
+  return isHeartbeatRecent(device.lastHeartbeatAt, now) ? 'connected' : 'offline';
+}
+
+export type BrowserAccessState =
+  | 'no_endpoint' // the Gateway has not reported a local address (and none was entered)
+  | 'reachable' // this browser can open the Gateway's local address
+  | 'unreachable' // it cannot (e.g. the dashboard is open on another computer)
+  | 'invalid'; // something answered, but not a DPDP Gateway
+
+/**
+ * Whether THIS browser can reach the Gateway's local address -- needed only
+ * for browsing folders/data through the Gateway, which happens directly
+ * between the browser and the Gateway, never through the backend.
+ */
+export function classifyBrowserAccess(device: { endpoint: string | null } | null, probe: HealthProbeResult | null): BrowserAccessState {
+  if (!device || !device.endpoint) return 'no_endpoint';
+  if (!probe) return 'unreachable';
+  const r = classifyHealthProbe(probe);
+  return r === 'connected' ? 'reachable' : r === 'offline' ? 'unreachable' : 'invalid';
 }
 
 /**

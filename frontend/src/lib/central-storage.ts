@@ -44,6 +44,7 @@
 
 import type { StorageFolder, StorageMapping, StorageModuleKey, StorageRoot } from '@dpdp/shared';
 import { apiFetch } from './api';
+import { ADDITIONAL_STORAGE_ROOT_PREFIX } from './connected-locations';
 import {
   getStorageHandle,
   isLocalStorageAdapterSupported,
@@ -488,7 +489,7 @@ export async function connectAdditionalStorageForEntity(
 
   const root = await apiFetch<StorageRoot>('/storage/roots', {
     method: 'POST',
-    body: { name: `Additional storage — ${sanitizeFolderLabel(label)} (${entityId.slice(0, 8)})`, provider: 'local' },
+    body: { name: `${ADDITIONAL_STORAGE_ROOT_PREFIX}${sanitizeFolderLabel(label)} (${entityId.slice(0, 8)})`, provider: 'local' },
   });
   await saveStorageHandle(root.id, handle);
   const folder = await apiFetch<StorageFolder>('/storage/folders', {

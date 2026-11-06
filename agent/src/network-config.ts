@@ -255,11 +255,29 @@ function envValue(env: NodeJS.ProcessEnv, name: string): { value: string; label:
  * Applies the precedence rules above. `fileCredentials` (from
  * proxy-credentials.json, see proxy-credentials.ts) is used only with a
  * config.json proxy; environment proxies carry their own user info.
+ *
+ * GATEWAY_NO_PROXY (same grammar as NO_PROXY) is ADDED to whichever exclusion
+ * list is in effect, never replacing it. It exists for deployments that must
+ * guarantee an internal destination stays direct whatever proxy variables
+ * the platform injects: the full-stack Docker Compose files set it to the
+ * backend's container name, while NO_PROXY values that Docker (or the
+ * customer) supplies keep working unchanged.
  */
 export function resolveProxySettings(
   fileProxy: FileProxyConfig | undefined,
   env: NodeJS.ProcessEnv,
   fileCredentials: ProxyCredentials | null = null,
+): ProxySettings {
+  const base = resolveBaseProxySettings(fileProxy, env, fileCredentials);
+  const extra = env.GATEWAY_NO_PROXY?.trim();
+  if (!extra) return base;
+  return { ...base, noProxy: [...base.noProxy, ...parseNoProxy(extra, 'GATEWAY_NO_PROXY')] };
+}
+
+function resolveBaseProxySettings(
+  fileProxy: FileProxyConfig | undefined,
+  env: NodeJS.ProcessEnv,
+  fileCredentials: ProxyCredentials | null,
 ): ProxySettings {
   if (fileProxy === 'none') {
     return { ...DIRECT, warnings: environmentProxyIgnoredWarning(env, 'config.json sets "proxy": "none"') };

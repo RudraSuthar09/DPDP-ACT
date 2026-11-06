@@ -108,6 +108,43 @@ export function isRealDirectory(dir: string): boolean {
   }
 }
 
+/**
+ * Filename safety for writeFile (the one deliberate write capability this
+ * module has). Deliberately stricter than the connectors' read-side
+ * `isApprovedFile` (which only checks an extension): this is a NEW,
+ * attacker-reachable write surface (an authenticated browser or the
+ * delivery queue names the filename), so it also rejects path separators,
+ * '..'/'.', NUL, empty/overlong names, and a blocklist of executable
+ * extensions — defence in depth beyond folder containment, never relied on
+ * as the only check.
+ */
+const DANGEROUS_EXTENSIONS = new Set([
+  '.exe', '.dll', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse',
+  '.wsf', '.wsh', '.scr', '.msi', '.msp', '.reg', '.sh', '.bash', '.app', '.jar', '.lnk',
+]);
+
+export function assertSafeFilename(filename: string): void {
+  if (typeof filename !== 'string' || filename.length === 0 || filename.length > 200) {
+    throw new StorageSecurityError('INVALID_FILENAME');
+  }
+  if (filename === '.' || filename === '..' || filename.includes('/') || filename.includes('\\') || filename.includes('\0')) {
+    throw new StorageSecurityError('INVALID_FILENAME');
+  }
+  const dot = filename.lastIndexOf('.');
+  const ext = dot > 0 ? filename.slice(dot).toLowerCase() : '';
+  if (DANGEROUS_EXTENSIONS.has(ext)) throw new StorageSecurityError('INVALID_FILENAME');
+}
+
+/**
+ * Resolves the folder a write targets: it must ALREADY exist and be
+ * contained (write never creates a directory — createFolder is the only way
+ * to do that). Thin, named wrapper over resolveContainedDir so write's own
+ * call site reads as "resolve the write target", not a generic browse call.
+ */
+export function resolveWriteDir(rootPath: string, path: GatewayStoragePath): string {
+  return resolveContainedDir(rootPath, path, true);
+}
+
 /** Create `name` under the already-contained `parentDir`. Idempotent: if it
  *  already exists as a directory, this succeeds without complaint (matches
  *  the central mapping's upsert-not-duplicate discipline); if it exists as

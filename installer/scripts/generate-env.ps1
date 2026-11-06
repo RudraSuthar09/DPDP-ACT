@@ -46,8 +46,28 @@ param(
   [Parameter(Mandatory = $true)][string]$ConfigDir,
   [string]$AppDatabaseUrl,
   [string]$DatabaseUrl,
-  [string]$MfaSecretEncKey
+  [string]$MfaSecretEncKey,
+  [string]$SubmissionStagingEncKey
 )
+
+# Each secret may come from its parameter OR from a DPDP_* environment
+# variable. The environment is the recommended route (start.ps1 uses it):
+# a parameter is visible in the process list, an environment variable is not.
+if (-not $AppDatabaseUrl) { $AppDatabaseUrl = $env:DPDP_APP_DATABASE_URL }
+if (-not $DatabaseUrl) { $DatabaseUrl = $env:DPDP_DATABASE_URL }
+if (-not $MfaSecretEncKey) { $MfaSecretEncKey = $env:DPDP_MFA_SECRET_ENC_KEY }
+if (-not $SubmissionStagingEncKey) { $SubmissionStagingEncKey = $env:DPDP_SUBMISSION_STAGING_ENC_KEY }
+
+# The same check the backend makes at startup (env.validation.ts and both
+# ciphers): the value must decode from base64 to exactly 32 bytes. Done here
+# too so a bad key is reported at install time, with the variable named,
+# instead of as a crash loop later. Accepts base64url as the backend does.
+function Test-Aes256Key([string]$Value) {
+  if (-not $Value) { return $false }
+  $b64 = $Value.Trim().Replace('-', '+').Replace('_', '/')
+  while ($b64.Length % 4 -ne 0) { $b64 += '=' }
+  try { return ([Convert]::FromBase64String($b64).Length -eq 32) } catch { return $false }
+}
 
 # RNGCryptoServiceProvider, not RandomNumberGenerator::Fill() -- the latter is
 # a static method only present on .NET 5+ (PowerShell 7). This must run under
@@ -71,14 +91,38 @@ New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 $envPath = Join-Path $ConfigDir '.env'
 
 if (Test-Path $envPath) {
+  # Never overwrite an existing install's secrets/config. One exception, and
+  # only ADDITIVE: an installation created before SUBMISSION_STAGING_ENC_KEY
+  # existed cannot start without it, so if the operator supplied the key it is
+  # appended -- every existing line is left exactly as it is.
+  $existing = Get-Content -Path $envPath -Raw
+  if ($existing -notmatch '(?m)^\s*SUBMISSION_STAGING_ENC_KEY\s*=\s*\S') {
+    if (-not $SubmissionStagingEncKey) {
+      Write-Warning ("config\.env has no SUBMISSION_STAGING_ENC_KEY, so the backend will not start. Set " +
+        "`$env:DPDP_SUBMISSION_STAGING_ENC_KEY to the central database's existing key (see installer\README.md, " +
+        "'Provisioning the shared keys') and run Start DPDP again.")
+      return
+    }
+    if (-not (Test-Aes256Key $SubmissionStagingEncKey)) {
+      Write-Error "SUBMISSION_STAGING_ENC_KEY must decode from base64 to exactly 32 bytes. config\.env was not changed."
+      exit 1
+    }
+    $addition = "`r`n# Added by the installer: the central database's existing data-at-rest key`r`n" +
+      "# (consent-form staging). NOT generated here -- see installer\README.md.`r`n" +
+      "SUBMISSION_STAGING_ENC_KEY=$SubmissionStagingEncKey`r`n"
+    Add-Content -Path $envPath -Value $addition -Encoding ASCII -NoNewline
+    Write-Output "Added SUBMISSION_STAGING_ENC_KEY to the existing config\.env (nothing else changed)."
+    return
+  }
   Write-Output "config\.env already exists -- leaving it untouched (not overwriting an existing install's secrets/config)."
   return
 }
 
-if (-not $AppDatabaseUrl -or -not $DatabaseUrl -or -not $MfaSecretEncKey) {
+if (-not $AppDatabaseUrl -or -not $DatabaseUrl -or -not $MfaSecretEncKey -or -not $SubmissionStagingEncKey) {
   Write-Error @"
-APP_DATABASE_URL and/or DATABASE_URL and/or MFA_SECRET_ENC_KEY were not
-provided, and config\.env does not exist yet.
+APP_DATABASE_URL, DATABASE_URL, MFA_SECRET_ENC_KEY and/or
+SUBMISSION_STAGING_ENC_KEY were not provided, and config\.env does not
+exist yet.
 
 This installed runtime connects to the EXISTING CENTRAL DPDP PostgreSQL --
 it does not create or use a local database. Three values against/for that
@@ -96,14 +140,28 @@ SAME central database are required (confirmed by testing):
     different value here cannot decrypt existing data and will break MFA for
     every pre-existing user. See docs/environment-variables.md.
 
-For this testing phase there is no automated secret-distribution step, so
-supply all three explicitly:
+  - SUBMISSION_STAGING_ENC_KEY: the same kind of key, for consent-form values
+    staged in the central database. Also NOT generated here.
 
-  start.ps1 -AppDatabaseUrl "postgresql://dpdp_app:<password>@<central-host>:5432/<db>" -DatabaseUrl "postgresql://<owner-role>:<password>@<central-host>:5432/<db>" -MfaSecretEncKey "<the central database's existing MFA_SECRET_ENC_KEY>"
+Set them in the elevated session as environment variables (NOT as command
+line parameters, which other users on this computer can see), then start:
 
-or create config\.env by hand with all three set before running Start DPDP.
+  `$env:DPDP_APP_DATABASE_URL           = '<dpdp_app connection string>'
+  `$env:DPDP_DATABASE_URL               = '<pg-boss/owner connection string>'
+  `$env:DPDP_MFA_SECRET_ENC_KEY         = '<central MFA_SECRET_ENC_KEY>'
+  `$env:DPDP_SUBMISSION_STAGING_ENC_KEY = '<central SUBMISSION_STAGING_ENC_KEY>'
+  .\scripts\start.ps1
+
+See installer\README.md, 'Provisioning the shared keys'.
 "@
   exit 1
+}
+
+foreach ($k in @(@('MFA_SECRET_ENC_KEY', $MfaSecretEncKey), @('SUBMISSION_STAGING_ENC_KEY', $SubmissionStagingEncKey))) {
+  if (-not (Test-Aes256Key $k[1])) {
+    Write-Error "$($k[0]) must decode from base64 to exactly 32 bytes. config\.env was not created."
+    exit 1
+  }
 }
 
 $jwtSecret = New-RandomToken 32
@@ -141,8 +199,11 @@ JWT_SECRET=$jwtSecret
 # caller -- see the -MfaSecretEncKey requirement above and
 # docs/environment-variables.md.
 MFA_SECRET_ENC_KEY=$MfaSecretEncKey
+# Same kind of key: the central database's existing consent-form staging key.
+# Supplied by the operator, never generated -- see installer\README.md.
+SUBMISSION_STAGING_ENC_KEY=$SubmissionStagingEncKey
 MFA_ISSUER=DPDP Platform
-ACCESS_TOKEN_TTL_SECONDS=86400
+ACCESS_TOKEN_TTL_SECONDS=15552000
 MFA_CHALLENGE_TTL_SECONDS=300
 
 NOTIFY_TRANSPORT=console

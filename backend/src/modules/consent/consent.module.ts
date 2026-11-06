@@ -3,6 +3,7 @@ import { IdentityModule } from '../identity/identity.module';
 import { NotifyModule } from '../notify/notify.module';
 import { InventoryModule } from '../inventory/inventory.module';
 import { DataPrincipalModule } from '../data-principal/data-principal.module';
+import { StorageModule } from '../storage/storage.module';
 import { EnterpriseStorageSyncModule } from '../storage-sync/enterprise-storage-sync.module';
 import { SubmissionDeliveryModule } from '../delivery/submission-delivery.module';
 import { TenantConsentSecretsRepository } from './tenant-consent-secrets.repository';
@@ -24,6 +25,7 @@ import { ConsentFormsController } from './consent-forms.controller';
 import { ConsentFormsPublicController } from './consent-forms-public.controller';
 import { ConsentFormsPortalController } from './consent-forms-portal.controller';
 import { ConsentFormsService } from './consent-forms.service';
+import { ConsentFormExportService } from './consent-form-export.service';
 import { ConsentFormsRepository } from './consent-forms.repository';
 import { ConsentInventoryLinkRepository } from './consent-inventory-link.repository';
 import { RetentionController } from './retention.controller';
@@ -70,7 +72,18 @@ import { RetentionRepository } from './retention.repository';
   // EnterpriseStorageSyncModule for EnterpriseStorageSyncService — the
   // synchronous, submission-time Enterprise filesystem write. Central DPDP
   // Storage automatic sync (Enterprise half); see that module's header.
-  imports: [IdentityModule, NotifyModule, InventoryModule, DataPrincipalModule, EnterpriseStorageSyncModule, SubmissionDeliveryModule],
+  // StorageModule for the submissions export's destination validation
+  // (StorageService — a writable Gateway folder, re-checked every time), via
+  // the existing service, never its repository or table (R2).
+  imports: [
+    IdentityModule,
+    NotifyModule,
+    InventoryModule,
+    DataPrincipalModule,
+    EnterpriseStorageSyncModule,
+    SubmissionDeliveryModule,
+    StorageModule,
+  ],
   controllers: [
     ConsentController,
     ConsentNoticesController,
@@ -103,6 +116,9 @@ import { RetentionRepository } from './retention.repository';
     ConsentApiKeysRepository,
     ConsentFormsService,
     ConsentFormsRepository,
+    // Reads and renders what is already recorded; writes nothing. Kept apart
+    // from ConsentFormsService (the consent WRITE path) deliberately.
+    ConsentFormExportService,
     ConsentInventoryLinkRepository,
     RetentionService,
     RetentionRepository,

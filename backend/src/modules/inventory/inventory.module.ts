@@ -8,7 +8,7 @@ import { RegisterService } from './register.service';
 import { RegisterEntriesRepository } from './register-entries.repository';
 import { RegisterImportController } from './register-import.controller';
 import { RegisterImportService } from './register-import.service';
-import { ImportEvidenceStore } from './import-evidence.store';
+import { importEvidenceStoreProvider } from './import-evidence.provider';
 import { EntryPurposesController } from './entry-purposes.controller';
 import { EntryPurposesService } from './entry-purposes.service';
 import { EntryPurposesRepository } from './entry-purposes.repository';
@@ -70,7 +70,8 @@ import { RopaRepository } from './ropa.repository';
     RegisterService,
     RegisterEntriesRepository,
     RegisterImportService,
-    ImportEvidenceStore,
+    // local disk (default) or S3, chosen by IMPORT_EVIDENCE_STORE at startup.
+    importEvidenceStoreProvider,
     EntryPurposesService,
     EntryPurposesRepository,
     SystemsService,

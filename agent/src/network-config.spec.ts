@@ -115,6 +115,37 @@ describe('NO_PROXY matching', () => {
   });
 });
 
+describe('GATEWAY_NO_PROXY (full-stack Docker: keep the internal backend direct)', () => {
+  // What the Docker CLI injects into a container when ~/.docker/config.json
+  // has "proxies" (only for variables the Compose service does not set).
+  const INJECTED = { HTTP_PROXY: 'http://corp-proxy.example:3128', HTTPS_PROXY: 'http://corp-proxy.example:3128', NO_PROXY: 'localhost,.corp.example' };
+
+  it('PROBLEM CONFIRMED: without it, an injected proxy captures http://backend:3001', () => {
+    expect(selectProxy(resolveProxySettings(undefined, INJECTED), 'http://backend:3001')?.uri).toBe('http://corp-proxy.example:3128');
+  });
+
+  it('with GATEWAY_NO_PROXY=backend the backend is direct, injected exclusions still apply, external traffic still proxied', () => {
+    const s = resolveProxySettings(undefined, { ...INJECTED, GATEWAY_NO_PROXY: 'backend' });
+    expect(selectProxy(s, 'http://backend:3001')).toBeNull();
+    expect(selectProxy(s, 'https://intranet.corp.example')).toBeNull(); // customer/Docker NO_PROXY preserved
+    expect(selectProxy(s, 'https://dpdp.example')?.uri).toBe('http://corp-proxy.example:3128');
+    expect(selectProxy(s, 'http://backend.evil.example')?.uri).toBe('http://corp-proxy.example:3128'); // exact-domain semantics
+  });
+
+  it('does not create a proxy when none is configured', () => {
+    const s = resolveProxySettings(undefined, { GATEWAY_NO_PROXY: 'backend' });
+    expect(s).toMatchObject({ source: 'none', httpProxy: null, httpsProxy: null });
+    expect(selectProxy(s, 'https://dpdp.example')).toBeNull();
+  });
+
+  it('is also added to a config.json proxy\'s noProxy list, and invalid values fail loudly', () => {
+    const s = resolveProxySettings({ url: 'http://p.corp:1', noProxy: ['a.example'] }, { GATEWAY_NO_PROXY: 'backend' });
+    expect(selectProxy(s, 'http://backend:3001')).toBeNull();
+    expect(selectProxy(s, 'https://a.example')).toBeNull();
+    expect(() => resolveProxySettings(undefined, { GATEWAY_NO_PROXY: 'bad host!' })).toThrow(/GATEWAY_NO_PROXY/);
+  });
+});
+
 describe('resolveProxySettings precedence', () => {
   const ENV = { HTTPS_PROXY: 'http://env-proxy.corp:8080', HTTP_PROXY: 'http://env-http.corp:8080', NO_PROXY: 'skip.example' };
 

@@ -1,0 +1,58 @@
+{
+  "family": "dpdp-worker",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": { "operatingSystemFamily": "LINUX", "cpuArchitecture": "X86_64" },
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/dpdp-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/dpdp-worker-task",
+  "containerDefinitions": [
+    {
+      "name": "worker",
+      "image": "<ACCOUNT_ID>.dkr.ecr.ap-south-1.amazonaws.com/dpdp-backend:<IMAGE_TAG>",
+      "essential": true,
+      "command": ["node", "dist/worker.js"],
+      "stopTimeout": 30,
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "AWS_REGION", "value": "ap-south-1" },
+        { "name": "DATABASE_SSL_CA_FILE", "value": "/opt/dpdp/certs/rds-global-bundle.pem" },
+        { "name": "DB_POOL_MAX", "value": "5" },
+        { "name": "NOTIFY_TRANSPORT", "value": "console" },
+        { "name": "POSTMARK_FROM_EMAIL", "value": "<VERIFIED_SENDER>" },
+        { "name": "MSG91_SENDER_ID", "value": "<SENDER_ID>" }
+      ],
+      "secrets": [
+        {
+          "name": "APP_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/app-database-url"
+        },
+        {
+          "name": "PGBOSS_DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/pgboss-database-url"
+        },
+        {
+          "name": "MFA_SECRET_ENC_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/mfa-secret-enc-key"
+        },
+        {
+          "name": "POSTMARK_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/postmark-api-key"
+        },
+        {
+          "name": "MSG91_AUTH_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-south-1:<ACCOUNT_ID>:secret:dpdp/prod/msg91-auth-key"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/dpdp/prod/worker",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "worker"
+        }
+      }
+    }
+  ]
+}

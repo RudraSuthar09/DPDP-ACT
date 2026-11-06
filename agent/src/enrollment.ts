@@ -66,6 +66,18 @@ export class ControlPlaneHttpError extends Error {
   }
 }
 
+/** The server answered, but not like the DPDP API (a non-JSON body). Almost
+ *  always a wrong server address, e.g. the dashboard's web address. */
+export class UnexpectedServerResponseError extends Error {
+  constructor(public readonly status: number) {
+    super(
+      `The server at the configured address answered, but not like the DPDP API (HTTP ${status}, not JSON). ` +
+        'Check that the Gateway uses the DPDP server address shown in the dashboard, not the dashboard web address.',
+    );
+    this.name = 'UnexpectedServerResponseError';
+  }
+}
+
 // --- local credential persistence -------------------------------------------
 
 function credentialFilePath(stateDir: string): string {
@@ -162,7 +174,10 @@ export interface GatewayControlPlaneClient {
     displayName: string;
     deviceRef: string | null;
   }): Promise<{ deviceId: string; tenantId: string; deviceToken: string }>;
-  heartbeat(deviceToken: string, agentVersion: string): Promise<void>;
+  /** `localEndpoint`: this Gateway's own loopback listener, so the dashboard
+   *  needs no manually entered address. The reply may carry the dashboard
+   *  origins the local listener should accept (older backends send none). */
+  heartbeat(deviceToken: string, agentVersion: string, localEndpoint?: string | null): Promise<HeartbeatReply | void>;
   refreshSession(deviceToken: string, sessionToken: string): Promise<{ sessionToken: string; expiresAt: string }>;
   deenroll(deviceToken: string): Promise<void>;
   redeemPairing(
@@ -193,26 +208,68 @@ export interface GatewayControlPlaneClient {
    *  claimable right now (either no submissions are pending, or none can be
    *  claimed yet because this tenant has no Central DPDP Storage root
    *  configured) — not an error. */
-  claimSubmission(deviceToken: string): Promise<ClaimedSubmission>;
+  /** Registers a folder THIS Gateway's administrator authorized, and receives
+   *  its DPDP record ids. The label is a display name; the folder's path is
+   *  never sent. */
+  authorizeFolder(
+    deviceToken: string,
+    input: { label: string; access: 'read' | 'write' | 'both' },
+  ): Promise<{ sourceId: string | null; storageRootId: string | null; label: string }>;
+
+  /** The reverse direction: which folder records DPDP has revoked, so this
+   *  Gateway can stop offering them. An explicit revocation list — never an
+   *  "active set" to reconcile against, because this Gateway also holds
+   *  entries its own operator configured by hand. */
+  listFolderRevocations(deviceToken: string): Promise<{ revokedSourceIds: string[]; revokedStorageRootIds: string[] }>;
+
+  claimSubmission(deviceToken: string, capabilities?: DeliveryCapabilities): Promise<ClaimedSubmission>;
 
   ackSubmission(deviceToken: string, deliveryId: string): Promise<{ ok: boolean }>;
 
   failSubmission(deviceToken: string, deliveryId: string, error: string): Promise<{ ok: boolean }>;
 }
 
-export type ClaimedSubmission =
-  | { ready: false; reason: 'NOTHING_PENDING' | 'NOT_CONFIGURED' }
-  | {
-      ready: true;
-      deliveryId: string;
-      folderName: string;
-      customerId: string;
-      subjectRef: string;
-      displayName: string | null;
-      templateName: string;
-      retentionMonths: number | null;
-      fields: Array<{ label: string; textValue?: string; file?: { filename: string; contentBase64: string } }>;
-    };
+export interface HeartbeatReply {
+  dashboardOrigins?: unknown;
+}
+
+/** What this Gateway can deliver, sent with every claim so DPDP only hands
+ *  it work it can perform: Central DPDP Storage writes (a local Central root
+ *  is configured here) and/or Enterprise copies into these write-authorized
+ *  storage locations. An empty body (older agents) means Central only. */
+export interface DeliveryCapabilities {
+  central: boolean;
+  storageRootIds: string[];
+}
+
+/** The existing Central DPDP Storage delivery. `target` is absent from older
+ *  backends, which only ever sent this kind. */
+export interface ClaimedCentralSubmission {
+  ready: true;
+  target?: 'central';
+  deliveryId: string;
+  folderName: string;
+  customerId: string;
+  subjectRef: string;
+  displayName: string | null;
+  templateName: string;
+  retentionMonths: number | null;
+  fields: Array<{ label: string; textValue?: string; file?: { filename: string; contentBase64: string } }>;
+}
+
+/** An Enterprise copy of mapped fields, into ONE write-authorized storage
+ *  location. `path` is folder NAMES under that location (never an OS path);
+ *  `filename` is fixed per submission + field, so a retry targets the same
+ *  file and a new submission never targets an earlier one's. */
+export interface ClaimedGatewayCopy {
+  ready: true;
+  target: 'gateway';
+  deliveryId: string;
+  storageRootId: string;
+  files: Array<{ path: string[]; filename: string; contentBase64: string }>;
+}
+
+export type ClaimedSubmission = { ready: false; reason: 'NOTHING_PENDING' | 'NOT_CONFIGURED' } | ClaimedCentralSubmission | ClaimedGatewayCopy;
 
 // The ONE outbound HTTP call site for the whole control-plane client (see
 // data-plane.spec.ts's boundary guard) — postJson/getJson are both thin
@@ -245,7 +302,18 @@ async function requestJson(
   } catch (err) {
     throw classifyTransportError(err, transport.usesProxy(url));
   }
-  const json = text ? JSON.parse(text) : null;
+  let json: unknown = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      // Not the DPDP API (every DPDP response, including errors, is JSON):
+      // typically the dashboard's web address entered instead of the server
+      // address. Never put the response body in the error -- it is someone
+      // else's HTML.
+      throw new UnexpectedServerResponseError(status);
+    }
+  }
   if (!ok) throw new ControlPlaneHttpError(status, json);
   return json;
 }
@@ -292,8 +360,13 @@ export function createControlPlaneClient(controlPlaneUrl: string, transport: Tra
       const tenantId = typeof claims.tenant_id === 'string' ? claims.tenant_id : '';
       return { deviceId: json.device.id, tenantId, deviceToken: json.deviceToken };
     },
-    async heartbeat(deviceToken, agentVersion) {
-      await postJson(`${controlPlaneUrl}/gateway/heartbeat`, { 'x-gateway-device-token': deviceToken }, { agentVersion });
+    async heartbeat(deviceToken, agentVersion, localEndpoint) {
+      const reply = (await postJson(
+        `${controlPlaneUrl}/gateway/heartbeat`,
+        { 'x-gateway-device-token': deviceToken },
+        localEndpoint ? { agentVersion, localEndpoint } : { agentVersion },
+      )) as HeartbeatReply | null;
+      return reply ?? undefined;
     },
     async refreshSession(deviceToken, sessionToken) {
       return (await postJson(
@@ -324,8 +397,20 @@ export function createControlPlaneClient(controlPlaneUrl: string, transport: Tra
         'x-gateway-device-token': deviceToken,
       })) as { submissions: Array<{ id: string; formId: string; createdAt: string; attemptCount: number }> };
     },
-    async claimSubmission(deviceToken) {
-      return (await postJson(`${controlPlaneUrl}/gateway/submissions/claim`, { 'x-gateway-device-token': deviceToken }, {})) as ClaimedSubmission;
+    async authorizeFolder(deviceToken, input) {
+      return (await postJson(`${controlPlaneUrl}/gateway/folders`, { 'x-gateway-device-token': deviceToken }, input)) as {
+        sourceId: string | null;
+        storageRootId: string | null;
+        label: string;
+      };
+    },
+    async listFolderRevocations(deviceToken) {
+      return (await getJson(`${controlPlaneUrl}/gateway/folders/revocations`, {
+        'x-gateway-device-token': deviceToken,
+      })) as { revokedSourceIds: string[]; revokedStorageRootIds: string[] };
+    },
+    async claimSubmission(deviceToken, capabilities) {
+      return (await postJson(`${controlPlaneUrl}/gateway/submissions/claim`, { 'x-gateway-device-token': deviceToken }, capabilities ?? {})) as ClaimedSubmission;
     },
     async ackSubmission(deviceToken, deliveryId) {
       return (await postJson(
@@ -458,6 +543,18 @@ export function startHeartbeat(
   intervalSeconds: number,
   log: (line: string) => void,
   onAuthFailure: () => void,
+  options: {
+    /** Reported on every heartbeat (see GatewayControlPlaneClient.heartbeat). */
+    localEndpoint?: string | null;
+    /** Called with the dashboard origins from each successful reply. */
+    onDashboardOrigins?: (origins: unknown) => void;
+    /** Called after each SUCCESSFUL check-in. Used to pull anything that is
+     *  only knowable while DPDP is reachable — currently the folders the
+     *  customer has removed, which is how a removal recorded while this
+     *  Gateway was offline gets applied on reconnect. Never awaited: a slow
+     *  follow-up must not delay or skip the next heartbeat. */
+    onCheckIn?: () => void;
+  } = {},
 ): HeartbeatHandle {
   let state: HeartbeatConnectionState = 'connecting';
   let lastSuccessAt: string | null = null;
@@ -467,15 +564,27 @@ export function startHeartbeat(
 
   const tick = (): void => {
     client
-      .heartbeat(credential.deviceToken, agentVersion)
-      .then(() => {
+      .heartbeat(credential.deviceToken, agentVersion, options.localEndpoint ?? null)
+      .then((reply) => {
         state = 'connected';
         lastSuccessAt = new Date().toISOString();
         lastErrorCode = null;
+        if (reply && reply.dashboardOrigins !== undefined) options.onDashboardOrigins?.(reply.dashboardOrigins);
+        try {
+          options.onCheckIn?.();
+        } catch {
+          // A follow-up task must never break the heartbeat loop.
+        }
       })
       .catch((err: unknown) => {
         lastErrorCode =
-          err instanceof TransportError ? err.code : err instanceof ControlPlaneHttpError ? `HTTP_${err.status}` : 'NETWORK_ERROR';
+          err instanceof TransportError
+            ? err.code
+            : err instanceof ControlPlaneHttpError
+              ? `HTTP_${err.status}`
+              : err instanceof UnexpectedServerResponseError
+                ? 'WRONG_SERVER'
+                : 'NETWORK_ERROR';
         if (err instanceof ControlPlaneHttpError && (err.status === 401 || err.status === 403)) {
           state = 'auth_failed';
           // Terminal: the token is dead, so stop calling the backend with it
@@ -495,7 +604,11 @@ export function startHeartbeat(
       });
   };
 
-  timer = setTimeout(tick, intervalSeconds * 1000);
+  // The FIRST heartbeat goes out immediately (Phase 6): with the default 60 s
+  // interval, waiting a full interval left a freshly paired or just-restarted
+  // Gateway showing "connecting" for a minute, and the Setup wizard (which
+  // waits for "connected") reported a successful pairing as a failure.
+  timer = setTimeout(tick, 0);
   timer.unref?.();
 
   const handle = (() => {

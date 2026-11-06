@@ -12,6 +12,7 @@ import {
   type ResourceHandle,
 } from '@dpdp/shared';
 import { apiFetch } from '../../../../../lib/api';
+import { openGatewaySession } from '../../../../../lib/gateway-session';
 import { maskForHeader } from '../../../../../lib/pii-mask';
 import { useDialog } from '../../../../../components/Dialog';
 
@@ -88,23 +89,32 @@ export default function GatewayBrowserPage() {
   // Defence in depth: drop any raw rows if this view ever unmounts.
   useEffect(() => () => setResult(null), []);
 
+  const callWith = useCallback(async (baseUrl: string, token: string, path: string, body: Record<string, unknown>) => {
+    const base = baseUrl.trim().replace(/\/+$/, '');
+    if (!base) throw new Error('Enter the Gateway address.');
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [GATEWAY_AUTH_HEADER]: token.trim() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const j = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(j.error ? `Gateway refused: ${j.error}` : `Gateway error (${res.status}).`);
+    }
+    return res.json();
+  }, []);
+
   const call = useCallback(
-    async (path: string, body: Record<string, unknown>) => {
-      const base = agentUrl.trim().replace(/\/+$/, '');
-      if (!base) throw new Error('Enter the Gateway address.');
-      const res = await fetch(`${base}${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', [GATEWAY_AUTH_HEADER]: sessionToken.trim() },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const j = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(j.error ? `Gateway refused: ${j.error}` : `Gateway error (${res.status}).`);
-      }
-      return res.json();
-    },
-    [agentUrl, sessionToken],
+    (path: string, body: Record<string, unknown>) => callWith(agentUrl, sessionToken, path, body),
+    [callWith, agentUrl, sessionToken],
   );
+
+  async function discoverWith(baseUrl: string, token: string) {
+    // Discovery also serves as the connection test — it connects to the source.
+    const res = (await callWith(baseUrl, token, '/source/discover', { sourceId })) as { handles: ResourceHandle[] };
+    setResources(res.handles);
+    setConnected(`Connected — ${res.handles.length} resource${res.handles.length === 1 ? '' : 's'} found.`);
+  }
 
   async function discover() {
     setBusy(true);
@@ -113,12 +123,29 @@ export default function GatewayBrowserPage() {
     setResult(null);
     setSelected(null);
     try {
-      // Discovery also serves as the connection test — it connects to the source.
-      const res = (await call('/source/discover', { sourceId })) as { handles: ResourceHandle[] };
-      setResources(res.handles);
-      setConnected(`Connected — ${res.handles.length} resource${res.handles.length === 1 ? '' : 's'} found.`);
+      await discoverWith(agentUrl, sessionToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Connection/discovery failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Phase 6: the normal path. The existing pairing handshake (gateway-session.ts)
+  // with the address the Gateway registered itself -- no address or token to type.
+  async function connectAutomatically() {
+    setBusy(true);
+    setError(null);
+    setConnected(null);
+    setResult(null);
+    setSelected(null);
+    try {
+      const session = await openGatewaySession(sourceId);
+      setAgentUrl(session.agentUrl);
+      setSessionToken(session.sessionToken);
+      await discoverWith(session.agentUrl, session.sessionToken);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not connect through the Gateway.');
     } finally {
       setBusy(false);
     }
@@ -292,8 +319,8 @@ export default function GatewayBrowserPage() {
       </div>
       <p className="muted">
         Reads this source <strong>through your Enterprise Gateway</strong> — files or database tables,
-        the data never passes through DPDP Shield&apos;s servers. Enter your Gateway address and the
-        session token from pairing. Sensitive columns are masked by default.
+        the data never passes through DPDP Shield&apos;s servers. Click Connect: DPDP pairs this browser with
+        your Gateway automatically. Sensitive columns are masked by default.
       </p>
       {source && (
         <p className="muted" style={{ fontSize: '0.85rem' }}>
@@ -308,21 +335,27 @@ export default function GatewayBrowserPage() {
       )}
 
       <div className="panel">
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div style={{ flex: '1 1 280px' }}>
-            <label htmlFor="gw-url">Gateway address</label>
-            <input id="gw-url" value={agentUrl} onChange={(e) => setAgentUrl(e.target.value)} placeholder="e.g. https://gateway.your-network.example:7071" disabled={busy} />
-          </div>
-          <div style={{ flex: '1 1 280px' }}>
-            <label htmlFor="gw-token">Session token</label>
-            <input id="gw-token" value={sessionToken} onChange={(e) => setSessionToken(e.target.value)} placeholder="from pairing" disabled={busy} />
-          </div>
-          <button className="primary" type="button" onClick={() => void discover()} disabled={busy || !agentUrl.trim() || !sessionToken.trim()}>
-            {busy ? 'Working…' : 'Test connection & discover'}
-          </button>
-        </div>
+        <button className="primary" type="button" onClick={() => void connectAutomatically()} disabled={busy}>
+          {busy ? 'Working…' : 'Connect & discover'}
+        </button>
         {connected && <div className="notice" style={{ marginTop: 10 }}>{connected}</div>}
         {error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
+        <details style={{ marginTop: 10 }}>
+          <summary className="muted" style={{ fontSize: '0.85rem' }}>Advanced: connect with an explicit address and session token</summary>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 8 }}>
+            <div style={{ flex: '1 1 280px' }}>
+              <label htmlFor="gw-url">Gateway address</label>
+              <input id="gw-url" value={agentUrl} onChange={(e) => setAgentUrl(e.target.value)} placeholder="e.g. https://gateway.your-network.example:7071" disabled={busy} />
+            </div>
+            <div style={{ flex: '1 1 280px' }}>
+              <label htmlFor="gw-token">Session token</label>
+              <input id="gw-token" value={sessionToken} onChange={(e) => setSessionToken(e.target.value)} placeholder="from pairing" disabled={busy} />
+            </div>
+            <button type="button" onClick={() => void discover()} disabled={busy || !agentUrl.trim() || !sessionToken.trim()}>
+              Test connection &amp; discover
+            </button>
+          </div>
+        </details>
       </div>
 
       {resources.length > 0 && (

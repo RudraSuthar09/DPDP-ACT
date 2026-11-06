@@ -5,7 +5,14 @@ const future = new Date('2026-08-16T13:00:00Z');
 const past = new Date('2026-08-16T11:00:00Z');
 
 function license(over: Partial<LicenseForValidation> = {}): LicenseForValidation {
-  return { plan: 'enterprise', deployment_type: 'client_server', status: 'pending', expires_at: null, ...over };
+  return {
+    plan: 'enterprise',
+    deployment_type: 'client_server',
+    status: 'pending',
+    expires_at: null,
+    approved_at: now,
+    ...over,
+  };
 }
 
 const enterpriseRequest = { plan: 'enterprise' as const, deploymentType: 'client_server' as const };
@@ -61,5 +68,24 @@ describe('locked architecture §9/§12 — license validation policy', () => {
   it('plan matching deploymentType mismatched is still rejected (exact match required, no partial grants)', () => {
     const enterpriseHosted = license({ plan: 'enterprise', deployment_type: 'hosted' });
     expect(evaluateLicenseForActivation(enterpriseHosted, enterpriseRequest, now)).toMatchObject({ ok: false });
+  });
+
+  it('platform-admin approval gate: an unapproved license is rejected even when otherwise perfectly valid', () => {
+    expect(evaluateLicenseForActivation(license({ approved_at: null }), enterpriseRequest, now)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('approval'),
+    });
+  });
+
+  it('platform-admin approval gate: the approval check wins over a revoked/expired reason (reads as "not reviewed", not a more specific rejection)', () => {
+    const unapprovedAndRevoked = license({ approved_at: null, status: 'revoked' });
+    expect(evaluateLicenseForActivation(unapprovedAndRevoked, enterpriseRequest, now)).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining('approval'),
+    });
+  });
+
+  it('an approved license (approved_at set) with everything else valid is accepted', () => {
+    expect(evaluateLicenseForActivation(license({ approved_at: past }), enterpriseRequest, now)).toEqual({ ok: true });
   });
 });

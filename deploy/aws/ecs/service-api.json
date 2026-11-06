@@ -1,0 +1,25 @@
+{
+  "serviceName": "dpdp-api",
+  "cluster": "dpdp-prod",
+  "taskDefinition": "dpdp-api",
+  "launchType": "FARGATE",
+  "desiredCount": 2,
+  "deploymentConfiguration": {
+    "minimumHealthyPercent": 100,
+    "maximumPercent": 200,
+    "deploymentCircuitBreaker": { "enable": true, "rollback": true }
+  },
+  "healthCheckGracePeriodSeconds": 30,
+  "loadBalancers": [
+    { "targetGroupArn": "<API_TARGET_GROUP_ARN>", "containerName": "api", "containerPort": 3001 }
+  ],
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": ["<PRIVATE_SUBNET_A>", "<PRIVATE_SUBNET_B>"],
+      "securityGroups": ["<API_SECURITY_GROUP>"],
+      "assignPublicIp": "DISABLED"
+    }
+  },
+  "enableExecuteCommand": false,
+  "propagateTags": "SERVICE"
+}

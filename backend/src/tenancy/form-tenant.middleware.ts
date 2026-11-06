@@ -87,7 +87,8 @@ export class FormTenantMiddleware implements NestMiddleware {
     }
 
     if (!resolved) {
-      next(new NotFoundException('No consent form exists at this address.'));
+      // Stable reason alongside the message — see publicFormForLink.
+      next(new NotFoundException({ message: 'No consent form exists at this address.', reason: 'FORM_NOT_FOUND' }));
       return;
     }
 

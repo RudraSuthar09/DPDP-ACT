@@ -38,4 +38,10 @@ export class DataPrincipalService {
     const row = await this.repo.resolveOrCreate(subjectRef, displayName);
     return { customerId: row.id, displayName: row.display_name };
   }
+
+  /** Read-only display-name lookup for a batch of subject refs — see the
+   *  repository method. Creates nothing. */
+  async displayNamesFor(subjectRefs: readonly string[]): Promise<Map<string, string>> {
+    return this.repo.displayNamesBySubjectRef(subjectRefs);
+  }
 }

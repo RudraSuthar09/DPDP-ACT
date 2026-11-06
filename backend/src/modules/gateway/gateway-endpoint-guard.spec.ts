@@ -24,7 +24,9 @@ const MODULE_DIR = __dirname;
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 const MIGRATION = join(REPO_ROOT, 'backend', 'migrations', '1737003400000_gateway-device-endpoint.sql');
 const GATEWAY_CONNECTION_LIB = join(REPO_ROOT, 'frontend', 'src', 'lib', 'gateway-connection.ts');
-const DATA_SOURCES_PAGE = join(REPO_ROOT, 'frontend', 'src', 'app', '(app)', 'data-sources', 'page.tsx');
+// The Gateway connection panel moved out of the customer-facing page into
+// the administration component; the guard follows the code.
+const DATA_SOURCES_PAGE = join(REPO_ROOT, 'frontend', 'src', 'components', 'SourceAdministration.tsx');
 
 const BACKEND_FILES = ['gateway.dto.ts', 'gateway.service.ts', 'gateway.controller.ts', 'gateway.repository.ts'].map(
   (f) => join(MODULE_DIR, f),

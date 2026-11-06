@@ -16,6 +16,8 @@ import type { RequestWithGatewayDevice } from '../../tenancy/gateway-device.midd
 import type { RequestWithGatewayEnrollment } from '../../tenancy/gateway-enrollment.middleware';
 import { Roles, AllowGatewayDevice } from '../identity/rbac/roles.decorator';
 import { Audited } from '../audit/audited.decorator';
+import { CapabilityGuard } from '../capability/capability.guard';
+import { RequireCapability } from '../capability/capability.decorator';
 import { GatewayService } from './gateway.service';
 import {
   parseCreateEnrollment,
@@ -53,7 +55,8 @@ export class GatewayController {
   // --- staff ---------------------------------------------------------------
 
   @Post('enrollments')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, CapabilityGuard)
+  @RequireCapability('enterpriseGateway')
   @Roles(...MANAGE)
   @Audited('gateway.enrollment.created')
   @HttpCode(HttpStatus.CREATED)
@@ -63,14 +66,16 @@ export class GatewayController {
   }
 
   @Get('devices')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, CapabilityGuard)
+  @RequireCapability('enterpriseGateway')
   @Roles(...MANAGE)
   async listDevices() {
     return { devices: await this.gateway.listDevices() };
   }
 
   @Post('pairings')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, CapabilityGuard)
+  @RequireCapability('enterpriseGateway')
   @Roles(...MANAGE)
   @Audited('gateway.pairing.created')
   @HttpCode(HttpStatus.OK)
@@ -80,7 +85,8 @@ export class GatewayController {
   }
 
   @Post('devices/:id/revoke')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, CapabilityGuard)
+  @RequireCapability('enterpriseGateway')
   @Roles(...MANAGE)
   @Audited('gateway.device.revoked')
   @HttpCode(HttpStatus.OK)
@@ -95,7 +101,8 @@ export class GatewayController {
    * read; the browser separately calls the returned endpoint's own /health.
    */
   @Get('devices/active')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, CapabilityGuard)
+  @RequireCapability('enterpriseGateway')
   @Roles(...MANAGE)
   async getActiveDevice() {
     return { device: await this.gateway.getActiveDevice() };
@@ -107,7 +114,8 @@ export class GatewayController {
    * the security identity (unaffected: still the device key + token).
    */
   @Patch('devices/:id/endpoint')
-  @UseGuards(TenantGuard)
+  @UseGuards(TenantGuard, CapabilityGuard)
+  @RequireCapability('enterpriseGateway')
   @Roles(...MANAGE)
   @Audited('gateway.device.endpoint_set')
   async setEndpoint(@Param('id') id: string, @Body() body: unknown) {
@@ -150,8 +158,8 @@ export class GatewayController {
   @HttpCode(HttpStatus.OK)
   async heartbeat(@Req() req: RequestWithGatewayDevice, @Body() body: unknown) {
     const deviceId = requireDevice(req);
-    const { agentVersion } = parseHeartbeat(body);
-    return this.gateway.heartbeat(deviceId, agentVersion);
+    const { agentVersion, localEndpoint } = parseHeartbeat(body);
+    return this.gateway.heartbeat(deviceId, agentVersion, localEndpoint);
   }
 
   @Post('pair/redeem')
