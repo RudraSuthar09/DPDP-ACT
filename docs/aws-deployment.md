@@ -1,6 +1,15 @@
-# AWS deployment — ap-south-1, ECS Fargate
+# AWS deployment — ap-south-1, ECS Fargate (SUPERSEDED)
 
-Status: **ready to deploy, not deployed.** Nothing has been created on AWS.
+> **This is NOT the current deployment.** Since 2026-11-12 production is a
+> **single EC2 server with Docker Compose in Asia Pacific (Sydney),
+> `ap-southeast-2`** — runbook, Terraform, costs and IAM policy in
+> [`deploy/single-server/README.md`](../deploy/single-server/README.md).
+> This document and `deploy/aws/` (ECS/ALB/RDS, Mumbai) are kept only as the
+> record of the earlier design. Reviving them would require changing their
+> region (task definitions, Secrets Manager ARNs, the template test) and
+> budget.
+
+Status (of this earlier design): **not deployed.** Nothing has been created on AWS.
 Every behaviour described as "verified" below was exercised against real
 PostgreSQL, Docker and Windows PowerShell locally — not against AWS.
 
@@ -169,6 +178,18 @@ Locally the default stays `local` (files under `backend/var`) — unchanged.
 | Logs                         | CloudWatch, set a retention period; OTPs/addresses are redacted in production                          |
 
 ## 7. Deployment sequence
+
+> **Current target (2026-11-12; region Sydney `ap-southeast-2` since 2026-11-13): single server.** One EC2 instance running
+> `docker-compose.prod.yml` (Caddy, API, worker, frontend, PostgreSQL) — see
+> `deploy/single-server/README.md`. The ECS design in this document is
+> superseded for now.
+>
+> **ECS test-environment Terraform — removed 2026-11-13.** The never-applied
+> Terraform for an ECS/ALB/RDS test environment (formerly
+> `deploy/aws/terraform/`) was deleted as superseded; an archive is kept
+> outside the repository by the owner
+> (`deploy-aws-terraform-ecs-superseded-2026-11-13.zip`). The sequence below
+> describes the superseded production design.
 
 1. **Network:** VPC, subnets, NAT/endpoints, security groups (ALB → tasks 3000/3001; tasks → RDS 5432 only).
 2. **KMS key, S3 bucket** (§5), **IAM** roles: execution role (ECR pull, read the `dpdp/prod/*` secrets), API/worker task roles (§5; worker needs none).

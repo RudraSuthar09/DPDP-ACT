@@ -20,8 +20,28 @@ client's systems and helps them _prove_ they handle personal data lawfully.
 ## Where we are
 
 **Stage 1 — The Working Product.** Boring infrastructure only: a **NestJS modular
-monolith** on a **single PostgreSQL 16** database, jobs/deadlines on **Redis
-(BullMQ)**, a **Next.js** frontend, deployed as **two containers (app + worker)**.
+monolith** on a **single PostgreSQL 16** database, jobs/deadlines on **pg-boss
+inside that same PostgreSQL** (no Redis), a **Next.js** frontend, and the backend
+image run as **two processes (API + exactly one worker)**.
+
+> **Redis/BullMQ are not used.** Earlier drafts of this file and of the master
+> build document named Redis (BullMQ) as the job engine; the code never adopted
+> it — no dependency, no `REDIS_URL`, CI removed its Redis service. Ignore any
+> Redis/BullMQ instruction unless the application actually starts using them
+> (which would be a Stage change under R1).
+
+## Production deployment (active)
+
+The **active AWS deployment guide is
+[`deploy/single-server/README.md`](deploy/single-server/README.md)**: one EC2
+server in Asia Pacific (Sydney), `ap-southeast-2`, running
+`docker-compose.prod.yml` (Caddy for HTTPS, API, one worker, frontend,
+PostgreSQL 16), provisioned by `deploy/single-server/terraform/` with the
+least-privilege IAM policies in `deploy/single-server/iam/`. The ECS/Fargate
+design (`deploy/aws/ecs/`, `.env.production.example`,
+`docs/aws-deployment.md`) is **superseded** and kept only for reference and
+its existing test. Customers run only the outbound Gateway agent
+(`gateway-installer/`), never the central services.
 
 **Explicitly NOT in Stage 1** (they arrive later, only when a trigger metric forces
 them — see R1): **Kafka** (Stage 3), **ClickHouse** (Stage 4), **Temporal**
@@ -65,7 +85,7 @@ delivery agent offline) is not reachable at the moment of submission, the
 field values/documents cannot be written anywhere real yet — and "never lose
 a submission because the tenant's machine happened to be offline" is an
 explicit product requirement. Those two facts are jointly unsatisfiable
-without *some* durable holding point between "customer submits" and "the
+without _some_ durable holding point between "customer submits" and "the
 tenant's machine is next online".
 
 `consent_form_submission_deliveries`
@@ -98,7 +118,7 @@ system behind it tomorrow. **Build the seams now, build the systems later.**
   Stage 1 impl: append-only, partitioned Postgres table. Later: publishes to Kafka,
   fans out to Postgres + ClickHouse. Retrofit cost: **severe.**
 - **S3 — `WorkflowRunner` interface.** Deadlines/SLAs run through one interface.
-  Stage 1 impl: jobs table + BullMQ worker + deadline ticker. Later: Temporal.
+  Stage 1 impl: jobs table + pg-boss worker (in Postgres) + deadline ticker. Later: Temporal.
   Shared by Breach, Grievance, and DPRequest (same physics). Retrofit cost: **severe.**
 - **S4 — `SchemaSource` interface — with NO `readRows()`.** Only `ManualEntry` and
   `FileImport` implementations exist in Stage 1. `readRows()` must never exist in

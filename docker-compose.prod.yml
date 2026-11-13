@@ -1,0 +1,172 @@
+# =============================================================================
+# DPDP Platform — PRODUCTION, single server (deploy/single-server/README.md)
+#
+#   internet ──► caddy :80/:443 ──► app.<domain> ──► frontend:3000
+#                                └► api.<domain> ──► backend:3001 ──► postgres:5432
+#                                                    worker ─────────┘
+#
+# Only Caddy publishes ports on the host. The frontend, API and database are
+# reachable only on the internal Docker network.
+#
+# Secrets come from .env.prod in the repository root (create it with
+# deploy/single-server/generate-env.sh; it is git-ignored and never baked into
+# an image). The local development stack is docker-compose.yml — unchanged.
+#
+# Images: dpdp-backend:prod and dpdp-frontend:prod. Build them on your PC and
+# load them on the server (README step 7): the frontend build alone peaks at
+# about 2.9 GB of memory, more than the server can spare. `up` uses the
+# loaded images (and would build only if one were missing).
+#
+# Usage (from the repository root, on the server):
+#   docker compose -f docker-compose.prod.yml up -d postgres
+#   docker compose -f docker-compose.prod.yml run --rm db-bootstrap   # once
+#   docker compose -f docker-compose.prod.yml run --rm migrate        # each release
+#   docker compose -f docker-compose.prod.yml up -d
+# =============================================================================
+
+# A fixed project name, so the volumes (database, certificates) are the same
+# whatever the folder is called.
+name: dpdp-prod
+
+# Keep container logs from filling the disk: 5 files of 10 MB per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+services:
+  # --- Reverse proxy: HTTPS certificates (Let's Encrypt) + host routing --------
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3
+    volumes:
+      - ./deploy/single-server/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account: must persist, or every restart would
+      # request new certificates and hit Let's Encrypt's rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+    networks: [dpdp]
+    logging: *default-logging
+
+  # --- API ----------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: dpdp-backend:prod
+    command: ['node', 'dist/main.js']
+    restart: unless-stopped
+    env_file: .env.prod
+    volumes:
+      # CSV/Excel import evidence (IMPORT_EVIDENCE_STORE=local) — kept on the
+      # server's disk across container rebuilds.
+      - evidence:/repo/backend/var
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Healthcheck: the image's own (GET /health, which also queries the database).
+    stop_grace_period: 30s
+    networks: [dpdp]
+    logging: *default-logging
+
+  # --- Worker: exactly one ------------------------------------------------------
+  worker:
+    image: dpdp-backend:prod
+    pull_policy: never # built by the backend service above
+    command: ['node', 'dist/worker.js']
+    restart: unless-stopped
+    env_file: .env.prod
+    healthcheck:
+      disable: true # no HTTP port
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+    networks: [dpdp]
+    logging: *default-logging
+
+  # --- Frontend -----------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # The API address browsers use — baked into the image at build time.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-https://api.hhgoa.work}
+    image: dpdp-frontend:prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      # Server-rendered public pages (/forms/*, /portal/*) reach the API
+      # directly on the internal network.
+      INTERNAL_API_URL: http://backend:3001
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [dpdp]
+    logging: *default-logging
+
+  # --- PostgreSQL 16 ------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    # Reads POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB (the admin account,
+    # used only by db-bootstrap and for backups — never by the application).
+    env_file: .env.prod
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [dpdp]
+    logging: *default-logging
+
+  # --- One-off tasks (profile "tools": never started by `up`) -------------------
+
+  # Creates the application roles dpdp_owner and dpdp_app. Run once.
+  db-bootstrap:
+    image: dpdp-backend:prod
+    pull_policy: never
+    profiles: ['tools']
+    command: ['node', 'dist/db-bootstrap.js']
+    env_file: .env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [dpdp]
+
+  # Applies database migrations, then installs the job-queue schema.
+  # Run after db-bootstrap, and after every release.
+  migrate:
+    image: dpdp-backend:prod
+    pull_policy: never
+    profiles: ['tools']
+    command:
+      - sh
+      - -c
+      - node node_modules/node-pg-migrate/bin/node-pg-migrate.js up -m migrations && node dist/pgboss-install.js
+    env_file: .env.prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [dpdp]
+
+networks:
+  dpdp:
+    driver: bridge
+
+volumes:
+  pgdata: # the database — back it up (README "Backups")
+  evidence: # import evidence files
+  caddy_data: # TLS certificates
+  caddy_config:

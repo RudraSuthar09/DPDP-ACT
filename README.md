@@ -76,17 +76,19 @@ Then:
 To run just one app: `pnpm --filter @dpdp/api dev`, `pnpm --filter @dpdp/web dev`,
 or the worker with `pnpm --filter @dpdp/api dev:worker`.
 
-## The two Stage 1 containers
+## Backend processes and production deployment
 
-Production runs **two containers from one image** (`backend/Dockerfile`):
+The backend image (`backend/Dockerfile`) runs as **two processes**:
 
-- **app** → `node dist/main.js` (HTTP API)
-- **worker** → `node dist/worker.js` (BullMQ jobs + deadline ticker, behind the
-  `WorkflowRunner` seam S3)
+- **API** → `node dist/main.js` (HTTP API)
+- **worker** → `node dist/worker.js` (pg-boss jobs + deadline ticker, behind the
+  `WorkflowRunner` seam S3; jobs live in PostgreSQL — there is no Redis), exactly
+  one at a time
 
-Uncomment the `app` and `worker` services in `docker-compose.yml` to run them in
-Docker alongside Postgres and Redis. **Still not Kubernetes** — two containers do
-not need an orchestrator.
+Local Docker: `docker-compose.yml`. **Production** is one server running
+`docker-compose.prod.yml` (Caddy, API, worker, frontend, PostgreSQL) — follow
+[`deploy/single-server/README.md`](deploy/single-server/README.md). **Still not
+Kubernetes.**
 
 ## Common commands
 
@@ -202,7 +204,7 @@ adapter lands when a prospect actually asks. Zero new dependencies: `scrypt`
 AES-256-GCM for the TOTP secret at rest.
 
 **MFA is not optional.** No route returns a session in exchange for a password:
-`/auth/login` returns a *challenge*, and only `/auth/mfa/verify` (or
+`/auth/login` returns a _challenge_, and only `/auth/mfa/verify` (or
 `/auth/mfa/confirm` at enrolment) mints an access token. The two token types are
 distinct and non-interchangeable — a challenge presented as a bearer token is
 refused, which is what stops MFA being a suggestion.
@@ -223,7 +225,7 @@ narrow, auditable peephole rather than putting `users` outside RLS:
   cross-tenant table on the platform. `dpdp_app` has **no privileges on it at
   all** — it cannot be read, written, or enumerated.
 - The only way through is **`app.resolve_login(email)`**, a `SECURITY DEFINER`
-  function taking an *exact* email and returning three ids. No credential
+  function taking an _exact_ email and returning three ids. No credential
   material, no `LIKE`, no listing.
 - It is reached through exactly one named method — `TenantDatabaseService.resolveLogin()`
   — rather than a generic untenanted `query()`, so a second exception has to be
@@ -267,21 +269,21 @@ only see their own rows.
 
 The interceptor owns the transaction so that a failed audit append **rolls the
 business change back**. Written the obvious way — handler commits, then the entry
-is appended separately — you get a log that is *usually* right, and a change with
+is appended separately — you get a log that is _usually_ right, and a change with
 no evidence is exactly the state I4 exists to prevent. Proven end to end: revoke
 `EXECUTE` on `app.audit_append`, attempt a suspend, and the user stays active.
 
-One consequence worth knowing: bookkeeping that must survive a *rejection* — the
+One consequence worth knowing: bookkeeping that must survive a _rejection_ — the
 failed-login counter — uses `withTenantIdDetached()`. Left in the request
 transaction it would roll back with the 401, silently disabling lockout.
 
 ### Only the interceptor can write — three independent barriers
 
-| Barrier | What it stops | Pinned by |
-|---|---|---|
-| `AuditModule` does not export `AUDIT_SINK` | A service **cannot inject** it — the app fails to boot | `audit.module.spec.ts` |
-| `dpdp_app` has `SELECT` on `audit_log` and nothing else | Ad-hoc `INSERT` is `permission denied`; the only path is `app.audit_append()` | `audit-chain.isolation-spec.ts` |
-| No file outside `src/modules/audit/` may name `audit_log`/`audit_append` | Fails the build, with a message telling you to annotate instead | `audit-write-path.spec.ts` |
+| Barrier                                                                  | What it stops                                                                 | Pinned by                       |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------- | ------------------------------- |
+| `AuditModule` does not export `AUDIT_SINK`                               | A service **cannot inject** it — the app fails to boot                        | `audit.module.spec.ts`          |
+| `dpdp_app` has `SELECT` on `audit_log` and nothing else                  | Ad-hoc `INSERT` is `permission denied`; the only path is `app.audit_append()` | `audit-chain.isolation-spec.ts` |
+| No file outside `src/modules/audit/` may name `audit_log`/`audit_append` | Fails the build, with a message telling you to annotate instead               | `audit-write-path.spec.ts`      |
 
 Services contribute through `AuditContextService.annotate()`, which has no
 database access at all: annotating cannot become writing.
@@ -308,7 +310,7 @@ Object Lock answer, by putting the head somewhere the database cannot reach.
 **Known gap:** a denial from `RolesGuard` is not recorded — guards run before
 interceptors in Nest, so the handler is never reached. Recording those would need
 a second writer, which R3 forbids. Failures raised inside handlers and services
-(the last-Owner refusal, a bad MFA code, a wrong password) *are* recorded, as
+(the last-Owner refusal, a bad MFA code, a wrong password) _are_ recorded, as
 `outcome='denied'`.
 
 ## Migrations — why `node-pg-migrate`, not Prisma Migrate
@@ -376,9 +378,6 @@ containers. Migrations run as the owner role; the isolation suite connects as
 | Migrations       | node-pg-migrate (raw SQL)                                       |
 | Monorepo         | pnpm workspaces + Turborepo                                     |
 | Tooling          | ESLint (flat config) + Prettier + TypeScript project references |
-
-
-
 
 Every time you sit down to work on this app, you only need to run one command in your VS Code terminal (making sure you are inside the DPDP-ACT folder):
 

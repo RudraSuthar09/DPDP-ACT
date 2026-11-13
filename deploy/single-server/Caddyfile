@@ -1,0 +1,34 @@
+# Caddy — HTTPS and routing for the DPDP single server.
+#
+# Caddy obtains and renews Let's Encrypt certificates for both names
+# automatically (TLS 1.2 and 1.3 only), and redirects http:// to https://.
+# This needs:
+#   - app./api. resolving to this server's Elastic IP (Route 53, after the
+#     Namecheap nameserver change) — start Caddy only once they do;
+#   - ports 80 and 443 open (they are, in the security group).
+# Certificates are stored in the caddy_data volume. Caddy's admin API listens
+# only on localhost inside its own container; it is not published.
+
+# Optional: an e-mail address for Let's Encrypt expiry notices.
+# {
+# 	email you@example.com
+# }
+
+(common) {
+	encode zstd gzip
+	# Browsers remember to use HTTPS for this host for one year. Deliberately
+	# without includeSubDomains/preload (they would bind every subdomain).
+	header Strict-Transport-Security "max-age=31536000"
+	# Do not advertise the server software.
+	header -Server
+}
+
+app.hhgoa.work {
+	import common
+	reverse_proxy frontend:3000
+}
+
+api.hhgoa.work {
+	import common
+	reverse_proxy backend:3001
+}

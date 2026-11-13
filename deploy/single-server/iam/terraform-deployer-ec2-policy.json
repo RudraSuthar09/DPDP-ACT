@@ -1,0 +1,240 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Ec2ReadOnlyNoResourceLevelSupport",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAccountAttributes",
+        "ec2:DescribeAddresses",
+        "ec2:DescribeAddressesAttribute",
+        "ec2:DescribeImages",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeInstanceStatus",
+        "ec2:DescribeInstanceTypeOfferings",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeInstances",
+        "ec2:DescribeKeyPairs",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeSecurityGroupRules",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeTags",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications",
+        "ec2:DescribeVpcs"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2ReadVpcAttributes",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeVpcAttribute",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:vpc/*"
+    },
+    {
+      "Sid": "Ec2ReadDpdpInstanceAttributes",
+      "Effect": "Allow",
+      "Action": "ec2:DescribeInstanceAttribute",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2LaunchOnlyInstancesTaggedDpdp",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2LaunchOnlyFromCanonicalUbuntuImages",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": ["arn:aws:ec2:ap-southeast-2::image/*", "arn:aws:ec2:ap-southeast-2::snapshot/*"],
+      "Condition": {
+        "StringEquals": {
+          "ec2:Owner": ["099720109477", "amazon"]
+        }
+      }
+    },
+    {
+      "Sid": "Ec2LaunchOnlyIntoDpdpSecurityGroup",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2LaunchSupportingResources",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:subnet/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:network-interface/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:volume/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:key-pair/dpdp-server-ssh"
+      ]
+    },
+    {
+      "Sid": "Ec2TagResourcesAtCreation",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:instance/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:volume/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:security-group/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:key-pair/dpdp-server-ssh",
+        "arn:aws:ec2:ap-southeast-2:160895053784:elastic-ip/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateSecurityGroup",
+            "ImportKeyPair",
+            "AllocateAddress"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Ec2RetagOnlyDpdpResources",
+      "Effect": "Allow",
+      "Action": ["ec2:CreateTags", "ec2:DeleteTags"],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:instance/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:volume/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:security-group/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:key-pair/dpdp-server-ssh",
+        "arn:aws:ec2:ap-southeast-2:160895053784:elastic-ip/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2ImportOnlyTheServerKeyPair",
+      "Effect": "Allow",
+      "Action": "ec2:ImportKeyPair",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:key-pair/dpdp-server-ssh"
+    },
+    {
+      "Sid": "Ec2CreateOnlySecurityGroupsTaggedDpdp",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2CreateSecurityGroupInVpc",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSecurityGroup",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:vpc/*"
+    },
+    {
+      "Sid": "Ec2ChangeRulesOnlyOnDpdpSecurityGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:ModifySecurityGroupRules",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
+        "ec2:UpdateSecurityGroupRuleDescriptionsIngress"
+      ],
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2SecurityGroupRuleObjects",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:ModifySecurityGroupRules"
+      ],
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:security-group-rule/*"
+    },
+    {
+      "Sid": "Ec2AllocateOnlyElasticIpsTaggedDpdp",
+      "Effect": "Allow",
+      "Action": "ec2:AllocateAddress",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:elastic-ip/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2AssociateDpdpElasticIpWithDpdpInstance",
+      "Effect": "Allow",
+      "Action": "ec2:AssociateAddress",
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "Ec2AssociateAddressNetworkInterface",
+      "Effect": "Allow",
+      "Action": "ec2:AssociateAddress",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:network-interface/*"
+    },
+    {
+      "Sid": "Ec2UpdateOnlyDpdpInstanceAndDisk",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:ModifyInstanceAttribute",
+        "ec2:ModifyInstanceCreditSpecification",
+        "ec2:ModifyInstanceMetadataOptions",
+        "ec2:ModifyVolume",
+        "ec2:StartInstances",
+        "ec2:StopInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:instance/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:volume/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "dpdp"
+        }
+      }
+    }
+  ]
+}

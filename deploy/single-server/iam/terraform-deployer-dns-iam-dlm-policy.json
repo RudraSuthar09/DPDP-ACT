@@ -1,0 +1,117 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Route53CreateHostedZone",
+      "Effect": "Allow",
+      "Action": "route53:CreateHostedZone",
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53PreflightZoneLookup",
+      "Effect": "Allow",
+      "Action": ["route53:ListHostedZones", "route53:ListHostedZonesByName"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53ReadAndTagHostedZone",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ChangeTagsForResource",
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets",
+        "route53:ListTagsForResource",
+        "route53:UpdateHostedZoneComment"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/*"
+    },
+    {
+      "Sid": "Route53CreateOrUpdateOnlyAppAndApiARecords",
+      "Effect": "Allow",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/*",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "app.hhgoa.work",
+            "api.hhgoa.work"
+          ],
+          "route53:ChangeResourceRecordSetsRecordTypes": ["A"],
+          "route53:ChangeResourceRecordSetsActions": ["CREATE", "UPSERT"]
+        }
+      }
+    },
+    {
+      "Sid": "Route53TrackChanges",
+      "Effect": "Allow",
+      "Action": "route53:GetChange",
+      "Resource": "arn:aws:route53:::change/*"
+    },
+    {
+      "Sid": "IamManageOnlyTheSnapshotRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::160895053784:role/dpdp-server-snapshots"
+    },
+    {
+      "Sid": "IamAttachOnlyTheDlmManagedPolicy",
+      "Effect": "Allow",
+      "Action": "iam:AttachRolePolicy",
+      "Resource": "arn:aws:iam::160895053784:role/dpdp-server-snapshots",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole"
+        }
+      }
+    },
+    {
+      "Sid": "IamPassSnapshotRoleOnlyToDlm",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::160895053784:role/dpdp-server-snapshots",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "dlm.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "DlmCreateOnlyPoliciesTaggedDpdp",
+      "Effect": "Allow",
+      "Action": "dlm:CreateLifecyclePolicy",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:RequestTag/Project": "dpdp"
+        }
+      }
+    },
+    {
+      "Sid": "DlmManagePoliciesInRegion",
+      "Effect": "Allow",
+      "Action": [
+        "dlm:GetLifecyclePolicy",
+        "dlm:ListTagsForResource",
+        "dlm:TagResource",
+        "dlm:UntagResource",
+        "dlm:UpdateLifecyclePolicy"
+      ],
+      "Resource": "arn:aws:dlm:ap-southeast-2:160895053784:policy/*"
+    },
+    {
+      "Sid": "StsDecodeAccessDeniedMessages",
+      "Effect": "Allow",
+      "Action": "sts:DecodeAuthorizationMessage",
+      "Resource": "*"
+    }
+  ]
+}

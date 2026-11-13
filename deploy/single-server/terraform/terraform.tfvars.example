@@ -1,0 +1,18 @@
+# Copy to terraform.tfvars (git-ignored) and set ssh_allowed_cidr.
+#   WINDOWS POWERSHELL:
+#   Copy-Item deploy\single-server\terraform\terraform.tfvars.example deploy\single-server\terraform\terraform.tfvars
+
+# REQUIRED — your current public IPv4 address + /32.
+#   WINDOWS POWERSHELL:  (Invoke-RestMethod https://checkip.amazonaws.com).Trim()
+ssh_allowed_cidr = "203.0.113.7/32"
+
+# Defaults (shown for reference; change only with a reason):
+aws_region          = "ap-southeast-2" # Asia Pacific (Sydney)
+availability_zone   = "ap-southeast-2a"
+instance_type       = "t3a.small" # budget configuration; "t3a.medium" = recommended (see README)
+root_volume_gb      = 20
+ssh_public_key_path = "~/.ssh/dpdp_key.pub" # = C:\Users\Rudra\.ssh\dpdp_key.pub
+domain_name         = "hhgoa.work"
+
+# Only if a Route 53 zone for the domain ALREADY exists (README step 2):
+# existing_hosted_zone_id = "Z0123456789ABCDEFGHIJ"

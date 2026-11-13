@@ -103,6 +103,15 @@ export class TenantDatabaseService implements OnModuleDestroy {
    * Run tenant-scoped work using the tenant from the current request context.
    * Throws (fail closed) if there is no tenant context in scope.
    */
+  /**
+   * Liveness probe for GET /health: one `SELECT 1` on the existing pool.
+   * Touches no table and sets no tenant, so RLS is not involved — it only
+   * proves a connection can be checked out and the server answers.
+   */
+  async ping(): Promise<void> {
+    await this.pool.query('SELECT 1');
+  }
+
   withTenant<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
     const ctx = this.tenantContext.getOrThrow();
     return this.runScoped(ctx.tenantId, fn);

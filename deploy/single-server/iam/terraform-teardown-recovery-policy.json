@@ -1,0 +1,132 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TeardownEc2DpdpResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteSecurityGroup",
+        "ec2:DisassociateAddress",
+        "ec2:ReleaseAddress",
+        "ec2:TerminateInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:instance/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:security-group/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:elastic-ip/*"
+      ],
+      "Condition": { "StringEquals": { "aws:ResourceTag/Project": "dpdp" } }
+    },
+    {
+      "Sid": "TeardownDisassociateAddressNetworkInterface",
+      "Effect": "Allow",
+      "Action": "ec2:DisassociateAddress",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:network-interface/*"
+    },
+    {
+      "Sid": "TeardownOrRotateServerKeyPair",
+      "Effect": "Allow",
+      "Action": "ec2:DeleteKeyPair",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:key-pair/dpdp-server-ssh"
+    },
+    {
+      "Sid": "TeardownDeleteAppAndApiARecords",
+      "Effect": "Allow",
+      "Action": "route53:ChangeResourceRecordSets",
+      "Resource": "arn:aws:route53:::hostedzone/*",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "route53:ChangeResourceRecordSetsNormalizedRecordNames": [
+            "app.hhgoa.work",
+            "api.hhgoa.work"
+          ],
+          "route53:ChangeResourceRecordSetsRecordTypes": ["A"],
+          "route53:ChangeResourceRecordSetsActions": ["DELETE"]
+        }
+      }
+    },
+    {
+      "Sid": "TeardownDeleteHostedZone",
+      "Effect": "Allow",
+      "Action": "route53:DeleteHostedZone",
+      "Resource": "arn:aws:route53:::hostedzone/*"
+    },
+    {
+      "Sid": "TeardownSnapshotRole",
+      "Effect": "Allow",
+      "Action": ["iam:DeleteRole", "iam:ListInstanceProfilesForRole"],
+      "Resource": "arn:aws:iam::160895053784:role/dpdp-server-snapshots"
+    },
+    {
+      "Sid": "TeardownDetachOnlyTheDlmManagedPolicy",
+      "Effect": "Allow",
+      "Action": "iam:DetachRolePolicy",
+      "Resource": "arn:aws:iam::160895053784:role/dpdp-server-snapshots",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole"
+        }
+      }
+    },
+    {
+      "Sid": "TeardownSnapshotSchedule",
+      "Effect": "Allow",
+      "Action": "dlm:DeleteLifecyclePolicy",
+      "Resource": "arn:aws:dlm:ap-southeast-2:160895053784:policy/*"
+    },
+    {
+      "Sid": "RecoveryReadSnapshotsAndTasks",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeReplaceRootVolumeTasks", "ec2:DescribeSnapshots"],
+      "Resource": "*",
+      "Condition": { "StringEquals": { "aws:RequestedRegion": "ap-southeast-2" } }
+    },
+    {
+      "Sid": "RecoveryManualSnapshotOfDpdpDisk",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSnapshot",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:volume/*",
+      "Condition": { "StringEquals": { "aws:ResourceTag/Project": "dpdp" } }
+    },
+    {
+      "Sid": "RecoveryManualSnapshotMustBeTaggedDpdp",
+      "Effect": "Allow",
+      "Action": "ec2:CreateSnapshot",
+      "Resource": "arn:aws:ec2:ap-southeast-2::snapshot/*",
+      "Condition": { "StringEquals": { "aws:RequestTag/Project": "dpdp" } }
+    },
+    {
+      "Sid": "RecoveryTagNewSnapshot",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:ap-southeast-2::snapshot/*",
+      "Condition": { "StringEquals": { "ec2:CreateAction": "CreateSnapshot" } }
+    },
+    {
+      "Sid": "RecoveryReplaceRootVolumeOfDpdpInstance",
+      "Effect": "Allow",
+      "Action": "ec2:CreateReplaceRootVolumeTask",
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:instance/*",
+        "arn:aws:ec2:ap-southeast-2::snapshot/*"
+      ],
+      "Condition": { "StringEquals": { "aws:ResourceTag/Project": "dpdp" } }
+    },
+    {
+      "Sid": "RecoveryReplaceRootVolumeNewObjects",
+      "Effect": "Allow",
+      "Action": "ec2:CreateReplaceRootVolumeTask",
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-2:160895053784:replace-root-volume-task/*",
+        "arn:aws:ec2:ap-southeast-2:160895053784:volume/*"
+      ]
+    },
+    {
+      "Sid": "RecoveryRetagRestoredRootVolume",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:ap-southeast-2:160895053784:volume/*",
+      "Condition": { "StringEquals": { "aws:RequestTag/Project": "dpdp" } }
+    }
+  ]
+}

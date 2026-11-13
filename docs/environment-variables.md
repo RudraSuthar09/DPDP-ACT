@@ -3,10 +3,11 @@
 Every variable the platform actually reads, grouped by the process that reads
 it. This is the single reference; the two templates point here:
 
-| File                      | For                  | Notes                                                                                 |
-| ------------------------- | -------------------- | ------------------------------------------------------------------------------------- |
-| `.env.example`            | Local development    | Copy to `.env`. Safe defaults + published dev placeholders.                           |
-| `.env.production.example` | Production reference | Empty secrets. Not copied to servers: secrets come from a secrets manager at runtime. |
+| File                      | For                                    | Notes                                                                                                                           |
+| ------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `.env.example`            | Local development                      | Copy to `.env`. Safe defaults + published dev placeholders.                                                                     |
+| `.env.production.example` | Production reference                   | Empty secrets. Not copied to servers: secrets come from a secrets manager at runtime.                                           |
+| `.env.prod` (generated)   | **Current production** (single server) | Never a template in Git: created on the server by `deploy/single-server/generate-env.sh`; see `deploy/single-server/README.md`. |
 
 Never commit a real `.env` (see `.gitignore`).
 
