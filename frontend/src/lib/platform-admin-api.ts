@@ -12,17 +12,56 @@ import { API_URL } from './api';
 
 const TOKEN_KEY = 'dpdp.platformAdminToken';
 
+/** Fired on window when the admin session ends (sign-out, expiry, or a 401). */
+export const PLATFORM_ADMIN_SIGNED_OUT_EVENT = 'dpdp:platform-admin-signed-out';
+
+/**
+ * The admin token lives in sessionStorage, not localStorage: it disappears
+ * when the browser tab/window is closed instead of persisting on disk for
+ * its whole lifetime, and it is dropped as soon as its `exp` has passed.
+ * (A token left in localStorage by an older version is removed.)
+ */
+function tokenExpired(token: string): boolean {
+  try {
+    const part = token.split('.')[1] ?? '';
+    const json = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/'))) as { exp?: unknown };
+    return typeof json.exp !== 'number' || json.exp * 1000 <= Date.now();
+  } catch {
+    return true;
+  }
+}
+
 export function getPlatformAdminToken(): string | null {
   if (typeof window === 'undefined') return null;
-  return window.localStorage.getItem(TOKEN_KEY);
+  try {
+    window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  let token: string | null = null;
+  try {
+    token = window.sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+  if (token && tokenExpired(token)) {
+    clearPlatformAdminToken();
+    return null;
+  }
+  return token;
 }
 
 export function setPlatformAdminToken(token: string): void {
-  window.localStorage.setItem(TOKEN_KEY, token);
+  window.sessionStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearPlatformAdminToken(): void {
-  window.localStorage.removeItem(TOKEN_KEY);
+  try {
+    window.sessionStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 export class PlatformAdminApiError extends Error {
@@ -65,6 +104,12 @@ export async function platformAdminFetch<T>(path: string, options: RequestOption
   const data: unknown = text ? JSON.parse(text) : null;
 
   if (!res.ok) {
+    // An authenticated call refused as 401 means the admin session is over
+    // (expired or invalid): drop the token and let the portal show sign-in.
+    if (res.status === 401 && options.auth !== false) {
+      clearPlatformAdminToken();
+      window.dispatchEvent(new Event(PLATFORM_ADMIN_SIGNED_OUT_EVENT));
+    }
     throw new PlatformAdminApiError(res.status, errorMessage(data) ?? res.statusText);
   }
   return data as T;

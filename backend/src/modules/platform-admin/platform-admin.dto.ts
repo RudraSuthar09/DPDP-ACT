@@ -21,6 +21,27 @@ export function parsePlatformAdminLogin(body: unknown): PlatformAdminLoginInput 
   return { email: email.trim().toLowerCase(), password };
 }
 
+/** Body of POST …/licenses/:licenseId/reject — a reason is mandatory (I4:
+ *  every decision about a customer carries its WHY). Trimmed, 3..500 chars. */
+export function parseRejectLicense(body: unknown): { reason: string } {
+  const obj = asObject(body);
+  const reason = obj['reason'];
+  if (typeof reason !== 'string' || reason.trim().length < 3) {
+    throw new BadRequestException('A rejection reason of at least 3 characters is required.');
+  }
+  if (reason.trim().length > 500) {
+    throw new BadRequestException('The rejection reason must be at most 500 characters.');
+  }
+  return { reason: reason.trim() };
+}
+
+/** ?limit= for read endpoints: an integer clamped to 1..max, default `fallback`. */
+export function parseLimit(raw: string | undefined, fallback: number, max: number): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(Math.trunc(n), 1), max);
+}
+
 function asObject(body: unknown): Record<string, unknown> {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     throw new BadRequestException('Request body must be a JSON object.');

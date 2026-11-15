@@ -231,9 +231,39 @@ export class LicensingRepository {
       const { rows } = await client.query<LicenseRow>(
         `UPDATE licenses
             SET approved_at = now(), approved_by_platform_admin = $2
-          WHERE id = $1 AND approved_at IS NULL
+          WHERE id = $1 AND approved_at IS NULL AND status = 'pending'
           RETURNING ${LICENSE_COLS}`,
         [licenseId, platformAdminId],
+      );
+      const row = rows[0];
+      if (row) await recordAudit(client, row);
+      return row ?? null;
+    });
+  }
+
+  /**
+   * The platform-admin REJECTION of a licence request: only a licence that is
+   * still `pending` AND not yet approved can be rejected (an approved or
+   * active licence is revoked by the tenant's own staff, not rejected). It
+   * becomes `revoked` with the reason recorded, so the existing
+   * evaluateLicenseForActivation already refuses it (unapproved + revoked).
+   * `revoked_by` stays NULL: it references users(id) and a platform admin has
+   * no users row — WHO rejected it is recorded in the tenant's audit chain by
+   * `recordAudit` (same client, same transaction), exactly like approval.
+   */
+  rejectForTenant(
+    tenantId: string,
+    licenseId: string,
+    reason: string,
+    recordAudit: (client: PoolClient, row: LicenseRow) => Promise<void>,
+  ): Promise<LicenseRow | null> {
+    return this.db.withTenantId(tenantId, async (client) => {
+      const { rows } = await client.query<LicenseRow>(
+        `UPDATE licenses
+            SET status = 'revoked', revoked_at = now(), revoke_reason = $2
+          WHERE id = $1 AND status = 'pending' AND approved_at IS NULL
+          RETURNING ${LICENSE_COLS}`,
+        [licenseId, reason],
       );
       const row = rows[0];
       if (row) await recordAudit(client, row);

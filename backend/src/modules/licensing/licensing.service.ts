@@ -25,6 +25,9 @@ export interface LicenseView {
   /** Platform-admin approval gate — null until approved; cannot activate an
    *  installation until then (see licensing-policy.ts). */
   approvedAt: string | null;
+  /** When and why the licence was revoked (or, if never approved, rejected). */
+  revokedAt: string | null;
+  revokeReason: string | null;
 }
 
 /**
@@ -198,7 +201,39 @@ export class LicensingService {
         })
         .then(() => undefined),
     );
-    if (!row) throw new NotFoundException('License not found, or already approved.');
+    if (!row) throw new NotFoundException('License not found, or no longer pending approval.');
+    return toView(row);
+  }
+
+  /**
+   * The platform-admin rejection of a pending, unapproved licence request.
+   * Same audit discipline as approveForPlatformAdmin: SystemAuditService
+   * records the evidence in the target tenant's own chain, in the same
+   * transaction as the change. A rejected licence is `revoked` and was never
+   * approved, so evaluateLicenseForActivation refuses it — rejection is final.
+   */
+  async rejectForPlatformAdmin(
+    tenantId: string,
+    licenseId: string,
+    platformAdminEmail: string,
+    reason: string,
+  ): Promise<LicenseView> {
+    const row = await this.repo.rejectForTenant(tenantId, licenseId, reason, (client, rejected) =>
+      this.systemAudit
+        .record(client, tenantId, {
+          action: 'licensing.license.rejected_by_platform_admin',
+          outcome: 'success',
+          correlationId: randomUUID(),
+          actorLabel: `platform-admin:${platformAdminEmail}`,
+          targetType: 'license',
+          targetId: rejected.id,
+          reason: `License request rejected by platform admin ${platformAdminEmail} (${rejected.plan}/${rejected.deployment_type}): ${reason}`,
+          beforeState: { status: 'pending', approvedAt: null },
+          afterState: { status: rejected.status, rejectReason: reason },
+        })
+        .then(() => undefined),
+    );
+    if (!row) throw new NotFoundException('License not found, or it is no longer a pending, unapproved request.');
     return toView(row);
   }
 
@@ -296,5 +331,7 @@ function toView(row: LicenseRow): LicenseView {
     activatedAt: row.activated_at ? row.activated_at.toISOString() : null,
     issuedBy: row.created_by_platform_admin ? 'platform_admin' : 'tenant_owner',
     approvedAt: row.approved_at ? row.approved_at.toISOString() : null,
+    revokedAt: row.revoked_at ? row.revoked_at.toISOString() : null,
+    revokeReason: row.revoke_reason,
   };
 }

@@ -21,6 +21,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { isAbsolutePath } = require('./storage-path-safety');
 const fsOps = require('./storage-fs-ops');
+const { isTrustedSender } = require('./trusted-origin');
 
 const CONFIG_FILENAME = 'enterprise-storage.json';
 
@@ -99,10 +100,20 @@ function guarded(fn) {
   };
 }
 
-function registerEnterpriseStorageIpc() {
-  ipcMain.handle('enterprise-storage:is-available', () => ({ ok: true, available: true }));
+/** ipcMain.handle, but the handler runs only for the top-level frame of a page
+ *  on the trusted origin (trusted-origin.js). Any other caller gets a stable
+ *  error and nothing on disk is touched. */
+function handle(channel, fn) {
+  ipcMain.handle(channel, (event, arg) => {
+    if (!isTrustedSender(event)) return { ok: false, error: 'UNTRUSTED_ORIGIN' };
+    return fn(event, arg);
+  });
+}
 
-  ipcMain.handle('enterprise-storage:select-folder', async () => {
+function registerEnterpriseStorageIpc() {
+  handle('enterprise-storage:is-available', () => ({ ok: true, available: true }));
+
+  handle('enterprise-storage:select-folder', async () => {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
     const opts = { title: 'Select the DPDP Enterprise Storage folder', properties: ['openDirectory', 'createDirectory'] };
     const result = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
@@ -110,9 +121,9 @@ function registerEnterpriseStorageIpc() {
     return { ok: true, canceled: false, path: result.filePaths[0] };
   });
 
-  ipcMain.handle('enterprise-storage:get', () => ({ ok: true, ...readConfig() }));
+  handle('enterprise-storage:get', () => ({ ok: true, ...readConfig() }));
 
-  ipcMain.handle(
+  handle(
     'enterprise-storage:set',
     guarded(async ({ rootPath }) => {
       if (!isAbsolutePath(rootPath)) throw new Error('NOT_ABSOLUTE');
@@ -123,7 +134,7 @@ function registerEnterpriseStorageIpc() {
     }),
   );
 
-  ipcMain.handle('enterprise-storage:clear', () => {
+  handle('enterprise-storage:clear', () => {
     try {
       writeConfig(null);
     } catch {
@@ -132,7 +143,7 @@ function registerEnterpriseStorageIpc() {
     return { ok: true };
   });
 
-  ipcMain.handle('enterprise-storage:verify', async () => {
+  handle('enterprise-storage:verify', async () => {
     const { rootPath } = readConfig();
     const p = await probe(rootPath);
     return { ok: true, available: p.available, reason: p.reason, rootPath };
@@ -143,12 +154,12 @@ function registerEnterpriseStorageIpc() {
   // storage-fs-ops.test.js) — identical behaviour, just factored out so the
   // actual write mechanism has real coverage without needing the Electron
   // runtime.
-  ipcMain.handle(
+  handle(
     'enterprise-storage:browse',
     guarded(async ({ path: segments }) => ({ entries: await fsOps.browseDir(requireRoot(), segments ?? []) })),
   );
 
-  ipcMain.handle(
+  handle(
     'enterprise-storage:create-folder',
     guarded(async ({ path: segments, name }) => {
       await fsOps.createFolder(requireRoot(), segments ?? [], name);
@@ -156,7 +167,7 @@ function registerEnterpriseStorageIpc() {
     }),
   );
 
-  ipcMain.handle(
+  handle(
     'enterprise-storage:write-text',
     guarded(async ({ path: segments, filename, text }) => {
       await fsOps.writeText(requireRoot(), segments ?? [], filename, text);
@@ -164,7 +175,7 @@ function registerEnterpriseStorageIpc() {
     }),
   );
 
-  ipcMain.handle(
+  handle(
     'enterprise-storage:write-json',
     guarded(async ({ path: segments, filename, data }) => {
       await fsOps.writeJson(requireRoot(), segments ?? [], filename, data);
@@ -172,7 +183,7 @@ function registerEnterpriseStorageIpc() {
     }),
   );
 
-  ipcMain.handle(
+  handle(
     'enterprise-storage:write-file',
     guarded(async ({ path: segments, filename, base64 }) => {
       await fsOps.writeFileBase64(requireRoot(), segments ?? [], filename, base64);

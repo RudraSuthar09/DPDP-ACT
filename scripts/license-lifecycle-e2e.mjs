@@ -73,7 +73,7 @@ try {
 
   step('TEST B - New Enterprise client: a DIFFERENT unique license, belonging to B, Enterprise capabilities');
   const B = await registerTenant('B-ENT', 'enterprise');
-  if (B.license && B.license.plan === 'enterprise' && B.license.deploymentType === 'client_server') {
+  if (B.license && B.license.plan === 'enterprise' && B.license.deploymentType === 'hosted') {
     ok(`B got a license at registration: plan=${B.license.plan} deploymentType=${B.license.deploymentType} prefix=${B.license.licenseKeyPrefix}`);
   } else {
     bad(`B did not get a proper Enterprise license: ${JSON.stringify(B.license)}`);
@@ -106,7 +106,7 @@ try {
   const installB = await api('POST', '/installations', B.token, {
     licenseKey: B.license.licenseKey,
     plan: 'enterprise',
-    deploymentType: 'client_server',
+    deploymentType: 'hosted',
     version: '1.0.0',
   });
   if (installB.status !== 201) throw new Error(`B activation failed: ${JSON.stringify(installB.body)}`);

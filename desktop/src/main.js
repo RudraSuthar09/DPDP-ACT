@@ -2,43 +2,24 @@
 //
 // This file is deliberately the ENTIRE application. It contains no business
 // logic: no authentication, no licensing, no tenancy, no Gateway, no
-// database access of any kind. Its only jobs are: (1) start the EXISTING
-// Docker runtime via the EXISTING installer\scripts\start.ps1 if it isn't
-// already running, (2) wait for the EXISTING health endpoints, (3) open a
-// window pointed at the EXISTING frontend (http://localhost:3000). Every
-// other requirement -- SaaS/Enterprise, Consent, Data Inventory, Gateway --
-// is unchanged and lives entirely inside the app it loads.
+// database access of any kind. Its only job is to open a native window on the
+// hosted DPDP frontend (TRUSTED_ORIGIN, https://app.hhgoa.work), which talks
+// to the hosted API itself. Nothing runs locally: no Docker, no backend, no
+// database, no secrets on this machine. Every requirement -- SaaS/Enterprise,
+// Consent, Data Inventory, Gateway -- lives entirely inside the app it loads.
+//
+// Native features (Enterprise Storage folder access and the save dialog) are
+// exposed through storage-preload.js; their IPC handlers answer only the
+// top-level frame of a page on TRUSTED_ORIGIN (see trusted-origin.js).
 'use strict';
 
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
 const { registerEnterpriseStorageIpc } = require('./enterprise-storage');
 const { registerDialogIpc } = require('./dialog-bridge');
+const { TRUSTED_ORIGIN, isTrustedUrl } = require('./trusted-origin');
 
-const APP_URL = 'http://localhost:3000';
-const HEALTH_URLS = [
-  'http://localhost:3001/health',
-  'http://localhost:7071/health',
-  'http://localhost:3000/',
-];
-
-/**
- * The install root is passed explicitly by the Inno Setup shortcut
- * (--install-root="{app}"), so this never has to guess its own location
- * relative to the packaged .exe. Falls back to the sibling `installer/`
- * directory for local development (`pnpm --filter @dpdp/desktop start`
- * from a source checkout, no real install).
- */
-function getInstallRoot() {
-  const prefix = '--install-root=';
-  const arg = process.argv.find((a) => a.startsWith(prefix));
-  if (arg) return arg.slice(prefix.length).replace(/^"|"$/g, '');
-  return path.resolve(__dirname, '..', '..', 'installer');
-}
-
-const INSTALL_ROOT = getInstallRoot();
-const SCRIPTS_DIR = path.join(INSTALL_ROOT, 'scripts');
+const APP_URL = `${TRUSTED_ORIGIN}/`;
 
 let splash = null;
 let mainWindow = null;
@@ -69,48 +50,9 @@ function setError(text) {
   if (splash && !splash.isDestroyed()) splash.webContents.send('dpdp:error', text);
 }
 
-async function probe(url) {
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function isRuntimeHealthy() {
-  const results = await Promise.all(HEALTH_URLS.map(probe));
-  return results.every(Boolean);
-}
-
-/**
- * Runs one of the EXISTING installer\scripts\*.ps1 files -- never
- * reimplements what they do. No database credential is ever passed here;
- * the desktop shell never sees APP_DATABASE_URL/DATABASE_URL (they live
- * only in config\.env, written once by generate-env.ps1 -- see
- * installer\README.md for how that's supplied during this testing phase).
- */
-function runScript(name, args = []) {
-  return new Promise((resolve) => {
-    const child = spawn(
-      'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(SCRIPTS_DIR, name), ...args],
-      { windowsHide: true },
-    );
-    let lastLine = '';
-    const onData = (buf) => {
-      const text = buf.toString();
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      if (lines.length) {
-        lastLine = lines[lines.length - 1];
-        setStatus(lastLine);
-      }
-    };
-    child.stdout.on('data', onData);
-    child.stderr.on('data', onData);
-    child.on('exit', (code) => resolve({ code: code ?? 1, lastLine }));
-    child.on('error', (err) => resolve({ code: 1, lastLine: err.message }));
-  });
+/** Opens an http(s) URL in the user's real browser; anything else is dropped. */
+function openExternally(url) {
+  if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
 }
 
 function createMainWindow() {
@@ -126,10 +68,10 @@ function createMainWindow() {
     // (window.electronStorage — see storage-preload.js). It exposes only a
     // closed set of storage operations, every one a typed IPC round-trip to
     // the main process where the actual filesystem work + path containment
-    // happens. The security posture is otherwise unchanged: contextIsolation
-    // on, sandbox on, nodeIntegration off — no `fs`/`require`/`process` and
-    // no generic IPC ever reach the renderer. All other app logic (auth,
-    // licensing, capability, Gateway) still lives entirely inside the web app.
+    // happens, and the main process answers only TRUSTED_ORIGIN. The security
+    // posture is otherwise unchanged: contextIsolation on, sandbox on,
+    // nodeIntegration off — no `fs`/`require`/`process` and no generic IPC
+    // ever reach the renderer.
     webPreferences: {
       preload: path.join(__dirname, 'storage-preload.js'),
       contextIsolation: true,
@@ -138,83 +80,74 @@ function createMainWindow() {
     },
   });
 
-  // Never open a second Electron window. A target="_blank"/window.open to an
-  // EXTERNAL http(s) destination (e.g. the "Share on WhatsApp" link, an
-  // exported PDF opened in a new tab) is routed to the user's real system
-  // browser via shell.openExternal — the controlled Electron equivalent of a
-  // browser opening a new tab. Everything else is denied. This is the ONLY
-  // external-navigation capability exposed; there is no generic shell access.
+  // Never open a second Electron window (a second window would get the
+  // preload). Every popup / target="_blank" / window.open is denied; an
+  // http(s) destination OUTSIDE the trusted origin (e.g. the "Share on
+  // WhatsApp" link, an exported PDF) opens in the user's real browser instead.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url) && !url.startsWith(APP_URL)) {
-      void shell.openExternal(url);
-    }
+    if (!isTrustedUrl(url)) openExternally(url);
     return { action: 'deny' };
   });
-  // In-window navigation stays inside the DPDP app itself; an external link
-  // that would navigate the main window instead opens in the system browser.
+
+  // The main window only ever shows the trusted origin, compared by exact
+  // origin (never string prefix). A link elsewhere opens in the system browser.
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(APP_URL)) {
+    if (!isTrustedUrl(url)) {
       event.preventDefault();
-      if (/^https?:\/\//i.test(url)) void shell.openExternal(url);
+      openExternally(url);
     }
   });
 
-  mainWindow.once('ready-to-show', () => {
+  // will-navigate does not fire for HTTP redirects: a redirect of the main
+  // frame away from the trusted origin is cancelled too, so an untrusted page
+  // can never end up in this window holding the preload.
+  mainWindow.webContents.on('will-redirect', (event, url, _isInPlace, isMainFrame) => {
+    if (isMainFrame && !isTrustedUrl(url)) {
+      event.preventDefault();
+      openExternally(url);
+    }
+  });
+
+  let loadFailed = false;
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
+    // -3 (ERR_ABORTED) is a navigation the app itself replaced; not a failure.
+    if (!isMainFrame || errorCode === -3 || mainWindow.isVisible()) return;
+    loadFailed = true;
+    mainWindow.destroy();
+    mainWindow = null;
+    setError(
+      `Could not reach DPDP at ${TRUSTED_ORIGIN}.\n\n${errorDescription || 'Network error'} (${errorCode})\n\n` +
+        'Check this computer’s internet connection (and proxy/firewall), then open DPDP Platform again.',
+    );
+  });
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (loadFailed || !mainWindow) return;
     mainWindow.show();
     if (splash && !splash.isDestroyed()) splash.close();
   });
 
-  mainWindow.loadURL(APP_URL);
+  mainWindow.loadURL(APP_URL).catch(() => {
+    // Reported through did-fail-load above.
+  });
 }
 
-async function boot() {
+function boot() {
   createSplash();
-  setStatus('Checking DPDP runtime...');
-
-  if (!(await isRuntimeHealthy())) {
-    setStatus('Starting DPDP Platform services (this can take a minute on first run)...');
-    // -NoBrowser: the shell itself will show the window; no external
-    // browser tab should also pop open.
-    const result = await runScript('start.ps1', ['-NoBrowser']);
-    if (result.code !== 0) {
-      setError(
-        `Could not start DPDP Platform.\n\n${result.lastLine || 'See installer\\logs for details.'}\n\n` +
-          'Common causes: Docker Desktop is not installed/running, or this is the very first run and the central database connection has not been configured yet (see installer\\README.md).',
-      );
-      return;
-    }
-  }
-
-  setStatus('Waiting for DPDP to become ready...');
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    if (await isRuntimeHealthy()) break;
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-
-  if (!(await isRuntimeHealthy())) {
-    setError('DPDP services started but are not responding yet. Try reopening DPDP Platform in a moment.');
-    return;
-  }
-
-  setStatus('Loading DPDP...');
+  setStatus(`Connecting to ${TRUSTED_ORIGIN} ...`);
   createMainWindow();
 }
 
 app.whenReady().then(() => {
   // Register the native Enterprise Storage IPC handlers once, before any
   // window exists, so window.electronStorage is answerable the moment the
-  // renderer loads. These touch only the installed machine's filesystem and
-  // the per-user config file — never the Docker runtime or the database.
+  // renderer loads. These touch only this machine's filesystem and the
+  // per-user config file, and answer only TRUSTED_ORIGIN.
   registerEnterpriseStorageIpc();
   registerDialogIpc();
-  return boot();
+  boot();
 });
 
 app.on('window-all-closed', () => {
-  // Deliberately does NOT stop the Docker runtime and does NOT touch the
-  // central database -- closing the window must never affect either. The
-  // containers keep running in the background; reopening the shortcut
-  // reconnects (isRuntimeHealthy() short-circuits the start step above).
   app.quit();
 });

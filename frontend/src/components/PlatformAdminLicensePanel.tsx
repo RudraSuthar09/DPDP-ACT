@@ -2,6 +2,16 @@
 
 import { useEffect, useState } from 'react';
 import { platformAdminFetch, PlatformAdminApiError } from '../lib/platform-admin-api';
+import {
+  BUCKET_BADGE,
+  BUCKET_LABEL,
+  DEPLOYMENT_LABEL,
+  fmtDate as fmt,
+  licenseBucket,
+  PLAN_LABEL,
+  type LicenseView,
+} from '../lib/admin-licenses';
+import { LicenseDecisionButtons } from './admin/LicenseDecisionButtons';
 
 /**
  * The license list/issue panel for ONE chosen tenant, inside the
@@ -13,38 +23,10 @@ import { platformAdminFetch, PlatformAdminApiError } from '../lib/platform-admin
  * endpoints.
  */
 
-interface LicenseView {
-  id: string;
-  plan: 'saas' | 'enterprise';
-  deploymentType: 'hosted' | 'client_server';
-  licenseKeyPrefix: string;
-  status: 'pending' | 'active' | 'expired' | 'revoked';
-  issuedAt: string;
-  expiresAt: string | null;
-  issuedBy: 'tenant_owner' | 'platform_admin';
-  /** Platform-admin approval gate — null until approved. Cannot activate an
-   *  installation until then, regardless of status/expiry. */
-  approvedAt: string | null;
-}
-
-const STATUS_BADGE: Record<LicenseView['status'], string> = {
-  active: 'badge success',
-  pending: 'badge info',
-  expired: 'badge warning',
-  revoked: 'badge denied',
-};
-
-const PLAN_LABEL: Record<string, string> = { saas: 'SaaS', enterprise: 'Enterprise' };
-const DEPLOYMENT_LABEL: Record<string, string> = { hosted: 'Hosted', client_server: 'Client server' };
 const ISSUED_BY_LABEL: Record<LicenseView['issuedBy'], string> = {
   tenant_owner: 'Tenant',
   platform_admin: 'Platform admin',
 };
-
-function fmt(iso: string | null): string {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-}
 
 const VALIDITY_PRESETS: { value: '3' | '6' | '12' | '24'; label: string }[] = [
   { value: '3', label: '3 months' },
@@ -62,12 +44,23 @@ function expiresAtFromMonths(months: number): string {
   return d.toISOString();
 }
 
-export function PlatformAdminLicensePanel({ tenantId, tenantName }: { tenantId: string; tenantName: string }) {
+export function PlatformAdminLicensePanel({
+  tenantId,
+  tenantName,
+  onChanged,
+}: {
+  tenantId: string;
+  tenantName: string;
+  /** Called after this panel issued, approved or rejected a licence. */
+  onChanged?: () => void;
+}) {
   const [licenses, setLicenses] = useState<LicenseView[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [issuing, setIssuing] = useState(false);
+  // Enterprise + Hosted is the production model (DPDP hosted centrally,
+  // customers run their own Gateway agents) — the default here.
   const [plan, setPlan] = useState<'saas' | 'enterprise'>('enterprise');
-  const [deploymentType, setDeploymentType] = useState<'hosted' | 'client_server'>('client_server');
+  const [deploymentType, setDeploymentType] = useState<'hosted' | 'client_server'>('hosted');
   // Presets are a convenience, not a limit — 'custom' opens a plain months
   // input so this is never locked to exactly these four numbers (backend
   // already accepts any expiresAt; this is purely a UI control over it).
@@ -76,7 +69,6 @@ export function PlatformAdminLicensePanel({ tenantId, tenantName }: { tenantId: 
   const [newKey, setNewKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [approvingId, setApprovingId] = useState<string | null>(null);
 
   async function refresh() {
     try {
@@ -115,25 +107,11 @@ export function PlatformAdminLicensePanel({ tenantId, tenantName }: { tenantId: 
       );
       setNewKey(data.licenseKey);
       await refresh();
+      onChanged?.();
     } catch (err) {
       setError(err instanceof PlatformAdminApiError ? err.message : 'Could not issue a license key.');
     } finally {
       setIssuing(false);
-    }
-  }
-
-  async function handleApprove(licenseId: string) {
-    setApprovingId(licenseId);
-    setError(null);
-    try {
-      await platformAdminFetch(`/platform-admin/organisations/${tenantId}/licenses/${licenseId}/approve`, {
-        method: 'POST',
-      });
-      await refresh();
-    } catch (err) {
-      setError(err instanceof PlatformAdminApiError ? err.message : 'Could not approve this license.');
-    } finally {
-      setApprovingId(null);
     }
   }
 
@@ -180,18 +158,28 @@ export function PlatformAdminLicensePanel({ tenantId, tenantName }: { tenantId: 
                   <td className="mono">{l.licenseKeyPrefix}…</td>
                   <td>{PLAN_LABEL[l.plan] ?? l.plan}</td>
                   <td>{DEPLOYMENT_LABEL[l.deploymentType] ?? l.deploymentType}</td>
-                  <td><span className={STATUS_BADGE[l.status]}>{l.status}</span></td>
+                  <td>
+                    <span className={BUCKET_BADGE[licenseBucket(l)]}>{BUCKET_LABEL[licenseBucket(l)]}</span>
+                    {l.revokeReason && (
+                      <div className="muted" style={{ fontSize: '0.75rem', marginTop: 4 }}>
+                        {l.revokeReason}
+                      </div>
+                    )}
+                  </td>
                   <td>
                     {l.approvedAt ? (
                       <span className="badge success">Approved {fmt(l.approvedAt)}</span>
+                    ) : l.status === 'pending' ? (
+                      <LicenseDecisionButtons
+                        tenantId={tenantId}
+                        licenseId={l.id}
+                        onDone={async () => {
+                          await refresh();
+                          onChanged?.();
+                        }}
+                      />
                     ) : (
-                      <button
-                        onClick={() => handleApprove(l.id)}
-                        disabled={approvingId === l.id}
-                        data-testid={`approve-license-${l.id}`}
-                      >
-                        {approvingId === l.id ? 'Approving…' : 'Approve'}
-                      </button>
+                      <span className="muted">—</span>
                     )}
                   </td>
                   <td>{fmt(l.issuedAt)}</td>

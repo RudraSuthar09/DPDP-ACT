@@ -88,4 +88,22 @@ describe('locked architecture §9/§12 — license validation policy', () => {
   it('an approved license (approved_at set) with everything else valid is accepted', () => {
     expect(evaluateLicenseForActivation(license({ approved_at: past }), enterpriseRequest, now)).toEqual({ ok: true });
   });
+
+  it('a REJECTED request (revoked, never approved) can never activate, whatever is requested', () => {
+    const rejected = license({ deployment_type: 'hosted', approved_at: null, status: 'revoked' });
+    for (const req of [
+      { plan: 'enterprise' as const, deploymentType: 'hosted' as const },
+      enterpriseRequest,
+      saasRequest,
+    ]) {
+      expect(evaluateLicenseForActivation(rejected, req, now).ok).toBe(false);
+    }
+  });
+
+  it('Enterprise + hosted (the self-registration pairing) activates only as Enterprise + hosted', () => {
+    const entHosted = license({ deployment_type: 'hosted', approved_at: past });
+    expect(evaluateLicenseForActivation(entHosted, { plan: 'enterprise', deploymentType: 'hosted' }, now)).toEqual({ ok: true });
+    expect(evaluateLicenseForActivation(entHosted, enterpriseRequest, now).ok).toBe(false);
+    expect(evaluateLicenseForActivation(entHosted, saasRequest, now).ok).toBe(false);
+  });
 });

@@ -83,6 +83,33 @@ export class AuditVerifierService {
       return rows.map(toEntry);
     });
   }
+
+  /**
+   * Licensing-related entries of ONE explicitly named tenant's chain, newest
+   * first — for the cross-tenant platform-admin portal, which has no ambient
+   * request tenant. Read-only. `withTenantId` binds that tenant's RLS GUC, so
+   * this reads exactly that tenant's rows and nothing else; the action filter
+   * narrows it to licence lifecycle evidence (registration, which issues the
+   * first licence; issue/approve/reject/revoke; installation activation).
+   */
+  async listLicensingForTenant(tenantId: string, limit: number): Promise<AuditEntry[]> {
+    return this.db.withTenantId(tenantId, async (client) => {
+      const { rows } = await client.query<AuditRow>(
+        `SELECT id, tenant_id, seq, occurred_at, actor_id, actor_label, action, outcome,
+                target_type, target_id, reason, before_state, after_state,
+                host(source_ip) AS source_ip, user_agent, correlation_id,
+                encode(prev_hash, 'hex') AS prev_hash, encode(hash, 'hex') AS hash
+           FROM audit_log
+          WHERE action LIKE 'licensing.%'
+             OR action LIKE 'installation.%'
+             OR action = 'identity.organisation.registered'
+          ORDER BY seq DESC
+          LIMIT $1`,
+        [limit],
+      );
+      return rows.map(toEntry);
+    });
+  }
 }
 
 interface AuditRow {

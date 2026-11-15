@@ -7,6 +7,13 @@ export interface PlatformAdminLoginResolution {
   passwordAlgo: string;
 }
 
+export interface PlatformAdminSummary {
+  id: string;
+  email: string;
+  createdAt: Date;
+  lastLoginAt: Date | null;
+}
+
 export interface OrganisationSummary {
   id: string;
   name: string;
@@ -45,6 +52,17 @@ export class PlatformAdminRepository {
   touchLastLogin(id: string): Promise<void> {
     return this.db.runUntenanted(async (client) => {
       await client.query('SELECT app.touch_platform_admin_login($1)', [id]);
+    });
+  }
+
+  /** Read-only admin listing through app.list_platform_admins() (migration
+   *  1737005700000): id/email/created_at/last_login_at, never credentials. */
+  listAdmins(): Promise<PlatformAdminSummary[]> {
+    return this.db.runUntenanted(async (client) => {
+      const { rows } = await client.query<{ id: string; email: string; created_at: Date; last_login_at: Date | null }>(
+        'SELECT id, email, created_at, last_login_at FROM app.list_platform_admins()',
+      );
+      return rows.map((r) => ({ id: r.id, email: r.email, createdAt: r.created_at, lastLoginAt: r.last_login_at }));
     });
   }
 

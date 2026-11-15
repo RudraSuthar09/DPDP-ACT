@@ -11,9 +11,16 @@ describe('locked architecture §10 — capability derivation (plan defaults)', (
     expect(features).toMatchObject({ saas: false, enterprise: true, enterpriseGateway: true });
   });
 
-  it('an Enterprise plan running hosted does NOT get enterpriseGateway', () => {
+  it('Enterprise + hosted (the production model) gets enterpriseGateway', () => {
     const features = deriveFeatureDefaults('enterprise', 'hosted');
-    expect(features).toMatchObject({ enterprise: true, enterpriseGateway: false });
+    expect(features).toMatchObject({ saas: false, enterprise: true, enterpriseGateway: true });
+  });
+
+  it('enterpriseGateway across all four plan/deployment combinations', () => {
+    expect(deriveFeatureDefaults('enterprise', 'hosted').enterpriseGateway).toBe(true);
+    expect(deriveFeatureDefaults('enterprise', 'client_server').enterpriseGateway).toBe(true);
+    expect(deriveFeatureDefaults('saas', 'hosted').enterpriseGateway).toBe(false);
+    expect(deriveFeatureDefaults('saas', 'client_server').enterpriseGateway).toBe(false);
   });
 
   it('3. SaaS cannot access Enterprise-only functionality (enterpriseGateway false)', () => {

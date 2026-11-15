@@ -1,8 +1,15 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { NoAudit } from '../audit/audited.decorator';
 import { PlatformAdminGuard, type RequestWithPlatformAdmin } from '../../tenancy/platform-admin.guard';
 import { parseIssueLicense } from '../licensing/licensing.dto';
-import { parseLicenseIdParam, parsePlatformAdminLogin, parseTenantIdParam } from './platform-admin.dto';
+import {
+  parseLicenseIdParam,
+  parseLimit,
+  parsePlatformAdminLogin,
+  parseRejectLicense,
+  parseTenantIdParam,
+} from './platform-admin.dto';
 import { PlatformAdminService } from './platform-admin.service';
 
 /**
@@ -29,9 +36,33 @@ export class PlatformAdminController {
   @Post('login')
   @NoAudit()
   @HttpCode(HttpStatus.OK)
-  async login(@Body() body: unknown) {
+  async login(@Body() body: unknown, @Req() req: Request) {
     const { email, password } = parsePlatformAdminLogin(body);
-    return this.admin.login(email, password);
+    // req.ip honours TRUST_PROXY (the real client behind Caddy), same source
+    // as the public portals' per-IP limits.
+    return this.admin.login(email, password, req.ip ?? req.socket?.remoteAddress ?? 'unknown');
+  }
+
+  /** Every organisation's licences, with organisation name/owner email —
+   *  the admin portal's overview and licence list. Read-only. */
+  @Get('licenses')
+  @UseGuards(PlatformAdminGuard)
+  async allLicenses() {
+    return { licenses: await this.admin.listAllLicenses() };
+  }
+
+  /** Read-only list of platform administrators (email, created, last login). */
+  @Get('admins')
+  @UseGuards(PlatformAdminGuard)
+  async admins() {
+    return { admins: await this.admin.listAdmins() };
+  }
+
+  /** One organisation's licensing audit entries, newest first. Read-only. */
+  @Get('organisations/:tenantId/audit')
+  @UseGuards(PlatformAdminGuard)
+  async audit(@Param('tenantId') tenantId: string, @Query('limit') limit?: string) {
+    return { entries: await this.admin.listLicensingAudit(parseTenantIdParam(tenantId), parseLimit(limit, 100, 500)) };
   }
 
   @Get('organisations')
@@ -77,6 +108,28 @@ export class PlatformAdminController {
       parseLicenseIdParam(licenseId),
       req.platformAdmin!.adminId,
       req.platformAdmin!.email,
+    );
+  }
+
+  /** Reject a pending, unapproved licence request. Reason mandatory. @NoAudit
+   *  for the same reason as approve: the evidence is written by
+   *  SystemAuditService into the target tenant's own chain. */
+  @Post('organisations/:tenantId/licenses/:licenseId/reject')
+  @UseGuards(PlatformAdminGuard)
+  @NoAudit()
+  @HttpCode(HttpStatus.OK)
+  async rejectLicense(
+    @Param('tenantId') tenantId: string,
+    @Param('licenseId') licenseId: string,
+    @Req() req: RequestWithPlatformAdmin,
+    @Body() body: unknown,
+  ) {
+    const { reason } = parseRejectLicense(body);
+    return this.admin.rejectLicense(
+      parseTenantIdParam(tenantId),
+      parseLicenseIdParam(licenseId),
+      req.platformAdmin!.email,
+      reason,
     );
   }
 }

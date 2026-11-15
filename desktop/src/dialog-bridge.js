@@ -7,9 +7,14 @@
 
 const { ipcMain, dialog, BrowserWindow } = require('electron');
 const fsp = require('node:fs/promises');
+const { isTrustedSender } = require('./trusted-origin');
 
 function registerDialogIpc() {
-  ipcMain.handle('dialog:save-file', async (_event, { defaultName, base64 }) => {
+  ipcMain.handle('dialog:save-file', async (event, arg) => {
+    // Only the top-level frame of the trusted DPDP origin may open the save
+    // dialog and write a file (see trusted-origin.js).
+    if (!isTrustedSender(event)) return { ok: false, error: 'UNTRUSTED_ORIGIN' };
+    const { defaultName, base64 } = arg || {};
     try {
       if (typeof base64 !== 'string') return { ok: false, error: 'BAD_REQUEST' };
       const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;

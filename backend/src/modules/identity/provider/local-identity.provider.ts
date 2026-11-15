@@ -85,11 +85,13 @@ export class LocalIdentityProvider implements IdentityProvider {
     // no "create the tenant as owner, then switch" path to get wrong.
     const tenantId = randomUUID();
 
-    // Enterprise is always client_server, SaaS is always hosted — the same
-    // pairing used everywhere else in this codebase (licensing-policy.ts,
-    // the deployment-topologies e2e suite). Registration asks only for the
-    // plan; the deployment type it implies is not a separate choice.
-    const deploymentType: 'hosted' | 'client_server' = input.plan === 'enterprise' ? 'client_server' : 'hosted';
+    // Self-registration is always `hosted`, for both plans: the DPDP platform
+    // runs centrally (our AWS deployment) and Enterprise customers operate
+    // their own Gateway agents against it — Enterprise + hosted, which holds
+    // the enterpriseGateway capability (capability-policy.ts). Registration
+    // asks only for the plan. A `client_server` licence (customer-hosted
+    // platform) is still issued by staff or a platform admin, never here.
+    const deploymentType: 'hosted' | 'client_server' = 'hosted';
 
     try {
       const { ownerUserId, modules, issuedLicense, licenseKey } = await this.db.withTenantId(

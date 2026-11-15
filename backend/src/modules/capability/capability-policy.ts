@@ -11,15 +11,19 @@ export type FeatureKey = 'saas' | 'enterprise' | 'enterpriseGateway' | 'database
 export const KNOWN_FEATURES: readonly FeatureKey[] = ['saas', 'enterprise', 'enterpriseGateway', 'databaseConnectors', 'localConnectors'];
 
 /**
- * Plan-based feature defaults. `enterpriseGateway` requires BOTH an
- * enterprise plan AND a client_server deployment — an enterprise plan
- * running hosted does not get it (locked architecture §10's own example).
+ * Plan-based feature defaults. `enterpriseGateway` follows the PLAN only:
+ * every Enterprise tenant gets it, whichever deployment type it runs —
+ * Enterprise + hosted (the production model: DPDP hosted centrally, the
+ * customer runs their own Gateway agents) and Enterprise + client_server
+ * alike. A SaaS plan never gets it, on either deployment type.
+ * `deploymentType` is kept in the signature: it still drives everything else
+ * that reads it (licence matching, installation records, Gateway profile).
  */
-export function deriveFeatureDefaults(plan: 'saas' | 'enterprise', deploymentType: 'hosted' | 'client_server'): Record<FeatureKey, boolean> {
+export function deriveFeatureDefaults(plan: 'saas' | 'enterprise', _deploymentType: 'hosted' | 'client_server'): Record<FeatureKey, boolean> {
   return {
     saas: plan === 'saas',
     enterprise: plan === 'enterprise',
-    enterpriseGateway: plan === 'enterprise' && deploymentType === 'client_server',
+    enterpriseGateway: plan === 'enterprise',
     databaseConnectors: true,
     localConnectors: true,
   };
